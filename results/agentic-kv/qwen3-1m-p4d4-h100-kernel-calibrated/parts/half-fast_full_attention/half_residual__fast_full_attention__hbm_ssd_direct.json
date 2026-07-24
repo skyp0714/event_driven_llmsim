@@ -1,0 +1,2514 @@
+{
+  "admission_queues": {
+    "decode_restore_hbm": {
+      "aggregate_admission_wait_seconds": 25125808.545407884,
+      "aggregate_capacity_block_seconds": 25125808.545407884,
+      "aggregate_capacity_block_seconds_semantics": "Deprecated compatibility alias for aggregate admission wait; includes FCFS, source-transit, and admission time, not only physical capacity shortage.",
+      "capacity_retry_count": 243786,
+      "discipline": "FCFS with completion-safe zero-growth resident-HBM backfill exception",
+      "enqueue_count": 470408,
+      "fcfs_bypass_deferral_count": 226247,
+      "independent_from_prefill_hbm_queue": true,
+      "max_depth": 937,
+      "max_foreground_source_pins": 2,
+      "resource_scope": "decode_hbm final-footprint reservation plus optional lower-tier prefix restore",
+      "source_ttl_deferral_count": 0,
+      "wakeup_count": 470408,
+      "wakeup_event_count": 687491
+    },
+    "pd_branch_admission_safety": {
+      "discipline": "branch-local logical-ready FCFS with completion-safe HBM backfill",
+      "final_decode_footprint_pre_reserved": true,
+      "purpose": "Avoid cross-pool hold-and-wait without globally blocking independent younger P work.",
+      "resident_hbm_backfill": "zero D growth and immediately admissible P branch",
+      "source_pin_epoch": "decode-admission head",
+      "speculative_prefill_wasted_seconds": 0.0
+    }
+  },
+  "background_event_horizon_seconds": 6139688.124961559,
+  "capacity": {
+    "capacity_invariant_checked": true,
+    "cpu_kv_budget_bytes": 2000000000000,
+    "decode_hbm_kv_budget_bytes_per_rank": 54777849344,
+    "decode_hbm_static_reserve_bytes_per_rank": 9936923136,
+    "effective_role_hbm_reserves_differ": false,
+    "hbm_static_reserve_bytes_per_rank": 9936923136,
+    "hbm_total_bytes_per_rank": 80000000000,
+    "model_weight_bytes_per_rank_estimate": 15285227520,
+    "peak_fraction": {
+      "cpu": 0.0,
+      "decode_hbm": 0.999998027815964,
+      "prefill_hbm": 0.9813198934194359,
+      "ssd": 0.3288479232
+    },
+    "peak_occupancy": {
+      "cpu_bytes": 0,
+      "decode_hbm_active_plus_idle_bytes_per_rank": 54777741312,
+      "decode_hbm_reserved_bytes_per_rank": 54777348096,
+      "prefill_hbm_active_bytes_per_rank": 53754593280,
+      "ssd_bytes": 10102208200704
+    },
+    "prefill_hbm_kv_budget_bytes_per_rank": 54777849344,
+    "prefill_hbm_static_reserve_bytes_per_rank": 9936923136,
+    "role_specific_hbm_reserve_overrides_present": false,
+    "ssd_kv_budget_bytes": 30720000000000,
+    "units": "exact bytes; GiB displays use 2^30 bytes",
+    "weight_dtype_bytes": 2
+  },
+  "context_infeasible_calls": 0,
+  "execution_scope": {
+    "active_request_kv_reserved": true,
+    "analytical_prompt_compute": true,
+    "canonical_restore_execution_mode": "async-pre-admission",
+    "decode_active_kv_time_modeled": false,
+    "decode_compute_modeled": false,
+    "global_arrival_clock": true,
+    "interpretation": "Capacity/transfer-queue sensitivity. Calls overlap and use a prompt-only roofline; this is not cycle-level serving.",
+    "llm_compute_queue_or_batching_modeled": false,
+    "pd_branch_admission": "Final-footprint D-HBM admission reserves capacity before lower-tier load. In async-pre-admission mode, P-HBM admission waits until lower->D completes; D->P starts after both the restored prefix and P capacity are ready.",
+    "pd_deadlock_prevention": "Both branches use the same admission sequence; only the D-head pins a movable source. A zero-growth resident-HBM call may backfill only when its P branch fits immediately. The complete final D footprint is pre-reserved before prompt completion.",
+    "pd_disaggregated": true,
+    "pd_hbm_pool_count": 2,
+    "prompt_compute_calibration": {
+      "absolute_dgx_h100_calibration_validated": false,
+      "analytical_model": {
+        "attention_occupancy": "ceil(q/128)*local_q_heads partial-wave proxy",
+        "bands": "p10/p50/p90 fitted eta sensitivities, not confidence intervals",
+        "equation": "t=max(t0,t_roof*eta); t_roof=max((F/P_peak)*u,bytes/BW_peak)",
+        "eta_fit": "robust p50 of a contiguous upper-shape training tail; fast=p10 and slow=p90",
+        "gemm_occupancy": "folded into eta because legacy traces lack selected cuBLAS tile and thread-block geometry",
+        "reference": "KernelSight-LM, arXiv:2606.28565",
+        "source_attention_causal_pairs": "bottom-right aligned: q*(k-q)+q*(q+1)/2"
+      },
+      "attention_multiplier": 1.0,
+      "band": "fast",
+      "calibrated_from_measurements": true,
+      "collective_model": {
+        "backend": "allgather_reducescatter",
+        "bandwidth_and_latency_contract": "analytical intra-node sensitivity using 450 GB/s and 3 us per collective",
+        "contention_modeled": false,
+        "ep_combine": "ring ReduceScatter of the full hidden buffer",
+        "ep_dispatch": "ring AllGather of max(1,floor(q/EP)) per-rank (hidden+router_logits) tokens",
+        "measured_or_fitted": false
+      },
+      "description": "Kernel-decomposed Qwen3 TP4/EP4 prompt prediction fitted to legacy TP4 component artifacts labeled H100. Exact measurement-system identity is unavailable.",
+      "hardware": {
+        "collective_fixed_microseconds": 3.0,
+        "collective_gb_per_second": 450.0,
+        "dense_bf16_tflops": 989.5,
+        "hbm_tb_per_second": 3.35,
+        "sms": 132
+      },
+      "kernel_fits": {
+        "dense_activation": {
+          "eta_central": 1.7469051408078196,
+          "eta_fast": 1.6630042554035525,
+          "eta_slow": 1.7779082742059302,
+          "family": "dense_activation",
+          "holdout_mape": 0.0480451834471384,
+          "holdout_p90_ape": 0.0797636080479726,
+          "holdout_rows": 512,
+          "holdout_signed_mean": -0.0480451834471384,
+          "launch_floor_seconds": 4.0475e-06,
+          "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+          "source_models": [
+            "meta-llama/Llama-3.1-70B"
+          ],
+          "training_rows": 512
+        },
+        "dense_ffn_down": {
+          "eta_central": 1.286194802914077,
+          "eta_fast": 1.2669168737261767,
+          "eta_slow": 1.3255236917568418,
+          "family": "dense_ffn_down",
+          "holdout_mape": 0.017782953108549656,
+          "holdout_p90_ape": 0.033508681850731616,
+          "holdout_rows": 512,
+          "holdout_signed_mean": 7.353637856880678e-05,
+          "launch_floor_seconds": 4.03355e-05,
+          "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+          "source_models": [
+            "meta-llama/Llama-3.1-70B"
+          ],
+          "training_rows": 512
+        },
+        "dense_ffn_up": {
+          "eta_central": 1.2791603157413192,
+          "eta_fast": 1.2405520769766034,
+          "eta_slow": 1.317469459848034,
+          "family": "dense_ffn_up",
+          "holdout_mape": 0.024105851028291953,
+          "holdout_p90_ape": 0.041947938811878055,
+          "holdout_rows": 1024,
+          "holdout_signed_mean": 0.021661770197597376,
+          "launch_floor_seconds": 4.05191e-05,
+          "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+          "source_models": [
+            "meta-llama/Llama-3.1-70B"
+          ],
+          "training_rows": 1024
+        },
+        "embedding": {
+          "eta_central": 11.062423913569283,
+          "eta_fast": 10.50345071591579,
+          "eta_slow": 11.67859705047617,
+          "family": "embedding",
+          "holdout_mape": 0.03719909603897705,
+          "holdout_p90_ape": 0.06577516984925474,
+          "holdout_rows": 1024,
+          "holdout_signed_mean": 0.01869494874992987,
+          "launch_floor_seconds": 3.5344e-06,
+          "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+          "source_models": [
+            "meta-llama/Llama-3.1-70B",
+            "mistralai/Mixtral-8x7B-v0.1"
+          ],
+          "training_rows": 1024
+        },
+        "expert_activation": {
+          "eta_central": 1.9143495299924012,
+          "eta_fast": 1.8926478954537806,
+          "eta_slow": 1.9303893066424447,
+          "family": "expert_activation",
+          "holdout_mape": 0.018401637965214167,
+          "holdout_p90_ape": 0.024344612763768356,
+          "holdout_rows": 512,
+          "holdout_signed_mean": 0.018401637965214167,
+          "launch_floor_seconds": 4.394000000000001e-06,
+          "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+          "source_models": [
+            "mistralai/Mixtral-8x7B-v0.1"
+          ],
+          "training_rows": 512
+        },
+        "expert_down": {
+          "eta_central": 1.2692233976831828,
+          "eta_fast": 1.2495858644712579,
+          "eta_slow": 1.2960385380984545,
+          "family": "expert_down",
+          "holdout_mape": 0.01405455416363598,
+          "holdout_p90_ape": 0.02511596183469495,
+          "holdout_rows": 512,
+          "holdout_signed_mean": 0.008882145891593115,
+          "launch_floor_seconds": 4.32525e-05,
+          "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+          "source_models": [
+            "mistralai/Mixtral-8x7B-v0.1"
+          ],
+          "training_rows": 512
+        },
+        "expert_up": {
+          "eta_central": 1.332519109312827,
+          "eta_fast": 1.2804500124661489,
+          "eta_slow": 1.3870143878434629,
+          "family": "expert_up",
+          "holdout_mape": 0.036124873399207114,
+          "holdout_p90_ape": 0.05815037609181682,
+          "holdout_rows": 1024,
+          "holdout_signed_mean": 0.034925559599819044,
+          "launch_floor_seconds": 4.00679e-05,
+          "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+          "source_models": [
+            "mistralai/Mixtral-8x7B-v0.1"
+          ],
+          "training_rows": 1024
+        },
+        "kv_projection": {
+          "eta_central": 2.402675118512974,
+          "eta_fast": 2.0902446352205843,
+          "eta_slow": 2.810338904082241,
+          "family": "kv_projection",
+          "holdout_mape": 0.1916716529028661,
+          "holdout_p90_ape": 0.33948897173385206,
+          "holdout_rows": 2048,
+          "holdout_signed_mean": 0.18513029100438655,
+          "launch_floor_seconds": 6.910800000000001e-06,
+          "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+          "source_models": [
+            "meta-llama/Llama-3.1-70B",
+            "mistralai/Mixtral-8x7B-v0.1"
+          ],
+          "training_rows": 2048
+        },
+        "lm_head": {
+          "eta_central": 1.324669192157946,
+          "eta_fast": 1.2722790635908063,
+          "eta_slow": 1.3610521033130771,
+          "family": "lm_head",
+          "holdout_mape": 0.022508211180712223,
+          "holdout_p90_ape": 0.0414837951163217,
+          "holdout_rows": 1024,
+          "holdout_signed_mean": 0.0006028652421603117,
+          "launch_floor_seconds": 2.47075e-05,
+          "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+          "source_models": [
+            "meta-llama/Llama-3.1-70B",
+            "mistralai/Mixtral-8x7B-v0.1"
+          ],
+          "training_rows": 1024
+        },
+        "norm": {
+          "eta_central": 13.919822212353626,
+          "eta_fast": 12.996983371656048,
+          "eta_slow": 14.57460409637947,
+          "family": "norm",
+          "holdout_mape": 0.02816145377042605,
+          "holdout_p90_ape": 0.043141094936968605,
+          "holdout_rows": 3072,
+          "holdout_signed_mean": -0.02750710137004085,
+          "launch_floor_seconds": 2.02425e-05,
+          "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+          "source_models": [
+            "meta-llama/Llama-3.1-70B",
+            "mistralai/Mixtral-8x7B-v0.1"
+          ],
+          "training_rows": 3072
+        },
+        "o_projection": {
+          "eta_central": 1.5634737594518457,
+          "eta_fast": 1.3578499673462454,
+          "eta_slow": 1.7815371036529544,
+          "family": "o_projection",
+          "holdout_mape": 0.07322940196079007,
+          "holdout_p90_ape": 0.15194546186652302,
+          "holdout_rows": 1024,
+          "holdout_signed_mean": 0.05817836502555926,
+          "launch_floor_seconds": 5.522000000000001e-06,
+          "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+          "source_models": [
+            "meta-llama/Llama-3.1-70B",
+            "mistralai/Mixtral-8x7B-v0.1"
+          ],
+          "training_rows": 1024
+        },
+        "prefill_attention": {
+          "eta_central": 7.574777748241797,
+          "eta_fast": 4.5862650456847645,
+          "eta_slow": 8.901783320621103,
+          "family": "prefill_attention",
+          "holdout_mape": 0.049087227792162375,
+          "holdout_p90_ape": 0.09216913790333807,
+          "holdout_rows": 16,
+          "holdout_signed_mean": -0.018249340252716916,
+          "launch_floor_seconds": 1.0520000000000001e-05,
+          "occupancy_contract": "u uses ceil(q/128) * local_q_heads thread-block proxy and 132 H100 SMs",
+          "source_models": [
+            "meta-llama/Llama-3.1-70B",
+            "mistralai/Mixtral-8x7B-v0.1"
+          ],
+          "training_rows": 32
+        },
+        "q_projection": {
+          "eta_central": 1.521033158697143,
+          "eta_fast": 1.2985035523959096,
+          "eta_slow": 1.986247959229737,
+          "family": "q_projection",
+          "holdout_mape": 0.12249455891736498,
+          "holdout_p90_ape": 0.20095690803953964,
+          "holdout_rows": 1024,
+          "holdout_signed_mean": 0.08192665937709646,
+          "launch_floor_seconds": 8.1402e-06,
+          "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+          "source_models": [
+            "meta-llama/Llama-3.1-70B",
+            "mistralai/Mixtral-8x7B-v0.1"
+          ],
+          "training_rows": 1024
+        },
+        "rope": {
+          "eta_central": 21.646792854479983,
+          "eta_fast": 17.4542476775717,
+          "eta_slow": 27.39511019775854,
+          "family": "rope",
+          "holdout_mape": 0.20110635215418876,
+          "holdout_p90_ape": 0.3894281080031784,
+          "holdout_rows": 1024,
+          "holdout_signed_mean": 0.19664873548685657,
+          "launch_floor_seconds": 2.76252e-05,
+          "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+          "source_models": [
+            "meta-llama/Llama-3.1-70B",
+            "mistralai/Mixtral-8x7B-v0.1"
+          ],
+          "training_rows": 1024
+        },
+        "router": {
+          "eta_central": 18.716328385702752,
+          "eta_fast": 16.570049974552656,
+          "eta_slow": 21.760577125955983,
+          "family": "router",
+          "holdout_mape": 0.32054692433953635,
+          "holdout_p90_ape": 0.43982086525814323,
+          "holdout_rows": 512,
+          "holdout_signed_mean": 0.32054692433953635,
+          "launch_floor_seconds": 4.3441000000000006e-05,
+          "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+          "source_models": [
+            "mistralai/Mixtral-8x7B-v0.1"
+          ],
+          "training_rows": 512
+        }
+      },
+      "legacy_h100_fp16_component_calibration": true,
+      "legacy_h100_labeled_component_measurements_used": true,
+      "limitations": {
+        "absolute_dgx_h100_accuracy_validated": false,
+        "aggregate_holdout_is_target_end_to_end_accuracy": false,
+        "attention_holdout_validates_long_k": false,
+        "attention_multiplier_scope": "prefill attention only",
+        "collective_terms_measured_or_fitted": false,
+        "current_producer_revision_is_measurement_revision": false,
+        "decode_compute_modeled": false,
+        "exact_legacy_h100_sku_known": false,
+        "fp16_to_bf16_efficiency_transfer_assumed": true,
+        "fused_qkv_measured_as_target_shape": false,
+        "host_scheduler_and_continuous_batching_modeled": false,
+        "latency_cache_max_scalar_entries": 131072,
+        "legacy_measurement_command_known": false,
+        "legacy_measurement_software_versions_known": false,
+        "measured_dca_or_minference": false,
+        "measured_qwen3_h100": false,
+        "moe_grouped_fusion_and_imbalance_measured": false,
+        "one_million_token_attention_is_extrapolated": true,
+        "qk_norm_head_width_measured": false,
+        "router_e128_top8_measured": false,
+        "sampler_and_serving_host_overhead_modeled": false,
+        "source_dense_m_max": 2048,
+        "source_measurement_dtype": "float16",
+        "source_prefill_kv_max": 2016,
+        "source_prefill_q_max": 1024,
+        "target_context_max": 1010000,
+        "target_dense_m_max": 131072,
+        "target_model_dtype": "bfloat16",
+        "target_prefill_q_max": 131072
+      },
+      "model_kind": "h100_kernel_calibrated_prompt",
+      "prefill_chunk_size": 131072,
+      "producer_source_sha256": {
+        "profiler/v0/models/llama.py": "34d71e5b76427464120b6347e901cbe9963b74cc794c72ed11934b606ebdf33f",
+        "profiler/v0/models/mixtral.py": "6143be0e5ce3b4cd5abc17cf3acca8321718422f2e35dacbd144020cb329c988",
+        "profiler/v0/profiler/attention/attention_input.py": "d6abf7003532cd093aab8c18b612864fc6f66aef64814796a097e7ae397e7d2b",
+        "profiler/v0/profiler/attention/attention_profiler.py": "3998208c081bc39c38f84122fbc7177f11f6bb8413916027fd68f3443bc690a4",
+        "profiler/v0/profiler/attention/batch_sampling.py": "3641a23e6de5bc301af53a2202da29d3c1f54112e5f4c1c577e3e7c23c841bac",
+        "profiler/v0/profiler/attention/main.py": "c0b281351fae3cf2f3f3d550568880d07973da97f52efe94e1a4d7a106a10d7e",
+        "profiler/v0/profiler/common/timer.py": "4152a18b2b99aa13647ad33ad66b84208efcba9e85ce9af0137bf63d52a44464",
+        "profiler/v0/profiler/common/timer_stats_store.py": "16d52eb14a9a9234c8243364da41f1f82e891e5b78064758eb2495d7a18a4805",
+        "profiler/v0/profiler/layers/main.py": "285051ddcae012bb933c707734642ee399feb88488329f98bcb1e775bcabe3fe",
+        "profiler/v0/profiler/utils/__init__.py": "5a89d2bfa6205d2c739b8e6514e65d86e9f27d07e0e02f588139950e4048e00f",
+        "profiler/v0/profiler/utils/record_function_tracer.py": "22f7a41174ed6d405d4854f0ba8d2389d8103a63e5cf0c68264456f7fcf913a3"
+      },
+      "schema_version": 3,
+      "source_identity": {
+        "artifact_label": "legacy-H100-labeled",
+        "cuda_pytorch_flashattention_versions_known": false,
+        "current_producer_revision_proven_to_have_generated_csv": false,
+        "exact_h100_sku_known": false,
+        "measurement_clock_state_known": false,
+        "measurement_command_known": false,
+        "producer_hash_scope": "Current repository snapshot of the relevant legacy producer implementation; it is not a recovered measurement-environment manifest."
+      },
+      "source_row_accounting": {
+        "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/attention.csv": {
+          "eligible_prefill_rows": 232,
+          "fit_holdout_points": 8,
+          "fit_training_points": 16,
+          "raw_rows": 21603,
+          "unique_prefill_points": 216
+        },
+        "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/layers.csv": {
+          "eligible_component_rows": 28672,
+          "raw_rows": 30720
+        },
+        "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/attention.csv": {
+          "eligible_prefill_rows": 232,
+          "fit_holdout_points": 8,
+          "fit_training_points": 16,
+          "raw_rows": 24979,
+          "unique_prefill_points": 216
+        },
+        "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/layers.csv": {
+          "eligible_component_rows": 30720,
+          "raw_rows": 30720
+        }
+      },
+      "source_rows": {
+        "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/attention.csv": 21603,
+        "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/layers.csv": 30720,
+        "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/attention.csv": 24979,
+        "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/layers.csv": 30720
+      },
+      "source_sha256": {
+        "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/attention.csv": "93d67794cf243fb481a0598549b94caa77e20ad0c8a215344a86ac8b9f5a5146",
+        "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/layers.csv": "41fd31dd27f5295d309bc2c926a0c01dc1c772f321074afe84f41d81f6a60735",
+        "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/attention.csv": "69b42685767810ae7419d8b08302714047444f3051246fd1ca7939318ae57a6d",
+        "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/layers.csv": "afcb40d69e346db7521540c6f09604183fb5ca42d675c0c53a6a9753dbb15ee4"
+      },
+      "target_geometry": {
+        "balanced_expert_pairs_per_rank_per_token": 2.0,
+        "config_sha256": "0736f3bafb95cc658776c92ab34f5f98d8169634a3a36b84892d71448a1f19d3",
+        "ep": 4,
+        "experts": 128,
+        "experts_per_rank": 32,
+        "fused_qkv_output_per_rank": 1280,
+        "head_dim": 128,
+        "hidden_size": 2048,
+        "kv_heads_per_rank": 1,
+        "layers": 48,
+        "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "q_heads_per_rank": 8,
+        "top_k": 8,
+        "tp": 4
+      },
+      "target_qwen_shape_extrapolation": true,
+      "validation": {
+        "holdout": {
+          "attention_boundary": "the attention holdout varies q only and contains no long-K cached-suffix validation",
+          "interpretation": "component-family interpolation check only; it is not an end-to-end Qwen3 or one-million-token accuracy estimate",
+          "per_family": {
+            "dense_activation": {
+              "mape": 0.0480451834471384,
+              "p90_ape": 0.0797636080479726,
+              "rows": 512,
+              "signed_mean": -0.0480451834471384
+            },
+            "dense_ffn_down": {
+              "mape": 0.017782953108549656,
+              "p90_ape": 0.033508681850731616,
+              "rows": 512,
+              "signed_mean": 7.353637856880678e-05
+            },
+            "dense_ffn_up": {
+              "mape": 0.024105851028291953,
+              "p90_ape": 0.041947938811878055,
+              "rows": 1024,
+              "signed_mean": 0.021661770197597376
+            },
+            "embedding": {
+              "mape": 0.03719909603897705,
+              "p90_ape": 0.06577516984925474,
+              "rows": 1024,
+              "signed_mean": 0.01869494874992987
+            },
+            "expert_activation": {
+              "mape": 0.018401637965214167,
+              "p90_ape": 0.024344612763768356,
+              "rows": 512,
+              "signed_mean": 0.018401637965214167
+            },
+            "expert_down": {
+              "mape": 0.01405455416363598,
+              "p90_ape": 0.02511596183469495,
+              "rows": 512,
+              "signed_mean": 0.008882145891593115
+            },
+            "expert_up": {
+              "mape": 0.036124873399207114,
+              "p90_ape": 0.05815037609181682,
+              "rows": 1024,
+              "signed_mean": 0.034925559599819044
+            },
+            "kv_projection": {
+              "mape": 0.1916716529028661,
+              "p90_ape": 0.33948897173385206,
+              "rows": 2048,
+              "signed_mean": 0.18513029100438655
+            },
+            "lm_head": {
+              "mape": 0.022508211180712223,
+              "p90_ape": 0.0414837951163217,
+              "rows": 1024,
+              "signed_mean": 0.0006028652421603117
+            },
+            "norm": {
+              "mape": 0.02816145377042605,
+              "p90_ape": 0.043141094936968605,
+              "rows": 3072,
+              "signed_mean": -0.02750710137004085
+            },
+            "o_projection": {
+              "mape": 0.07322940196079007,
+              "p90_ape": 0.15194546186652302,
+              "rows": 1024,
+              "signed_mean": 0.05817836502555926
+            },
+            "prefill_attention": {
+              "mape": 0.049087227792162375,
+              "p90_ape": 0.09216913790333807,
+              "rows": 16,
+              "signed_mean": -0.018249340252716916
+            },
+            "q_projection": {
+              "mape": 0.12249455891736498,
+              "p90_ape": 0.20095690803953964,
+              "rows": 1024,
+              "signed_mean": 0.08192665937709646
+            },
+            "rope": {
+              "mape": 0.20110635215418876,
+              "p90_ape": 0.3894281080031784,
+              "rows": 1024,
+              "signed_mean": 0.19664873548685657
+            },
+            "router": {
+              "mape": 0.32054692433953635,
+              "p90_ape": 0.43982086525814323,
+              "rows": 512,
+              "signed_mean": 0.32054692433953635
+            }
+          },
+          "rows": 14864,
+          "split": "layers: train M=1025..1536, contiguous holdout M=1537..2048; attention: train q=512..768, contiguous holdout q=800..1024",
+          "weighted_mape": 0.08230983001027048,
+          "weighted_signed_mean": 0.05855914341959838
+        }
+      }
+    },
+    "prompt_compute_model": "Kernel-decomposed Qwen3 TP4/EP4 prompt prediction fitted to legacy TP4 component artifacts labeled H100. Exact measurement-system identity is unavailable.",
+    "prompt_compute_model_kind": "h100_kernel_calibrated_prompt",
+    "prompt_compute_scale": 1.0,
+    "prompt_compute_scale_provenance": "Identity whole-prompt scale. Compute-band and attention-only sensitivity are represented inside the calibrated prompt predictor: Fast coefficient band from legacy-H100 fit uncertainty with full analytical causal-attention work. Optional sensitivity.",
+    "restore_barrier_scope": "returning_request_compute_admission_only",
+    "restore_execution_mode": "async-pre-admission",
+    "restore_prefill_overlap_model": "no same-request analytical compute before complete KV restore; unrelated calls remain runnable",
+    "session_dependency_chains": true,
+    "swap_out_blocks_other_calls": false
+  },
+  "experiment": {
+    "classification": "Legacy-H100 kernel-calibrated analytical projection; not a measured Qwen3 DCA/MInference H100 profile.",
+    "compute_endpoint": {
+      "attention_multiplier": 1.0,
+      "band": "fast",
+      "name": "fast_full_attention",
+      "provenance": "Fast coefficient band from legacy-H100 fit uncertainty with full analytical causal-attention work. Optional sensitivity."
+    },
+    "driver": "serving.agentic_kv_qwen3_1m_p4d4",
+    "paired_infinite_hbm_oracle": true,
+    "prompt_compute_calibration_metadata_sha256": "908fedc4041e2d2c6a4d7a226648e263a274c677bc6c35b86d0fefd2fd26f2dc",
+    "prompt_predictor_shared_by_finite_and_oracle": true,
+    "reserve_case": {
+      "common_bytes_per_rank": 9936923136,
+      "decode_bytes_per_rank": null,
+      "name": "half_residual",
+      "prefill_bytes_per_rank": null,
+      "provenance": "Sensitivity derived from the official model card's approximate 240 GB whole-engine statement. The target non-KV bytes/rank equal exact checkpoint bytes/rank plus 0.5 times the inferred residual. The core reserve is adjusted because the replay subtracts its architecture-derived weight estimate.",
+      "target_residual_fraction": 0.5
+    },
+    "run_id": "half_residual__fast_full_attention__hbm_ssd_direct"
+  },
+  "hardware": "H100",
+  "hardware_sensitivity": {
+    "cpu_capacity_matches_reference_contract": true,
+    "cpu_dram_queue_semantics": "One node-shared half-duplex cpu_dram queue resource. SSD staging writes, CPU-cache reads, and CPU<->GPU/SSD paths serialize against the configured aggregate DRAM bandwidth instead of assuming independent full-rate read and write channels.",
+    "cpu_system_memory_bytes": 2000000000000,
+    "cpu_system_memory_reference_contract": "DGX H100 marketed 2 TB SI = 2,000,000,000,000 bytes",
+    "pcie_effective_gbps_per_gpu": 50.0,
+    "pd_link_contract_provenance": "The DGX H100 guide publishes 900 GB/s GPU-to-GPU bandwidth. The default uses 450 GB/s per direction as a one-way nominal sensitivity; replace it with a measured peer-copy curve for headline latency.",
+    "pd_link_gbps_per_gpu_one_way": 450.0,
+    "pd_link_matches_half_bidirectional_reference": true,
+    "pd_link_reference_gbps_per_gpu_bidirectional": 900.0,
+    "ssd_bandwidths_match_manufacturer_upper_bound": true,
+    "ssd_configured_read_gbps_aggregate": 55.2,
+    "ssd_configured_write_gbps_aggregate": 33.6,
+    "ssd_contract_provenance": "The NVIDIA DGX H100 user guide specifies an 8 x 3.84-TB U.2 RAID 0 data-cache pool, and the firmware-guide example enumerates eight KIOXIA KCM6DRUL3T84 devices. KIOXIA rates that 3.84-TB PCIe 4.0 x4 model at up to 6.9/4.2 GB/s sequential read/write. Assuming an all-CM6 pool, 55.2/33.6 GB/s is the inferred eight-drive manufacturer upper bound, not measured end-to-end RAID 0 throughput. Replace it with fio measurements on the target system.",
+    "ssd_reference_device_count": 8,
+    "ssd_reference_ideal_read_gbps_aggregate": 55.2,
+    "ssd_reference_ideal_write_gbps_aggregate": 33.6,
+    "ssd_reference_interface": "PCIe 4.0 x4",
+    "ssd_reference_model": "KCM6DRUL3T84",
+    "ssd_reference_platform": "DGX H100 KIOXIA CM6 example",
+    "ssd_reference_read_gbps_per_device": 6.9,
+    "ssd_reference_sources": [
+      "https://docs.nvidia.com/dgx/dgxh100-user-guide/introduction-to-dgxh100.html",
+      "https://docs.nvidia.com/dgx/dgxh100-fw-update-guide/nvme-fw-update.html",
+      "https://americas.kioxia.com/content/dam/kioxia/shared/business/ssd/enterprise-ssd/asset/productbrief/eSSD-CM6-R-product-brief.pdf"
+    ],
+    "ssd_reference_write_gbps_per_device": 4.2
+  },
+  "hardware_spec": {
+    "bf16_dense_tflops": 989.5,
+    "calibration_provenance": "Kernel-decomposed analytical prompt model fitted to legacy Llama-3.1-70B and Mixtral timing artifacts labeled H100. Exact H100 SKU and software stack are unavailable. Projection to Qwen3, one-million-token attention, and DCA/MInference is analytical, not a measured Qwen3 H100 result.",
+    "compute_efficiency": 0.55,
+    "cpu": {
+      "dram_read_gbps_aggregate": 400.0,
+      "dram_write_gbps_aggregate": 400.0,
+      "fixed_latency_us": 5.0,
+      "gpu_to_host_gbps_per_rank": 50.0,
+      "host_to_gpu_gbps_per_rank": 50.0,
+      "provenance": "Unmeasured experiment input: 50 GB/s effective per-rank PCIe and one shared 400 GB/s CPU-DRAM queue."
+    },
+    "hbm_bandwidth_tbps": 3.35,
+    "launch_overhead_us_per_layer": 2.0,
+    "memory_efficiency": 0.75,
+    "name": "H100",
+    "nominal_provenance": "NVIDIA H100 SXM public specifications; BF16 dense peak inferred as half of the 1,979 TFLOP/s with-sparsity figure; HBM 3.35 TB/s. https://www.nvidia.com/en-us/data-center/h100/",
+    "ssd": {
+      "fixed_latency_us": 20.0,
+      "provenance": "Manufacturer upper-bound sensitivity: eight KIOXIA CM6 drives at 6.9/4.2 GB/s each, CPU staged; not measured fio.",
+      "read_gbps_aggregate": 55.2,
+      "staged_through_cpu": true,
+      "write_gbps_aggregate": 33.6
+    }
+  },
+  "infinite_hbm_oracle_comparison": {
+    "all_calls": {
+      "call_count": 357161,
+      "delta_request_summed_ready_to_complete_seconds": 25488152.37020525,
+      "equal_call_count": 119556,
+      "finite_faster_call_count": 1729,
+      "finite_mean_ready_to_complete_ms": 71883.44805449531,
+      "finite_request_summed_ready_to_complete_seconds": 25673964.1905916,
+      "finite_slower_call_count": 235876,
+      "oracle_mean_ready_to_complete_ms": 520.2466685510232,
+      "oracle_request_summed_ready_to_complete_seconds": 185811.820386352,
+      "paired_absolute_completion_delta_ms": {
+        "p50": 16400602.105204,
+        "p90": 54563077.423079,
+        "p95": 61172403.638267,
+        "p99": 71166471.2057716
+      },
+      "paired_service_delta_ms": {
+        "p50": 58413.416602,
+        "p90": 181594.234061,
+        "p95": 197649.601716,
+        "p99": 204867.3232194
+      },
+      "paired_service_slowdown_fraction": {
+        "p50": 179.71835852472188,
+        "p90": 1721.052961851936,
+        "p95": 2566.72739647115,
+        "p99": 5030.096495847527
+      },
+      "positive_oracle_service_call_count": 357161,
+      "slowdown_fraction_of_oracle_request_summed_service": 137.1718565439412
+    },
+    "by_finite_source": {
+      "decode_hbm": {
+        "call_count": 123754,
+        "delta_request_summed_ready_to_complete_seconds": 4326.4845122,
+        "equal_call_count": 115817,
+        "finite_faster_call_count": 1711,
+        "finite_mean_ready_to_complete_ms": 445.3488279246489,
+        "finite_request_summed_ready_to_complete_seconds": 55113.698850987,
+        "finite_slower_call_count": 6226,
+        "oracle_mean_ready_to_complete_ms": 410.38846694884205,
+        "oracle_request_summed_ready_to_complete_seconds": 50787.214338787,
+        "paired_absolute_completion_delta_ms": {
+          "p50": 25957142.072208,
+          "p90": 61985273.897748,
+          "p95": 67553628.168746,
+          "p99": 83259635.518708
+        },
+        "paired_service_delta_ms": {
+          "p50": 0.0,
+          "p90": 0.0,
+          "p95": 0.12554289999990856,
+          "p99": 1274.1394143200002
+        },
+        "paired_service_slowdown_fraction": {
+          "p50": 0.0,
+          "p90": 0.0,
+          "p95": 0.0005081549278946807,
+          "p99": 6.9260453719396455
+        },
+        "positive_oracle_service_call_count": 123754,
+        "slowdown_fraction_of_oracle_request_summed_service": 0.08518845871993008
+      },
+      "no_reuse": {
+        "call_count": 12148,
+        "delta_request_summed_ready_to_complete_seconds": 848569.334045053,
+        "equal_call_count": 3739,
+        "finite_faster_call_count": 18,
+        "finite_mean_ready_to_complete_ms": 75654.78724352148,
+        "finite_request_summed_ready_to_complete_seconds": 919054.355434299,
+        "finite_slower_call_count": 8391,
+        "oracle_mean_ready_to_complete_ms": 5802.191421571123,
+        "oracle_request_summed_ready_to_complete_seconds": 70485.021389246,
+        "paired_absolute_completion_delta_ms": {
+          "p50": 4596614.815987,
+          "p90": 51046575.393051,
+          "p95": 61136730.54723675,
+          "p99": 69656571.45804
+        },
+        "paired_service_delta_ms": {
+          "p50": 81559.92343,
+          "p90": 162070.92066330003,
+          "p95": 183364.1955999,
+          "p99": 200734.04729930003
+        },
+        "paired_service_slowdown_fraction": {
+          "p50": 14.494844556010204,
+          "p90": 516.6577237078686,
+          "p95": 774.06401409463,
+          "p99": 2261.6037558184994
+        },
+        "positive_oracle_service_call_count": 12148,
+        "slowdown_fraction_of_oracle_request_summed_service": 12.039002291833318
+      },
+      "ssd": {
+        "call_count": 221259,
+        "delta_request_summed_ready_to_complete_seconds": 24635256.55164799,
+        "equal_call_count": 0,
+        "finite_faster_call_count": 0,
+        "finite_mean_ready_to_complete_ms": 111632.95565968532,
+        "finite_request_summed_ready_to_complete_seconds": 24699796.136306312,
+        "finite_slower_call_count": 221259,
+        "oracle_mean_ready_to_complete_ms": 291.6924719822425,
+        "oracle_request_summed_ready_to_complete_seconds": 64539.584658319,
+        "paired_absolute_completion_delta_ms": {
+          "p50": 12170073.019506,
+          "p90": 47583824.53014921,
+          "p95": 54327616.200073056,
+          "p99": 65483611.18238717
+        },
+        "paired_service_delta_ms": {
+          "p50": 104405.300144,
+          "p90": 194909.281119,
+          "p95": 200891.2311858,
+          "p99": 205771.976048
+        },
+        "paired_service_slowdown_fraction": {
+          "p50": 572.9169337912635,
+          "p90": 2282.087082982962,
+          "p95": 3194.0514587786874,
+          "p99": 5916.447603668973
+        },
+        "positive_oracle_service_call_count": 221259,
+        "slowdown_fraction_of_oracle_request_summed_service": 381.7077020571214
+      }
+    },
+    "by_return_gap_type": {
+      "human": {
+        "call_count": 31997,
+        "delta_request_summed_ready_to_complete_seconds": 2094164.694063584,
+        "equal_call_count": 9878,
+        "finite_faster_call_count": 31,
+        "finite_mean_ready_to_complete_ms": 67505.08626062484,
+        "finite_request_summed_ready_to_complete_seconds": 2159960.245081213,
+        "finite_slower_call_count": 22088,
+        "oracle_mean_ready_to_complete_ms": 2056.3037477772605,
+        "oracle_request_summed_ready_to_complete_seconds": 65795.551017629,
+        "paired_absolute_completion_delta_ms": {
+          "p50": 16572656.04784,
+          "p90": 41951299.567087,
+          "p95": 53466345.814672,
+          "p99": 67552423.679982
+        },
+        "paired_service_delta_ms": {
+          "p50": 40392.884649,
+          "p90": 175739.8474306,
+          "p95": 195030.0220835999,
+          "p99": 203953.75391932
+        },
+        "paired_service_slowdown_fraction": {
+          "p50": 25.11115585893186,
+          "p90": 1941.381171586887,
+          "p95": 4056.5766782585506,
+          "p99": 8326.401523420125
+        },
+        "positive_oracle_service_call_count": 31997,
+        "slowdown_fraction_of_oracle_request_summed_service": 31.82836318982239
+      },
+      "mixed": {
+        "call_count": 3097,
+        "delta_request_summed_ready_to_complete_seconds": 210197.901144246,
+        "equal_call_count": 871,
+        "finite_faster_call_count": 10,
+        "finite_mean_ready_to_complete_ms": 69538.95235554149,
+        "finite_request_summed_ready_to_complete_seconds": 215362.135445112,
+        "finite_slower_call_count": 2216,
+        "oracle_mean_ready_to_complete_ms": 1667.49573809041,
+        "oracle_request_summed_ready_to_complete_seconds": 5164.234300866,
+        "paired_absolute_completion_delta_ms": {
+          "p50": 12752495.613915,
+          "p90": 51747827.088564,
+          "p95": 56703649.879427396,
+          "p99": 83179525.41288772
+        },
+        "paired_service_delta_ms": {
+          "p50": 52407.249829,
+          "p90": 173579.25974620003,
+          "p95": 194872.5309118,
+          "p99": 203808.18353036
+        },
+        "paired_service_slowdown_fraction": {
+          "p50": 42.638732360959736,
+          "p90": 1145.3018102211374,
+          "p95": 1825.760700728364,
+          "p99": 4584.829686084181
+        },
+        "positive_oracle_service_call_count": 3097,
+        "slowdown_fraction_of_oracle_request_summed_service": 40.702626739649965
+      },
+      "session_start": {
+        "call_count": 4281,
+        "delta_request_summed_ready_to_complete_seconds": 362391.24630955,
+        "equal_call_count": 611,
+        "finite_faster_call_count": 5,
+        "finite_mean_ready_to_complete_ms": 85539.59525259098,
+        "finite_request_summed_ready_to_complete_seconds": 366195.007276342,
+        "finite_slower_call_count": 3665,
+        "oracle_mean_ready_to_complete_ms": 888.5215993440786,
+        "oracle_request_summed_ready_to_complete_seconds": 3803.760966792,
+        "paired_absolute_completion_delta_ms": {
+          "p50": 96290.298775,
+          "p90": 151566.503622,
+          "p95": 165165.692824,
+          "p99": 189203.88316819997
+        },
+        "paired_service_delta_ms": {
+          "p50": 96290.298775,
+          "p90": 151566.503622,
+          "p95": 165165.692824,
+          "p99": 189203.88316819997
+        },
+        "paired_service_slowdown_fraction": {
+          "p50": 300.09222614277655,
+          "p90": 834.9136087998662,
+          "p95": 1642.3292192217855,
+          "p99": 3173.392723925531
+        },
+        "positive_oracle_service_call_count": 4281,
+        "slowdown_fraction_of_oracle_request_summed_service": 95.27182424798423
+      },
+      "tool": {
+        "call_count": 313179,
+        "delta_request_summed_ready_to_complete_seconds": 22345126.285061188,
+        "equal_call_count": 107536,
+        "finite_faster_call_count": 1671,
+        "finite_mean_ready_to_complete_ms": 71690.29356117247,
+        "finite_request_summed_ready_to_complete_seconds": 22451894.44719443,
+        "finite_slower_call_count": 203972,
+        "oracle_mean_ready_to_complete_ms": 340.9173735571223,
+        "oracle_request_summed_ready_to_complete_seconds": 106768.162133246,
+        "paired_absolute_completion_delta_ms": {
+          "p50": 16940030.672666,
+          "p90": 55992998.33581001,
+          "p95": 61973363.956007,
+          "p99": 71196731.75833781
+        },
+        "paired_service_delta_ms": {
+          "p50": 56845.216506,
+          "p90": 182298.5373318,
+          "p95": 197919.86513269998,
+          "p99": 204948.46409814
+        },
+        "paired_service_slowdown_fraction": {
+          "p50": 195.94534186528975,
+          "p90": 1693.302665249394,
+          "p95": 2446.6858168914086,
+          "p99": 4381.091436904297
+        },
+        "positive_oracle_service_call_count": 313179,
+        "slowdown_fraction_of_oracle_request_summed_service": 209.28641870948954
+      },
+      "unknown": {
+        "call_count": 4607,
+        "delta_request_summed_ready_to_complete_seconds": 476272.243626679,
+        "equal_call_count": 660,
+        "finite_faster_call_count": 12,
+        "finite_mean_ready_to_complete_ms": 104309.17204134968,
+        "finite_request_summed_ready_to_complete_seconds": 480552.355594498,
+        "finite_slower_call_count": 3935,
+        "oracle_mean_ready_to_complete_ms": 929.0453587625352,
+        "oracle_request_summed_ready_to_complete_seconds": 4280.111967819,
+        "paired_absolute_completion_delta_ms": {
+          "p50": 11144331.813197,
+          "p90": 32864701.318943806,
+          "p95": 46589570.21838698,
+          "p99": 83505460.4429972
+        },
+        "paired_service_delta_ms": {
+          "p50": 106961.790729,
+          "p90": 191897.98645760008,
+          "p95": 200069.58145539998,
+          "p99": 205347.3707609
+        },
+        "paired_service_slowdown_fraction": {
+          "p50": 725.5137360142652,
+          "p90": 4187.212154522108,
+          "p95": 5616.975109222036,
+          "p99": 8929.391587419617
+        },
+        "positive_oracle_service_call_count": 4607,
+        "slowdown_fraction_of_oracle_request_summed_service": 111.27565054550925
+      }
+    },
+    "by_return_gap_type_and_finite_source": {
+      "human": {
+        "decode_hbm": {
+          "call_count": 8003,
+          "delta_request_summed_ready_to_complete_seconds": 92.431521586,
+          "equal_call_count": 7828,
+          "finite_faster_call_count": 24,
+          "finite_mean_ready_to_complete_ms": 797.2774075889041,
+          "finite_request_summed_ready_to_complete_seconds": 6380.611092934,
+          "finite_slower_call_count": 151,
+          "oracle_mean_ready_to_complete_ms": 785.7277984940647,
+          "oracle_request_summed_ready_to_complete_seconds": 6288.179571348,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 24878879.313076,
+            "p90": 43619029.484823,
+            "p95": 53472204.972985,
+            "p99": 67554585.570361
+          },
+          "paired_service_delta_ms": {
+            "p50": 0.0,
+            "p90": 0.0,
+            "p95": 0.0,
+            "p99": 371.0442523399999
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 0.0,
+            "p90": 0.0,
+            "p95": 0.0,
+            "p99": 1.832589750095269
+          },
+          "positive_oracle_service_call_count": 8003,
+          "slowdown_fraction_of_oracle_request_summed_service": 0.01469924968541969
+        },
+        "no_reuse": {
+          "call_count": 5022,
+          "delta_request_summed_ready_to_complete_seconds": 305590.007239047,
+          "equal_call_count": 2050,
+          "finite_faster_call_count": 7,
+          "finite_mean_ready_to_complete_ms": 70971.05730024452,
+          "finite_request_summed_ready_to_complete_seconds": 356416.649761828,
+          "finite_slower_call_count": 2965,
+          "oracle_mean_ready_to_complete_ms": 10120.796997766029,
+          "oracle_request_summed_ready_to_complete_seconds": 50826.642522781,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 18915183.537813,
+            "p90": 56226102.38061179,
+            "p95": 67310621.7155463,
+            "p99": 71128633.656305
+          },
+          "paired_service_delta_ms": {
+            "p50": 33298.292374,
+            "p90": 168986.3770959,
+            "p95": 190944.31721359998,
+            "p99": 202404.99242031
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 2.5780715200563193,
+            "p90": 78.14636352146015,
+            "p95": 154.9795315115857,
+            "p99": 472.2328504609494
+          },
+          "positive_oracle_service_call_count": 5022,
+          "slowdown_fraction_of_oracle_request_summed_service": 6.012398066665107
+        },
+        "ssd": {
+          "call_count": 18972,
+          "delta_request_summed_ready_to_complete_seconds": 1788482.255302951,
+          "equal_call_count": 0,
+          "finite_faster_call_count": 0,
+          "finite_mean_ready_to_complete_ms": 94727.1233515945,
+          "finite_request_summed_ready_to_complete_seconds": 1797162.984226451,
+          "finite_slower_call_count": 18972,
+          "oracle_mean_ready_to_complete_ms": 457.5547608844613,
+          "oracle_request_summed_ready_to_complete_seconds": 8680.7289235,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 11285296.1902505,
+            "p90": 38548386.40709452,
+            "p95": 48228873.1637457,
+            "p99": 58064857.65613825
+          },
+          "paired_service_delta_ms": {
+            "p50": 97911.7565815,
+            "p90": 187706.31114260003,
+            "p95": 199131.71006090002,
+            "p99": 205145.42229129001
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 346.1701515265384,
+            "p90": 3588.75640540211,
+            "p95": 5612.044334869954,
+            "p99": 9398.37629064762
+          },
+          "positive_oracle_service_call_count": 18972,
+          "slowdown_fraction_of_oracle_request_summed_service": 206.02904100153023
+        }
+      },
+      "mixed": {
+        "decode_hbm": {
+          "call_count": 715,
+          "delta_request_summed_ready_to_complete_seconds": 35.881718672,
+          "equal_call_count": 650,
+          "finite_faster_call_count": 9,
+          "finite_mean_ready_to_complete_ms": 588.729671262937,
+          "finite_request_summed_ready_to_complete_seconds": 420.941714953,
+          "finite_slower_call_count": 56,
+          "oracle_mean_ready_to_complete_ms": 538.5454493440559,
+          "oracle_request_summed_ready_to_complete_seconds": 385.059996281,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 25957142.072208,
+            "p90": 53764058.27907,
+            "p95": 68616519.5095369,
+            "p99": 83538610.29764512
+          },
+          "paired_service_delta_ms": {
+            "p50": 0.0,
+            "p90": 0.0,
+            "p95": 173.29500409999844,
+            "p99": 1720.5008397200008
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 0.0,
+            "p90": 0.0,
+            "p95": 0.3416533951580214,
+            "p99": 7.724440045324607
+          },
+          "positive_oracle_service_call_count": 715,
+          "slowdown_fraction_of_oracle_request_summed_service": 0.09318474787969167
+        },
+        "no_reuse": {
+          "call_count": 513,
+          "delta_request_summed_ready_to_complete_seconds": 29881.298519718,
+          "equal_call_count": 221,
+          "finite_faster_call_count": 1,
+          "finite_mean_ready_to_complete_ms": 65641.82150381287,
+          "finite_request_summed_ready_to_complete_seconds": 33674.254431456,
+          "finite_slower_call_count": 291,
+          "oracle_mean_ready_to_complete_ms": 7393.676241204678,
+          "oracle_request_summed_ready_to_complete_seconds": 3792.955911738,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 19873199.214379,
+            "p90": 57947553.03280941,
+            "p95": 68599937.332202,
+            "p99": 83542619.40681452
+          },
+          "paired_service_delta_ms": {
+            "p50": 21508.035733,
+            "p90": 164417.3045058,
+            "p95": 194885.953105,
+            "p99": 200695.36446856
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 1.6032088799459672,
+            "p90": 108.32837188587682,
+            "p95": 227.7558503595197,
+            "p99": 915.7596081109749
+          },
+          "positive_oracle_service_call_count": 513,
+          "slowdown_fraction_of_oracle_request_summed_service": 7.878103309148631
+        },
+        "ssd": {
+          "call_count": 1869,
+          "delta_request_summed_ready_to_complete_seconds": 180280.720905856,
+          "equal_call_count": 0,
+          "finite_faster_call_count": 0,
+          "finite_mean_ready_to_complete_ms": 96986.05633959497,
+          "finite_request_summed_ready_to_complete_seconds": 181266.939298703,
+          "finite_slower_call_count": 1869,
+          "oracle_mean_ready_to_complete_ms": 527.6716922669876,
+          "oracle_request_summed_ready_to_complete_seconds": 986.218392847,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 8507848.426598,
+            "p90": 39778060.75913221,
+            "p95": 51256363.497279,
+            "p99": 61497533.64521471
+          },
+          "paired_service_delta_ms": {
+            "p50": 98445.65186,
+            "p90": 185387.33172540003,
+            "p95": 199188.82372159997,
+            "p99": 205191.93230192
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 289.6977041424585,
+            "p90": 1642.7493355495972,
+            "p95": 2341.962437015378,
+            "p99": 5786.005606097254
+          },
+          "positive_oracle_service_call_count": 1869,
+          "slowdown_fraction_of_oracle_request_summed_service": 182.79999867516605
+        }
+      },
+      "session_start": {
+        "no_reuse": {
+          "call_count": 4281,
+          "delta_request_summed_ready_to_complete_seconds": 362391.24630955,
+          "equal_call_count": 611,
+          "finite_faster_call_count": 5,
+          "finite_mean_ready_to_complete_ms": 85539.59525259098,
+          "finite_request_summed_ready_to_complete_seconds": 366195.007276342,
+          "finite_slower_call_count": 3665,
+          "oracle_mean_ready_to_complete_ms": 888.5215993440786,
+          "oracle_request_summed_ready_to_complete_seconds": 3803.760966792,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 96290.298775,
+            "p90": 151566.503622,
+            "p95": 165165.692824,
+            "p99": 189203.88316819997
+          },
+          "paired_service_delta_ms": {
+            "p50": 96290.298775,
+            "p90": 151566.503622,
+            "p95": 165165.692824,
+            "p99": 189203.88316819997
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 300.09222614277655,
+            "p90": 834.9136087998662,
+            "p95": 1642.3292192217855,
+            "p99": 3173.392723925531
+          },
+          "positive_oracle_service_call_count": 4281,
+          "slowdown_fraction_of_oracle_request_summed_service": 95.27182424798423
+        }
+      },
+      "tool": {
+        "decode_hbm": {
+          "call_count": 114396,
+          "delta_request_summed_ready_to_complete_seconds": 4182.611283429,
+          "equal_call_count": 106730,
+          "finite_faster_call_count": 1666,
+          "finite_mean_ready_to_complete_ms": 420.94671506584143,
+          "finite_request_summed_ready_to_complete_seconds": 48154.620416672,
+          "finite_slower_call_count": 6000,
+          "oracle_mean_ready_to_complete_ms": 384.3841492118868,
+          "oracle_request_summed_ready_to_complete_seconds": 43972.009133243,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 25957142.072208,
+            "p90": 67165235.948232,
+            "p95": 67554277.62956,
+            "p99": 83259635.518708
+          },
+          "paired_service_delta_ms": {
+            "p50": 0.0,
+            "p90": 0.0,
+            "p95": 1.16390625,
+            "p99": 1316.2046860000012
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 0.0,
+            "p90": 0.0,
+            "p95": 0.0046025408010132995,
+            "p99": 7.11711452430688
+          },
+          "positive_oracle_service_call_count": 114396,
+          "slowdown_fraction_of_oracle_request_summed_service": 0.0951198584252757
+        },
+        "no_reuse": {
+          "call_count": 1836,
+          "delta_request_summed_ready_to_complete_seconds": 97460.608508989,
+          "equal_call_count": 806,
+          "finite_faster_call_count": 5,
+          "finite_mean_ready_to_complete_ms": 57715.609608431914,
+          "finite_request_summed_ready_to_complete_seconds": 105965.859241081,
+          "finite_slower_call_count": 1025,
+          "oracle_mean_ready_to_complete_ms": 4632.489505496732,
+          "oracle_request_summed_ready_to_complete_seconds": 8505.250732092,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 26365704.0073665,
+            "p90": 64220955.0782735,
+            "p95": 67553476.020898,
+            "p99": 83164976.1178855
+          },
+          "paired_service_delta_ms": {
+            "p50": 28409.542878,
+            "p90": 158124.8705105,
+            "p95": 175937.65996625,
+            "p99": 199767.61007035
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 3.3100549756872444,
+            "p90": 244.11448911169464,
+            "p95": 420.8034199217221,
+            "p99": 1342.0628842331917
+          },
+          "positive_oracle_service_call_count": 1836,
+          "slowdown_fraction_of_oracle_request_summed_service": 11.458875414601332
+        },
+        "ssd": {
+          "call_count": 196947,
+          "delta_request_summed_ready_to_complete_seconds": 22243483.06526877,
+          "equal_call_count": 0,
+          "finite_faster_call_count": 0,
+          "finite_mean_ready_to_complete_ms": 113217.12931670288,
+          "finite_request_summed_ready_to_complete_seconds": 22297773.96753668,
+          "finite_slower_call_count": 196947,
+          "oracle_mean_ready_to_complete_ms": 275.66249939278583,
+          "oracle_request_summed_ready_to_complete_seconds": 54290.902267911,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 12383362.888784,
+            "p90": 48279829.33060379,
+            "p95": 54851978.49521598,
+            "p99": 65813214.10412885
+          },
+          "paired_service_delta_ms": {
+            "p50": 105196.097925,
+            "p90": 195291.88741479997,
+            "p95": 201014.3656291,
+            "p99": 205837.91680944004
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 586.5875371172089,
+            "p90": 2192.4791436361497,
+            "p95": 2976.4711333471196,
+            "p99": 5067.745271466745
+          },
+          "positive_oracle_service_call_count": 196947,
+          "slowdown_fraction_of_oracle_request_summed_service": 409.70921712634583
+        }
+      },
+      "unknown": {
+        "decode_hbm": {
+          "call_count": 640,
+          "delta_request_summed_ready_to_complete_seconds": 15.559988513,
+          "equal_call_count": 609,
+          "finite_faster_call_count": 12,
+          "finite_mean_ready_to_complete_ms": 246.13379129375,
+          "finite_request_summed_ready_to_complete_seconds": 157.525626428,
+          "finite_slower_call_count": 19,
+          "oracle_mean_ready_to_complete_ms": 221.8213092421875,
+          "oracle_request_summed_ready_to_complete_seconds": 141.965637915,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 20213029.3976945,
+            "p90": 83279645.6421217,
+            "p95": 83539834.235798,
+            "p99": 83563211.176145
+          },
+          "paired_service_delta_ms": {
+            "p50": 0.0,
+            "p90": 0.0,
+            "p95": 0.0,
+            "p99": 917.2463426300042
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 0.0,
+            "p90": 0.0,
+            "p95": 0.0,
+            "p99": 3.9047390041562577
+          },
+          "positive_oracle_service_call_count": 640,
+          "slowdown_fraction_of_oracle_request_summed_service": 0.1096039065616452
+        },
+        "no_reuse": {
+          "call_count": 496,
+          "delta_request_summed_ready_to_complete_seconds": 53246.173467749,
+          "equal_call_count": 51,
+          "finite_faster_call_count": 0,
+          "finite_mean_ready_to_complete_ms": 114521.34016853226,
+          "finite_request_summed_ready_to_complete_seconds": 56802.584723592,
+          "finite_slower_call_count": 445,
+          "oracle_mean_ready_to_complete_ms": 7170.183983554436,
+          "oracle_request_summed_ready_to_complete_seconds": 3556.411255843,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 13086935.6303905,
+            "p90": 30366261.8490215,
+            "p95": 33389629.555648,
+            "p99": 46715078.764316715
+          },
+          "paired_service_delta_ms": {
+            "p50": 106855.8248015,
+            "p90": 191918.5340035,
+            "p95": 198234.1681255,
+            "p99": 204041.26337685
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 27.750755413673534,
+            "p90": 291.00095551896857,
+            "p95": 460.52607283160796,
+            "p99": 1073.7384849075747
+          },
+          "positive_oracle_service_call_count": 496,
+          "slowdown_fraction_of_oracle_request_summed_service": 14.971883068997796
+        },
+        "ssd": {
+          "call_count": 3471,
+          "delta_request_summed_ready_to_complete_seconds": 423010.510170417,
+          "equal_call_count": 0,
+          "finite_faster_call_count": 0,
+          "finite_mean_ready_to_complete_ms": 122037.52383880092,
+          "finite_request_summed_ready_to_complete_seconds": 423592.245244478,
+          "finite_slower_call_count": 3471,
+          "oracle_mean_ready_to_complete_ms": 167.59869607058482,
+          "oracle_request_summed_ready_to_complete_seconds": 581.735074061,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 9167904.576414,
+            "p90": 30911893.269485,
+            "p95": 35787186.0019785,
+            "p99": 56709682.91741111
+          },
+          "paired_service_delta_ms": {
+            "p50": 119270.266131,
+            "p90": 195579.879776,
+            "p95": 201231.447109,
+            "p99": 205876.81876320002
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 1195.3473227092127,
+            "p90": 4753.765022167785,
+            "p95": 6166.450106876143,
+            "p99": 9486.894572288145
+          },
+          "positive_oracle_service_call_count": 3471,
+          "slowdown_fraction_of_oracle_request_summed_service": 727.153181975857
+        }
+      }
+    },
+    "closed_loop_delay_conservation_checked": true,
+    "compute_queue_or_batching_modeled": false,
+    "finite_report_scope": {
+      "active_request_kv_reserved": true,
+      "analytical_prompt_compute": true,
+      "canonical_restore_execution_mode": "async-pre-admission",
+      "decode_active_kv_time_modeled": false,
+      "decode_compute_modeled": false,
+      "global_arrival_clock": true,
+      "interpretation": "Capacity/transfer-queue sensitivity. Calls overlap and use a prompt-only roofline; this is not cycle-level serving.",
+      "llm_compute_queue_or_batching_modeled": false,
+      "pd_branch_admission": "Final-footprint D-HBM admission reserves capacity before lower-tier load. In async-pre-admission mode, P-HBM admission waits until lower->D completes; D->P starts after both the restored prefix and P capacity are ready.",
+      "pd_deadlock_prevention": "Both branches use the same admission sequence; only the D-head pins a movable source. A zero-growth resident-HBM call may backfill only when its P branch fits immediately. The complete final D footprint is pre-reserved before prompt completion.",
+      "pd_disaggregated": true,
+      "pd_hbm_pool_count": 2,
+      "prompt_compute_calibration": {
+        "absolute_dgx_h100_calibration_validated": false,
+        "analytical_model": {
+          "attention_occupancy": "ceil(q/128)*local_q_heads partial-wave proxy",
+          "bands": "p10/p50/p90 fitted eta sensitivities, not confidence intervals",
+          "equation": "t=max(t0,t_roof*eta); t_roof=max((F/P_peak)*u,bytes/BW_peak)",
+          "eta_fit": "robust p50 of a contiguous upper-shape training tail; fast=p10 and slow=p90",
+          "gemm_occupancy": "folded into eta because legacy traces lack selected cuBLAS tile and thread-block geometry",
+          "reference": "KernelSight-LM, arXiv:2606.28565",
+          "source_attention_causal_pairs": "bottom-right aligned: q*(k-q)+q*(q+1)/2"
+        },
+        "attention_multiplier": 1.0,
+        "band": "fast",
+        "calibrated_from_measurements": true,
+        "collective_model": {
+          "backend": "allgather_reducescatter",
+          "bandwidth_and_latency_contract": "analytical intra-node sensitivity using 450 GB/s and 3 us per collective",
+          "contention_modeled": false,
+          "ep_combine": "ring ReduceScatter of the full hidden buffer",
+          "ep_dispatch": "ring AllGather of max(1,floor(q/EP)) per-rank (hidden+router_logits) tokens",
+          "measured_or_fitted": false
+        },
+        "description": "Kernel-decomposed Qwen3 TP4/EP4 prompt prediction fitted to legacy TP4 component artifacts labeled H100. Exact measurement-system identity is unavailable.",
+        "hardware": {
+          "collective_fixed_microseconds": 3.0,
+          "collective_gb_per_second": 450.0,
+          "dense_bf16_tflops": 989.5,
+          "hbm_tb_per_second": 3.35,
+          "sms": 132
+        },
+        "kernel_fits": {
+          "dense_activation": {
+            "eta_central": 1.7469051408078196,
+            "eta_fast": 1.6630042554035525,
+            "eta_slow": 1.7779082742059302,
+            "family": "dense_activation",
+            "holdout_mape": 0.0480451834471384,
+            "holdout_p90_ape": 0.0797636080479726,
+            "holdout_rows": 512,
+            "holdout_signed_mean": -0.0480451834471384,
+            "launch_floor_seconds": 4.0475e-06,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B"
+            ],
+            "training_rows": 512
+          },
+          "dense_ffn_down": {
+            "eta_central": 1.286194802914077,
+            "eta_fast": 1.2669168737261767,
+            "eta_slow": 1.3255236917568418,
+            "family": "dense_ffn_down",
+            "holdout_mape": 0.017782953108549656,
+            "holdout_p90_ape": 0.033508681850731616,
+            "holdout_rows": 512,
+            "holdout_signed_mean": 7.353637856880678e-05,
+            "launch_floor_seconds": 4.03355e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B"
+            ],
+            "training_rows": 512
+          },
+          "dense_ffn_up": {
+            "eta_central": 1.2791603157413192,
+            "eta_fast": 1.2405520769766034,
+            "eta_slow": 1.317469459848034,
+            "family": "dense_ffn_up",
+            "holdout_mape": 0.024105851028291953,
+            "holdout_p90_ape": 0.041947938811878055,
+            "holdout_rows": 1024,
+            "holdout_signed_mean": 0.021661770197597376,
+            "launch_floor_seconds": 4.05191e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B"
+            ],
+            "training_rows": 1024
+          },
+          "embedding": {
+            "eta_central": 11.062423913569283,
+            "eta_fast": 10.50345071591579,
+            "eta_slow": 11.67859705047617,
+            "family": "embedding",
+            "holdout_mape": 0.03719909603897705,
+            "holdout_p90_ape": 0.06577516984925474,
+            "holdout_rows": 1024,
+            "holdout_signed_mean": 0.01869494874992987,
+            "launch_floor_seconds": 3.5344e-06,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 1024
+          },
+          "expert_activation": {
+            "eta_central": 1.9143495299924012,
+            "eta_fast": 1.8926478954537806,
+            "eta_slow": 1.9303893066424447,
+            "family": "expert_activation",
+            "holdout_mape": 0.018401637965214167,
+            "holdout_p90_ape": 0.024344612763768356,
+            "holdout_rows": 512,
+            "holdout_signed_mean": 0.018401637965214167,
+            "launch_floor_seconds": 4.394000000000001e-06,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 512
+          },
+          "expert_down": {
+            "eta_central": 1.2692233976831828,
+            "eta_fast": 1.2495858644712579,
+            "eta_slow": 1.2960385380984545,
+            "family": "expert_down",
+            "holdout_mape": 0.01405455416363598,
+            "holdout_p90_ape": 0.02511596183469495,
+            "holdout_rows": 512,
+            "holdout_signed_mean": 0.008882145891593115,
+            "launch_floor_seconds": 4.32525e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 512
+          },
+          "expert_up": {
+            "eta_central": 1.332519109312827,
+            "eta_fast": 1.2804500124661489,
+            "eta_slow": 1.3870143878434629,
+            "family": "expert_up",
+            "holdout_mape": 0.036124873399207114,
+            "holdout_p90_ape": 0.05815037609181682,
+            "holdout_rows": 1024,
+            "holdout_signed_mean": 0.034925559599819044,
+            "launch_floor_seconds": 4.00679e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 1024
+          },
+          "kv_projection": {
+            "eta_central": 2.402675118512974,
+            "eta_fast": 2.0902446352205843,
+            "eta_slow": 2.810338904082241,
+            "family": "kv_projection",
+            "holdout_mape": 0.1916716529028661,
+            "holdout_p90_ape": 0.33948897173385206,
+            "holdout_rows": 2048,
+            "holdout_signed_mean": 0.18513029100438655,
+            "launch_floor_seconds": 6.910800000000001e-06,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 2048
+          },
+          "lm_head": {
+            "eta_central": 1.324669192157946,
+            "eta_fast": 1.2722790635908063,
+            "eta_slow": 1.3610521033130771,
+            "family": "lm_head",
+            "holdout_mape": 0.022508211180712223,
+            "holdout_p90_ape": 0.0414837951163217,
+            "holdout_rows": 1024,
+            "holdout_signed_mean": 0.0006028652421603117,
+            "launch_floor_seconds": 2.47075e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 1024
+          },
+          "norm": {
+            "eta_central": 13.919822212353626,
+            "eta_fast": 12.996983371656048,
+            "eta_slow": 14.57460409637947,
+            "family": "norm",
+            "holdout_mape": 0.02816145377042605,
+            "holdout_p90_ape": 0.043141094936968605,
+            "holdout_rows": 3072,
+            "holdout_signed_mean": -0.02750710137004085,
+            "launch_floor_seconds": 2.02425e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 3072
+          },
+          "o_projection": {
+            "eta_central": 1.5634737594518457,
+            "eta_fast": 1.3578499673462454,
+            "eta_slow": 1.7815371036529544,
+            "family": "o_projection",
+            "holdout_mape": 0.07322940196079007,
+            "holdout_p90_ape": 0.15194546186652302,
+            "holdout_rows": 1024,
+            "holdout_signed_mean": 0.05817836502555926,
+            "launch_floor_seconds": 5.522000000000001e-06,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 1024
+          },
+          "prefill_attention": {
+            "eta_central": 7.574777748241797,
+            "eta_fast": 4.5862650456847645,
+            "eta_slow": 8.901783320621103,
+            "family": "prefill_attention",
+            "holdout_mape": 0.049087227792162375,
+            "holdout_p90_ape": 0.09216913790333807,
+            "holdout_rows": 16,
+            "holdout_signed_mean": -0.018249340252716916,
+            "launch_floor_seconds": 1.0520000000000001e-05,
+            "occupancy_contract": "u uses ceil(q/128) * local_q_heads thread-block proxy and 132 H100 SMs",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 32
+          },
+          "q_projection": {
+            "eta_central": 1.521033158697143,
+            "eta_fast": 1.2985035523959096,
+            "eta_slow": 1.986247959229737,
+            "family": "q_projection",
+            "holdout_mape": 0.12249455891736498,
+            "holdout_p90_ape": 0.20095690803953964,
+            "holdout_rows": 1024,
+            "holdout_signed_mean": 0.08192665937709646,
+            "launch_floor_seconds": 8.1402e-06,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 1024
+          },
+          "rope": {
+            "eta_central": 21.646792854479983,
+            "eta_fast": 17.4542476775717,
+            "eta_slow": 27.39511019775854,
+            "family": "rope",
+            "holdout_mape": 0.20110635215418876,
+            "holdout_p90_ape": 0.3894281080031784,
+            "holdout_rows": 1024,
+            "holdout_signed_mean": 0.19664873548685657,
+            "launch_floor_seconds": 2.76252e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 1024
+          },
+          "router": {
+            "eta_central": 18.716328385702752,
+            "eta_fast": 16.570049974552656,
+            "eta_slow": 21.760577125955983,
+            "family": "router",
+            "holdout_mape": 0.32054692433953635,
+            "holdout_p90_ape": 0.43982086525814323,
+            "holdout_rows": 512,
+            "holdout_signed_mean": 0.32054692433953635,
+            "launch_floor_seconds": 4.3441000000000006e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 512
+          }
+        },
+        "legacy_h100_fp16_component_calibration": true,
+        "legacy_h100_labeled_component_measurements_used": true,
+        "limitations": {
+          "absolute_dgx_h100_accuracy_validated": false,
+          "aggregate_holdout_is_target_end_to_end_accuracy": false,
+          "attention_holdout_validates_long_k": false,
+          "attention_multiplier_scope": "prefill attention only",
+          "collective_terms_measured_or_fitted": false,
+          "current_producer_revision_is_measurement_revision": false,
+          "decode_compute_modeled": false,
+          "exact_legacy_h100_sku_known": false,
+          "fp16_to_bf16_efficiency_transfer_assumed": true,
+          "fused_qkv_measured_as_target_shape": false,
+          "host_scheduler_and_continuous_batching_modeled": false,
+          "latency_cache_max_scalar_entries": 131072,
+          "legacy_measurement_command_known": false,
+          "legacy_measurement_software_versions_known": false,
+          "measured_dca_or_minference": false,
+          "measured_qwen3_h100": false,
+          "moe_grouped_fusion_and_imbalance_measured": false,
+          "one_million_token_attention_is_extrapolated": true,
+          "qk_norm_head_width_measured": false,
+          "router_e128_top8_measured": false,
+          "sampler_and_serving_host_overhead_modeled": false,
+          "source_dense_m_max": 2048,
+          "source_measurement_dtype": "float16",
+          "source_prefill_kv_max": 2016,
+          "source_prefill_q_max": 1024,
+          "target_context_max": 1010000,
+          "target_dense_m_max": 131072,
+          "target_model_dtype": "bfloat16",
+          "target_prefill_q_max": 131072
+        },
+        "model_kind": "h100_kernel_calibrated_prompt",
+        "prefill_chunk_size": 131072,
+        "producer_source_sha256": {
+          "profiler/v0/models/llama.py": "34d71e5b76427464120b6347e901cbe9963b74cc794c72ed11934b606ebdf33f",
+          "profiler/v0/models/mixtral.py": "6143be0e5ce3b4cd5abc17cf3acca8321718422f2e35dacbd144020cb329c988",
+          "profiler/v0/profiler/attention/attention_input.py": "d6abf7003532cd093aab8c18b612864fc6f66aef64814796a097e7ae397e7d2b",
+          "profiler/v0/profiler/attention/attention_profiler.py": "3998208c081bc39c38f84122fbc7177f11f6bb8413916027fd68f3443bc690a4",
+          "profiler/v0/profiler/attention/batch_sampling.py": "3641a23e6de5bc301af53a2202da29d3c1f54112e5f4c1c577e3e7c23c841bac",
+          "profiler/v0/profiler/attention/main.py": "c0b281351fae3cf2f3f3d550568880d07973da97f52efe94e1a4d7a106a10d7e",
+          "profiler/v0/profiler/common/timer.py": "4152a18b2b99aa13647ad33ad66b84208efcba9e85ce9af0137bf63d52a44464",
+          "profiler/v0/profiler/common/timer_stats_store.py": "16d52eb14a9a9234c8243364da41f1f82e891e5b78064758eb2495d7a18a4805",
+          "profiler/v0/profiler/layers/main.py": "285051ddcae012bb933c707734642ee399feb88488329f98bcb1e775bcabe3fe",
+          "profiler/v0/profiler/utils/__init__.py": "5a89d2bfa6205d2c739b8e6514e65d86e9f27d07e0e02f588139950e4048e00f",
+          "profiler/v0/profiler/utils/record_function_tracer.py": "22f7a41174ed6d405d4854f0ba8d2389d8103a63e5cf0c68264456f7fcf913a3"
+        },
+        "schema_version": 3,
+        "source_identity": {
+          "artifact_label": "legacy-H100-labeled",
+          "cuda_pytorch_flashattention_versions_known": false,
+          "current_producer_revision_proven_to_have_generated_csv": false,
+          "exact_h100_sku_known": false,
+          "measurement_clock_state_known": false,
+          "measurement_command_known": false,
+          "producer_hash_scope": "Current repository snapshot of the relevant legacy producer implementation; it is not a recovered measurement-environment manifest."
+        },
+        "source_row_accounting": {
+          "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/attention.csv": {
+            "eligible_prefill_rows": 232,
+            "fit_holdout_points": 8,
+            "fit_training_points": 16,
+            "raw_rows": 21603,
+            "unique_prefill_points": 216
+          },
+          "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/layers.csv": {
+            "eligible_component_rows": 28672,
+            "raw_rows": 30720
+          },
+          "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/attention.csv": {
+            "eligible_prefill_rows": 232,
+            "fit_holdout_points": 8,
+            "fit_training_points": 16,
+            "raw_rows": 24979,
+            "unique_prefill_points": 216
+          },
+          "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/layers.csv": {
+            "eligible_component_rows": 30720,
+            "raw_rows": 30720
+          }
+        },
+        "source_rows": {
+          "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/attention.csv": 21603,
+          "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/layers.csv": 30720,
+          "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/attention.csv": 24979,
+          "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/layers.csv": 30720
+        },
+        "source_sha256": {
+          "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/attention.csv": "93d67794cf243fb481a0598549b94caa77e20ad0c8a215344a86ac8b9f5a5146",
+          "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/layers.csv": "41fd31dd27f5295d309bc2c926a0c01dc1c772f321074afe84f41d81f6a60735",
+          "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/attention.csv": "69b42685767810ae7419d8b08302714047444f3051246fd1ca7939318ae57a6d",
+          "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/layers.csv": "afcb40d69e346db7521540c6f09604183fb5ca42d675c0c53a6a9753dbb15ee4"
+        },
+        "target_geometry": {
+          "balanced_expert_pairs_per_rank_per_token": 2.0,
+          "config_sha256": "0736f3bafb95cc658776c92ab34f5f98d8169634a3a36b84892d71448a1f19d3",
+          "ep": 4,
+          "experts": 128,
+          "experts_per_rank": 32,
+          "fused_qkv_output_per_rank": 1280,
+          "head_dim": 128,
+          "hidden_size": 2048,
+          "kv_heads_per_rank": 1,
+          "layers": 48,
+          "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+          "q_heads_per_rank": 8,
+          "top_k": 8,
+          "tp": 4
+        },
+        "target_qwen_shape_extrapolation": true,
+        "validation": {
+          "holdout": {
+            "attention_boundary": "the attention holdout varies q only and contains no long-K cached-suffix validation",
+            "interpretation": "component-family interpolation check only; it is not an end-to-end Qwen3 or one-million-token accuracy estimate",
+            "per_family": {
+              "dense_activation": {
+                "mape": 0.0480451834471384,
+                "p90_ape": 0.0797636080479726,
+                "rows": 512,
+                "signed_mean": -0.0480451834471384
+              },
+              "dense_ffn_down": {
+                "mape": 0.017782953108549656,
+                "p90_ape": 0.033508681850731616,
+                "rows": 512,
+                "signed_mean": 7.353637856880678e-05
+              },
+              "dense_ffn_up": {
+                "mape": 0.024105851028291953,
+                "p90_ape": 0.041947938811878055,
+                "rows": 1024,
+                "signed_mean": 0.021661770197597376
+              },
+              "embedding": {
+                "mape": 0.03719909603897705,
+                "p90_ape": 0.06577516984925474,
+                "rows": 1024,
+                "signed_mean": 0.01869494874992987
+              },
+              "expert_activation": {
+                "mape": 0.018401637965214167,
+                "p90_ape": 0.024344612763768356,
+                "rows": 512,
+                "signed_mean": 0.018401637965214167
+              },
+              "expert_down": {
+                "mape": 0.01405455416363598,
+                "p90_ape": 0.02511596183469495,
+                "rows": 512,
+                "signed_mean": 0.008882145891593115
+              },
+              "expert_up": {
+                "mape": 0.036124873399207114,
+                "p90_ape": 0.05815037609181682,
+                "rows": 1024,
+                "signed_mean": 0.034925559599819044
+              },
+              "kv_projection": {
+                "mape": 0.1916716529028661,
+                "p90_ape": 0.33948897173385206,
+                "rows": 2048,
+                "signed_mean": 0.18513029100438655
+              },
+              "lm_head": {
+                "mape": 0.022508211180712223,
+                "p90_ape": 0.0414837951163217,
+                "rows": 1024,
+                "signed_mean": 0.0006028652421603117
+              },
+              "norm": {
+                "mape": 0.02816145377042605,
+                "p90_ape": 0.043141094936968605,
+                "rows": 3072,
+                "signed_mean": -0.02750710137004085
+              },
+              "o_projection": {
+                "mape": 0.07322940196079007,
+                "p90_ape": 0.15194546186652302,
+                "rows": 1024,
+                "signed_mean": 0.05817836502555926
+              },
+              "prefill_attention": {
+                "mape": 0.049087227792162375,
+                "p90_ape": 0.09216913790333807,
+                "rows": 16,
+                "signed_mean": -0.018249340252716916
+              },
+              "q_projection": {
+                "mape": 0.12249455891736498,
+                "p90_ape": 0.20095690803953964,
+                "rows": 1024,
+                "signed_mean": 0.08192665937709646
+              },
+              "rope": {
+                "mape": 0.20110635215418876,
+                "p90_ape": 0.3894281080031784,
+                "rows": 1024,
+                "signed_mean": 0.19664873548685657
+              },
+              "router": {
+                "mape": 0.32054692433953635,
+                "p90_ape": 0.43982086525814323,
+                "rows": 512,
+                "signed_mean": 0.32054692433953635
+              }
+            },
+            "rows": 14864,
+            "split": "layers: train M=1025..1536, contiguous holdout M=1537..2048; attention: train q=512..768, contiguous holdout q=800..1024",
+            "weighted_mape": 0.08230983001027048,
+            "weighted_signed_mean": 0.05855914341959838
+          }
+        }
+      },
+      "prompt_compute_model": "Kernel-decomposed Qwen3 TP4/EP4 prompt prediction fitted to legacy TP4 component artifacts labeled H100. Exact measurement-system identity is unavailable.",
+      "prompt_compute_model_kind": "h100_kernel_calibrated_prompt",
+      "prompt_compute_scale": 1.0,
+      "prompt_compute_scale_provenance": "Identity whole-prompt scale. Compute-band and attention-only sensitivity are represented inside the calibrated prompt predictor: Fast coefficient band from legacy-H100 fit uncertainty with full analytical causal-attention work. Optional sensitivity.",
+      "restore_barrier_scope": "returning_request_compute_admission_only",
+      "restore_execution_mode": "async-pre-admission",
+      "restore_prefill_overlap_model": "no same-request analytical compute before complete KV restore; unrelated calls remain runnable",
+      "session_dependency_chains": true,
+      "swap_out_blocks_other_calls": false
+    },
+    "interpretation": "Primary service slowdown compares each call's first logical-ready epoch with its completion and therefore includes restore, HBM admission, P/D transfer, recomputation, and their closed-loop propagation without diluting them by fixed human/tool gaps. The trace-makespan and session-E2E views intentionally include those gaps. A finite call can beat the residency reference because the reference may send more D->P hit traffic and alter shared-fabric ordering; it is not a strict per-call lower bound.",
+    "later_call_ready_times_are_endogenous": true,
+    "mixed_batch_restore_barrier_modeled": false,
+    "oracle_capacity_construction": {
+      "colocated_kv_bound_bytes_per_rank": 10494905942016,
+      "construction": "sum_of_per_session_maxima_for_independent_prefill_and_decode_pools",
+      "decode_hbm_static_reserve_bytes_per_rank": 9936923136,
+      "decode_kv_bound_bytes_per_rank": 10494905942016,
+      "decode_total_hbm_capacity_bytes_per_rank": 10520128092672,
+      "hbm_static_reserve_bytes_per_rank": 9936923136,
+      "model_weight_bytes_per_rank_estimate": 15285227520,
+      "physical_bytes_per_token_per_rank": 24576,
+      "prefill_hbm_static_reserve_bytes_per_rank": 9936923136,
+      "prefill_kv_bound_bytes_per_rank": 10359715135488,
+      "prefill_total_hbm_capacity_bytes_per_rank": 10384937286144,
+      "selected_kv_budget_bytes_per_rank": 10494905942016,
+      "total_hbm_capacity_bytes_per_rank": 10520128092672
+    },
+    "oracle_validation": {
+      "aggregate_hbm_capacity_block_seconds": 0.0,
+      "capacity_action_count": 0,
+      "capacity_invariant_checked": true,
+      "eligible_source_counts": {
+        "cpu": 0,
+        "decode_hbm": 338394,
+        "recompute": 0,
+        "ssd": 0
+      }
+    },
+    "prompt_compute_model_kind": "h100_kernel_calibrated_prompt",
+    "reference": "paired_infinite_hbm_residency",
+    "reference_is_strict_per_call_lower_bound": false,
+    "restore_execution_mode": "async-pre-admission",
+    "same_final_decode_footprint_prereservation": true,
+    "same_gap_durations": true,
+    "same_independent_pd_branch_admission": true,
+    "same_pd_topology_and_mandatory_transfers": true,
+    "same_prompt_compute_model": true,
+    "same_restore_execution_mode": true,
+    "same_roofline_compute_model": true,
+    "same_workload_and_first_call_arrivals": true,
+    "session_end_to_end": {
+      "delta_seconds": 25488152.37020525,
+      "finite_request_summed_arrival_to_final_completion_seconds": 140149954.6185916,
+      "oracle_request_summed_arrival_to_final_completion_seconds": 114661802.24838635,
+      "session_count": 4281,
+      "slowdown_fraction_of_oracle": 0.22228982861259672
+    },
+    "trace_makespan": {
+      "delta_seconds": 25957.142072208,
+      "finite_seconds": 6139688.124961559,
+      "oracle_seconds": 6113730.982889351,
+      "slowdown_fraction_of_oracle": 0.004245712175569238
+    }
+  },
+  "kv_dtype_bytes": 2,
+  "kv_layout": {
+    "dtype_bytes": 2,
+    "kv_heads_per_rank": 1.0,
+    "logical_bytes_per_token": 98304,
+    "mode": "replicated",
+    "physical_bytes_per_token_cluster": 98304,
+    "physical_bytes_per_token_per_rank": 24576,
+    "replication_factor": 1.0,
+    "tp_size": 4,
+    "warning": ""
+  },
+  "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+  "offered_load_call_activity": {
+    "interpretation": "Union/complement of analytical call ready-to-complete intervals under the trace's open-loop first-session arrivals and closed-loop inter-turn gaps. Because calls overlap without a shared compute queue or batching, this is offered call activity, not GPU/server utilization.",
+    "is_server_utilization": false,
+    "no_active_call_fraction": 0.9718100624100895,
+    "wall_clock_with_at_least_one_active_call_seconds": 173077.425064181,
+    "wall_clock_with_no_active_call_seconds": 5966610.699897378,
+    "window_end_seconds": 6139688.124961559,
+    "window_seconds": 6139688.124961559,
+    "window_start_seconds": 0.0
+  },
+  "pd_transfer": {
+    "decode_to_prefill_bytes": 5259798672900096,
+    "decode_to_prefill_raw_elapsed_seconds": 2954.931615778,
+    "decode_to_prefill_stall_seconds": 2954.931615778,
+    "decode_to_prefill_stall_semantics": "Deprecated compatibility alias for raw stage elapsed; consult resume.restore_timing for exposed delay.",
+    "enabled": true,
+    "fixed_latency_us": 3.0,
+    "handoff_scope": "Successful reuse keeps a decode-owned prefix and sends only the exact suffix P->D; recompute sends the full prompt.",
+    "link_gbps_per_rank": 450.0,
+    "prefill_to_decode_bytes": 136929770569728,
+    "prefill_to_decode_handoff_seconds": 92.78689681,
+    "prefill_to_decode_queue_wait_seconds": 15.643138064
+  },
+  "policy": {
+    "actions_by_reason": {
+      "hbm_capacity": 226119
+    },
+    "cascade": "HBM -> SSD -> recompute",
+    "cpu_cache_enabled": false,
+    "cpu_ttl_ns": 30000000000,
+    "demotion_mode": "capacity-only",
+    "hbm_ttl_ns": 50000000,
+    "migration_commit": "atomic source-retained background copy with destination reservation",
+    "name": "hbm_ssd_direct",
+    "replacement": "LRU within each idle tier",
+    "resume_during_migration": "wait_for_nonpreemptive_commit",
+    "ssd_direct": true,
+    "ssd_direct_semantics": "No persistent CPU cache tier; SSD restore still uses a transient CPU-DRAM bounce stage before CPU->GPU PCIe.",
+    "ssd_ttl_ns": 3600000000000,
+    "swap_out_contention": "Background copies still occupy modeled DMA/media/DRAM queue resources and retain source capacity until commit.",
+    "swap_out_execution": "asynchronous background transfer; never registers a model-engine or global execution barrier"
+  },
+  "recompute": {
+    "analytical_prompt_compute_seconds_executed": 182682.46502575726,
+    "analytical_seconds": 0.0,
+    "analytical_time_fraction_of_executed_prompt_compute": 0.0,
+    "event_count": 0,
+    "event_fraction_of_all_selected_positive_transitions": 0.0,
+    "event_fraction_of_reuse_eligible_transitions": 0.0,
+    "full_prompt_reference_seconds": 7744822.16039181,
+    "numerator_scope": "Counterfactual incremental prompt-compute seconds attributable to the lost reusable prefix: max(0, full-prompt prediction minus cached-prefix prediction), capped at the full-prompt prediction. This is not the entire full-prompt compute time.",
+    "reasons": {},
+    "time_denominator_scope": "All seconds returned by the configured prompt-compute model for context-eligible calls, including recomputed prefix. This includes any kernel and collective terms returned by that model; KV transfer, decode, host, scheduler, and batch-formation time are excluded.",
+    "token_fraction_of_reusable_tokens_requested": 0.0,
+    "tokens": 0,
+    "total_reusable_tokens_requested": 52756595438
+  },
+  "replay_config": {
+    "block_size": 16,
+    "cancel_migration_on_resume": false,
+    "cpu_capacity_bytes": 2000000000000,
+    "cpu_ttl_ns": 30000000000,
+    "decode_hbm_static_reserve_bytes_per_rank": null,
+    "demotion_mode": "capacity-only",
+    "enable_transfer_queueing": true,
+    "hbm_capacity_bytes_per_rank": 80000000000,
+    "hbm_static_reserve_bytes_per_rank": 9936923136,
+    "hbm_ttl_ns": 50000000,
+    "pd_disaggregated": true,
+    "pd_fixed_latency_us": 3.0,
+    "pd_link_gbps_per_rank": 450.0,
+    "policy": "hbm_ssd_direct",
+    "prefill_chunk_size": 131072,
+    "prefill_hbm_static_reserve_bytes_per_rank": null,
+    "prompt_compute_scale": 1.0,
+    "prompt_compute_scale_provenance": "Identity whole-prompt scale. Compute-band and attention-only sensitivity are represented inside the calibrated prompt predictor: Fast coefficient band from legacy-H100 fit uncertainty with full analytical causal-attention work. Optional sensitivity.",
+    "restore_execution_mode": "async-pre-admission",
+    "ssd_capacity_bytes": 30720000000000,
+    "ssd_ttl_ns": 3600000000000,
+    "weight_dtype_bytes": 2
+  },
+  "request_makespan_seconds": 6139688.124961559,
+  "resume": {
+    "aggregate_hbm_capacity_block_seconds": 25125808.545407884,
+    "aggregate_inflight_demotion_wait_seconds": 98.583484081,
+    "aggregate_migration_stall_seconds": 365478.976566407,
+    "aggregate_migration_stall_semantics": "Deprecated compatibility sum of raw transfer-stage time and same-object in-flight demotion wait; not causal stall.",
+    "aggregate_restore_queue_wait_seconds": 296233.395899883,
+    "aggregate_restore_stall_seconds": 365380.393082326,
+    "aggregate_restore_stall_semantics": "Deprecated compatibility field: request-summed raw transfer-stage elapsed time, including queue wait. It is fully exposed by the default pre-admission gate but may be partly hidden in async-decode-join sensitivity. Use restore_timing.request_summed_exposed_compute_admission_gate_seconds.",
+    "all_foreground_kv_transfer_exposure_fraction_of_request_makespan": 0.011046823918250352,
+    "all_foreground_kv_transfer_exposure_union_seconds": 67824.053629423,
+    "all_request_count": 357161,
+    "all_request_denominator_scope": "Every LLM invocation in workload sub_requests[], including first calls, zero-gap or no-reuse calls, and calls excluded by the target-model context limit.",
+    "all_selected_positive_transition_count": 345710,
+    "by_return_gap_type": {
+      "human": {
+        "all_request_count": 31997,
+        "not_reuse_eligible_or_not_selected_count": 5045,
+        "reuse_eligible_transition_count": 26952,
+        "selected_positive_transition_count": 31960,
+        "source_counts": {
+          "cpu": 0,
+          "decode_hbm": 7992,
+          "recompute": 0,
+          "ssd": 18960
+        },
+        "source_fractions_of_all_requests_in_return_class": {
+          "cpu": 0.0,
+          "decode_hbm": 0.24977341625777416,
+          "recompute": 0.0,
+          "ssd": 0.5925555520830078
+        },
+        "source_fractions_of_reuse_eligible_in_return_class": {
+          "cpu": 0.0,
+          "decode_hbm": 0.2965271593944791,
+          "recompute": 0.0,
+          "ssd": 0.703472840605521
+        },
+        "source_reusable_tokens": {
+          "cpu": 0,
+          "decode_hbm": 3114780843,
+          "recompute": 0,
+          "ssd": 3428544100
+        }
+      },
+      "mixed": {
+        "all_request_count": 3097,
+        "not_reuse_eligible_or_not_selected_count": 540,
+        "reuse_eligible_transition_count": 2557,
+        "selected_positive_transition_count": 3057,
+        "source_counts": {
+          "cpu": 0,
+          "decode_hbm": 695,
+          "recompute": 0,
+          "ssd": 1862
+        },
+        "source_fractions_of_all_requests_in_return_class": {
+          "cpu": 0.0,
+          "decode_hbm": 0.2244107200516629,
+          "recompute": 0.0,
+          "ssd": 0.6012269938650306
+        },
+        "source_fractions_of_reuse_eligible_in_return_class": {
+          "cpu": 0.0,
+          "decode_hbm": 0.2718028940164255,
+          "recompute": 0.0,
+          "ssd": 0.7281971059835745
+        },
+        "source_reusable_tokens": {
+          "cpu": 0,
+          "decode_hbm": 148188025,
+          "recompute": 0,
+          "ssd": 288380109
+        }
+      },
+      "session_start": {
+        "all_request_count": 4281,
+        "not_reuse_eligible_or_not_selected_count": 4281,
+        "reuse_eligible_transition_count": 0,
+        "selected_positive_transition_count": 0,
+        "source_counts": {
+          "cpu": 0,
+          "decode_hbm": 0,
+          "recompute": 0,
+          "ssd": 0
+        },
+        "source_fractions_of_all_requests_in_return_class": {
+          "cpu": 0.0,
+          "decode_hbm": 0.0,
+          "recompute": 0.0,
+          "ssd": 0.0
+        },
+        "source_fractions_of_reuse_eligible_in_return_class": {
+          "cpu": 0.0,
+          "decode_hbm": 0.0,
+          "recompute": 0.0,
+          "ssd": 0.0
+        },
+        "source_reusable_tokens": {
+          "cpu": 0,
+          "decode_hbm": 0,
+          "recompute": 0,
+          "ssd": 0
+        }
+      },
+      "tool": {
+        "all_request_count": 313179,
+        "not_reuse_eligible_or_not_selected_count": 4294,
+        "reuse_eligible_transition_count": 308885,
+        "selected_positive_transition_count": 310693,
+        "source_counts": {
+          "cpu": 0,
+          "decode_hbm": 113043,
+          "recompute": 0,
+          "ssd": 195842
+        },
+        "source_fractions_of_all_requests_in_return_class": {
+          "cpu": 0.0,
+          "decode_hbm": 0.3609533206249461,
+          "recompute": 0.0,
+          "ssd": 0.6253356706548012
+        },
+        "source_fractions_of_reuse_eligible_in_return_class": {
+          "cpu": 0.0,
+          "decode_hbm": 0.36597115431309385,
+          "recompute": 0.0,
+          "ssd": 0.6340288456869061
+        },
+        "source_reusable_tokens": {
+          "cpu": 0,
+          "decode_hbm": 20798881108,
+          "recompute": 0,
+          "ssd": 24977821253
+        }
+      },
+      "unknown": {
+        "all_request_count": 4607,
+        "not_reuse_eligible_or_not_selected_count": 4607,
+        "reuse_eligible_transition_count": 0,
+        "selected_positive_transition_count": 0,
+        "source_counts": {
+          "cpu": 0,
+          "decode_hbm": 0,
+          "recompute": 0,
+          "ssd": 0
+        },
+        "source_fractions_of_all_requests_in_return_class": {
+          "cpu": 0.0,
+          "decode_hbm": 0.0,
+          "recompute": 0.0,
+          "ssd": 0.0
+        },
+        "source_fractions_of_reuse_eligible_in_return_class": {
+          "cpu": 0.0,
+          "decode_hbm": 0.0,
+          "recompute": 0.0,
+          "ssd": 0.0
+        },
+        "source_reusable_tokens": {
+          "cpu": 0,
+          "decode_hbm": 0,
+          "recompute": 0,
+          "ssd": 0
+        }
+      }
+    },
+    "cpu_or_ssd_resume_count": 216664,
+    "cpu_or_ssd_resume_fraction_of_all_requests": 0.6066283832781295,
+    "exposure_note": "Compatibility unions cover raw foreground transfer-chain intervals, not necessarily blocked time. Use the exposed decode-barrier union under restore_timing for causal request-local waiting. Request sums are never divided directly by wall-clock makespan.",
+    "foreground_migration_exposure_fraction_of_request_makespan": 0.011039988825356726,
+    "foreground_migration_exposure_union_seconds": 67782.088290751,
+    "migration_stall_fraction_of_request_summed_prompt_active_time": 0.6667360175952065,
+    "migration_stall_fraction_semantics": "Deprecated compatibility fraction formed from raw transfer-stage elapsed plus same-object demotion wait; it is not an exposed-delay fraction.",
+    "no_reuse_inflight_demotion_wait_seconds": 0.0,
+    "no_reuse_transition_count": 7316,
+    "pd_decode_to_prefill_stall_seconds": 2954.931615778,
+    "pd_decode_to_prefill_stall_semantics": "Deprecated raw D->P stage elapsed, not necessarily causal because it may overlap analytical prefill.",
+    "restore_timing": {
+      "by_return_gap_type": {
+        "human": {
+          "event_count": 26975,
+          "hidden_fraction_of_raw_elapsed": 0.0,
+          "request_summed_exposed_compute_admission_gate_seconds": 1788938.926080948,
+          "request_summed_exposed_decode_barrier_seconds": 1788938.926080948,
+          "request_summed_hidden_by_prefill_seconds": 0.0,
+          "request_summed_other_concurrent_or_admission_seconds": 0.0,
+          "request_summed_raw_elapsed_seconds": 1788938.926080948,
+          "wall_clock_exposed_decode_barrier_union_seconds": 88842.890766274,
+          "wall_clock_raw_elapsed_union_seconds": 88842.890766274
+        },
+        "mixed": {
+          "event_count": 2584,
+          "hidden_fraction_of_raw_elapsed": 0.0,
+          "request_summed_exposed_compute_admission_gate_seconds": 180341.337878953,
+          "request_summed_exposed_decode_barrier_seconds": 180341.337878953,
+          "request_summed_hidden_by_prefill_seconds": 0.0,
+          "request_summed_other_concurrent_or_admission_seconds": 0.0,
+          "request_summed_raw_elapsed_seconds": 180341.337878953,
+          "wall_clock_exposed_decode_barrier_union_seconds": 60756.272027045,
+          "wall_clock_raw_elapsed_union_seconds": 60756.272027045
+        },
+        "tool": {
+          "event_count": 311343,
+          "hidden_fraction_of_raw_elapsed": 0.0,
+          "request_summed_exposed_compute_admission_gate_seconds": 22250290.61653556,
+          "request_summed_exposed_decode_barrier_seconds": 22250290.61653556,
+          "request_summed_hidden_by_prefill_seconds": 0.0,
+          "request_summed_other_concurrent_or_admission_seconds": 0.0,
+          "request_summed_raw_elapsed_seconds": 22250290.61653556,
+          "wall_clock_exposed_decode_barrier_union_seconds": 91395.217489533,
+          "wall_clock_raw_elapsed_union_seconds": 91395.217489533
+        },
+        "unknown": {
+          "event_count": 4111,
+          "hidden_fraction_of_raw_elapsed": 0.0,
+          "request_summed_exposed_compute_admission_gate_seconds": 423047.647900151,
+          "request_summed_exposed_decode_barrier_seconds": 423047.647900151,
+          "request_summed_hidden_by_prefill_seconds": 0.0,
+          "request_summed_other_concurrent_or_admission_seconds": 0.0,
+          "request_summed_raw_elapsed_seconds": 423047.647900151,
+          "wall_clock_exposed_decode_barrier_union_seconds": 70970.865822955,
+          "wall_clock_raw_elapsed_union_seconds": 70970.865822955
+        }
+      },
+      "by_return_gap_type_and_source": {
+        "human": {
+          "decode_hbm": {
+            "event_count": 8003,
+            "hidden_fraction_of_raw_elapsed": 0.0,
+            "request_summed_exposed_compute_admission_gate_seconds": 262.768753882,
+            "request_summed_exposed_decode_barrier_seconds": 262.768753882,
+            "request_summed_hidden_by_prefill_seconds": 0.0,
+            "request_summed_other_concurrent_or_admission_seconds": 0.0,
+            "request_summed_raw_elapsed_seconds": 262.768753882
+          },
+          "ssd": {
+            "event_count": 18972,
+            "hidden_fraction_of_raw_elapsed": 0.0,
+            "request_summed_exposed_compute_admission_gate_seconds": 1788676.157327066,
+            "request_summed_exposed_decode_barrier_seconds": 1788676.157327066,
+            "request_summed_hidden_by_prefill_seconds": 0.0,
+            "request_summed_other_concurrent_or_admission_seconds": 0.0,
+            "request_summed_raw_elapsed_seconds": 1788676.157327066
+          }
+        },
+        "mixed": {
+          "decode_hbm": {
+            "event_count": 715,
+            "hidden_fraction_of_raw_elapsed": 0.0,
+            "request_summed_exposed_compute_admission_gate_seconds": 44.132374766,
+            "request_summed_exposed_decode_barrier_seconds": 44.132374766,
+            "request_summed_hidden_by_prefill_seconds": 0.0,
+            "request_summed_other_concurrent_or_admission_seconds": 0.0,
+            "request_summed_raw_elapsed_seconds": 44.132374766
+          },
+          "ssd": {
+            "event_count": 1869,
+            "hidden_fraction_of_raw_elapsed": 0.0,
+            "request_summed_exposed_compute_admission_gate_seconds": 180297.205504187,
+            "request_summed_exposed_decode_barrier_seconds": 180297.205504187,
+            "request_summed_hidden_by_prefill_seconds": 0.0,
+            "request_summed_other_concurrent_or_admission_seconds": 0.0,
+            "request_summed_raw_elapsed_seconds": 180297.205504187
+          }
+        },
+        "tool": {
+          "decode_hbm": {
+            "event_count": 114396,
+            "hidden_fraction_of_raw_elapsed": 0.0,
+            "request_summed_exposed_compute_admission_gate_seconds": 5335.858577793,
+            "request_summed_exposed_decode_barrier_seconds": 5335.858577793,
+            "request_summed_hidden_by_prefill_seconds": 0.0,
+            "request_summed_other_concurrent_or_admission_seconds": 0.0,
+            "request_summed_raw_elapsed_seconds": 5335.858577793
+          },
+          "ssd": {
+            "event_count": 196947,
+            "hidden_fraction_of_raw_elapsed": 0.0,
+            "request_summed_exposed_compute_admission_gate_seconds": 22244954.757957768,
+            "request_summed_exposed_decode_barrier_seconds": 22244954.757957768,
+            "request_summed_hidden_by_prefill_seconds": 0.0,
+            "request_summed_other_concurrent_or_admission_seconds": 0.0,
+            "request_summed_raw_elapsed_seconds": 22244954.757957768
+          }
+        },
+        "unknown": {
+          "decode_hbm": {
+            "event_count": 640,
+            "hidden_fraction_of_raw_elapsed": 0.0,
+            "request_summed_exposed_compute_admission_gate_seconds": 20.427368526,
+            "request_summed_exposed_decode_barrier_seconds": 20.427368526,
+            "request_summed_hidden_by_prefill_seconds": 0.0,
+            "request_summed_other_concurrent_or_admission_seconds": 0.0,
+            "request_summed_raw_elapsed_seconds": 20.427368526
+          },
+          "ssd": {
+            "event_count": 3471,
+            "hidden_fraction_of_raw_elapsed": 0.0,
+            "request_summed_exposed_compute_admission_gate_seconds": 423027.220531625,
+            "request_summed_exposed_decode_barrier_seconds": 423027.220531625,
+            "request_summed_hidden_by_prefill_seconds": 0.0,
+            "request_summed_other_concurrent_or_admission_seconds": 0.0,
+            "request_summed_raw_elapsed_seconds": 423027.220531625
+          }
+        }
+      },
+      "by_source": {
+        "decode_hbm": {
+          "event_count": 123754,
+          "hidden_fraction_of_raw_elapsed": 0.0,
+          "request_summed_exposed_compute_admission_gate_seconds": 5663.187074967,
+          "request_summed_exposed_decode_barrier_seconds": 5663.187074967,
+          "request_summed_hidden_by_prefill_seconds": 0.0,
+          "request_summed_other_concurrent_or_admission_seconds": 0.0,
+          "request_summed_raw_elapsed_seconds": 5663.187074967
+        },
+        "ssd": {
+          "event_count": 221259,
+          "hidden_fraction_of_raw_elapsed": 0.0,
+          "request_summed_exposed_compute_admission_gate_seconds": 24636955.34132065,
+          "request_summed_exposed_decode_barrier_seconds": 24636955.34132065,
+          "request_summed_hidden_by_prefill_seconds": 0.0,
+          "request_summed_other_concurrent_or_admission_seconds": 0.0,
+          "request_summed_raw_elapsed_seconds": 24636955.34132065
+        }
+      },
+      "canonical_execution_mode": "async-pre-admission",
+      "execution_mode": "async-pre-admission",
+      "hidden_fraction_of_raw_elapsed": 0.0,
+      "issue_epoch": "The current call's logical request-ready epoch. For TraceLab this is tool_result for tool returns and user_message arrival for human returns; mixed returns remain a separate conservative class. Raw elapsed includes later source/HBM admission; DMA begins only when those resources are available.",
+      "join_semantics": "Destination HBM is reserved before load, but the returning request cannot enter analytical prompt compute until its complete KV restore chain is ready. This is a request-local gate: other calls and continuous batches are not gated.",
+      "prefill_cutoff_semantics": "No fresh prompt token from a cold returning request executes before the complete restore chain. raw_newly_append_toks remains provenance only.",
+      "raw_decomposition": "raw_elapsed = prefill_execution_overlap + exposed owner gate + other_concurrent_or_admission. In async-pre-admission mode the request-local owner gate covers the full logical-ready-to-KV-ready interval; in async-decode-join it starts at the prefill cutoff.",
+      "request_summed_exposed_compute_admission_gate_seconds": 24642618.52839561,
+      "request_summed_exposed_decode_barrier_seconds": 24642618.52839561,
+      "request_summed_hidden_by_prefill_seconds": 0.0,
+      "request_summed_other_concurrent_or_admission_seconds": 0.0,
+      "request_summed_raw_elapsed_seconds": 24642618.52839561,
+      "wall_clock_exposed_decode_barrier_union_seconds": 96394.934790641,
+      "wall_clock_raw_elapsed_union_seconds": 96394.934790641
+    },
+    "return_gap_semantics": "The current call inherits return_gap_type/source/ns from the preceding sub-request's outgoing inter-turn gap. session_start marks first calls; mixed and unknown remain separate. Source cells include reuse-eligible selected transitions only, and the residual keeps the all-request denominator explicit.",
+    "reuse_eligible_transition_count": 338394,
+    "source_counts": {
+      "cpu": 0,
+      "decode_hbm": 121730,
+      "recompute": 0,
+      "ssd": 216664
+    },
+    "source_fractions_of_all_requests": {
+      "cpu": 0.0,
+      "decode_hbm": 0.34082668600435095,
+      "recompute": 0.0,
+      "ssd": 0.6066283832781295
+    },
+    "source_fractions_of_all_selected_positive_transitions": {
+      "cpu": 0.0,
+      "decode_hbm": 0.35211593532151225,
+      "recompute": 0.0,
+      "ssd": 0.6267218188655231
+    },
+    "source_fractions_of_reuse_eligible": {
+      "cpu": 0.0,
+      "decode_hbm": 0.35972860038889576,
+      "recompute": 0.0,
+      "ssd": 0.6402713996111042
+    },
+    "source_reusable_tokens": {
+      "cpu": 0,
+      "decode_hbm": 24061849976,
+      "recompute": 0,
+      "ssd": 28694745462
+    },
+    "source_token_fractions": {
+      "cpu": 0.0,
+      "decode_hbm": 0.4560917886423829,
+      "recompute": 0.0,
+      "ssd": 0.543908211357617
+    },
+    "ssd_source_reasons": {
+      "hbm_capacity": 216664
+    }
+  },
+  "schema_version": 15,
+  "ssd_io": {
+    "completed_full_object_write_bytes": 2933271904124928,
+    "issued_full_object_write_bytes": 2933271904124928,
+    "issued_read_bytes": 2864616974057472,
+    "read_semantics": "Every SSD restore is two serial queue jobs. The first lands the full block-rounded object in transient CPU DRAM; the second reads that staging buffer and traverses the per-GPU CPU-to-GPU PCIe links. Destination HBM is reserved before the first stage.",
+    "restore_path": "SSD -> transient CPU DRAM -> destination GPU HBM; P/D then performs decode-HBM -> prefill-HBM",
+    "restore_stage_kinds": {
+      "cpu_to_gpu": [
+        "cpu_stage_to_hbm",
+        "cpu_stage_to_decode"
+      ],
+      "ssd_to_cpu": [
+        "ssd_to_cpu_stage_for_hbm",
+        "ssd_to_cpu_stage_for_decode"
+      ]
+    },
+    "restore_stage_metrics_location": "transfer_queue.queue_wait_seconds_by_kind, transfer_queue.service_seconds_by_kind, and transfer_queue.bytes_by_kind",
+    "transient_cpu_stage_counts_as_cpu_cache_occupancy": false,
+    "write_semantics": "Every direct HBM->SSD job writes one full block-rounded object without CPU DRAM staging. Cancellable sensitivity does not attribute partial media progress."
+  },
+  "tp_size": 4,
+  "trace_end_seconds": 6139688.124961559,
+  "transfer_queue": {
+    "aggregate_queue_wait_seconds": 961696.147290979,
+    "aggregate_service_seconds": 156528.422476238,
+    "bytes_by_kind": {
+      "cpu_stage_to_decode": 2864616974057472,
+      "decode_hbm_to_prefill": 5259798672900096,
+      "hbm_to_ssd_direct": 2933271904124928,
+      "prefill_to_decode": 136929770569728,
+      "ssd_to_cpu_stage_for_decode": 2864616974057472
+    },
+    "discipline": "nonpreemptive_gang_fcfs",
+    "enabled": true,
+    "jobs": 1370811,
+    "jobs_by_kind": {
+      "cpu_stage_to_decode": 221259,
+      "decode_hbm_to_prefill": 345013,
+      "hbm_to_ssd_direct": 226119,
+      "prefill_to_decode": 357161,
+      "ssd_to_cpu_stage_for_decode": 221259
+    },
+    "queue_wait_seconds_by_kind": {
+      "cpu_stage_to_decode": 0.0,
+      "decode_hbm_to_prefill": 31.786031685,
+      "hbm_to_ssd_direct": 665447.108253032,
+      "prefill_to_decode": 15.643138064,
+      "ssd_to_cpu_stage_for_decode": 296201.609868198
+    },
+    "resources": [
+      "cpu_dram",
+      "decode_copy",
+      "pcie_in",
+      "pcie_out",
+      "pd_fabric",
+      "prefill_copy",
+      "ssd_read",
+      "ssd_write"
+    ],
+    "service_seconds_by_kind": {
+      "cpu_stage_to_decode": 14324.191273394,
+      "decode_hbm_to_prefill": 2923.145584093,
+      "hbm_to_ssd_direct": 87304.281535049,
+      "prefill_to_decode": 77.143758746,
+      "ssd_to_cpu_stage_for_decode": 51899.660324956
+    }
+  },
+  "warnings": [
+    "Reuse provenance is reported in workload.reuse_source_counts; only token_ids_exact is a target-tokenizer-exact LCP, while explicit_estimated and explicit_reported retain their declared semantics.",
+    "A call is over context when input_toks + output_toks exceeds max_context_tokens. Such calls advance their tool gaps and clear cache lineage, but their target-model execution time is unavailable and set to zero.",
+    "Model weights are architecture-derived estimates; replace them with measured per-rank engine residency for headline results.",
+    "All SSD restores use explicit serial SSD->CPU-DRAM and CPU-DRAM->GPU-PCIe queue stages. hbm_ssd_direct means no persistent CPU cache tier, not a GDS-style read path.",
+    "Cache-hit compute uses the same calibrated analytical kernel model as full recomputation, evaluated only on the uncached suffix and its cached attention prefix.",
+    "The prompt predictor is calibrated from component measurements but remains an analytical target-model prediction; it is not a measured end-to-end Qwen run.",
+    "Background swap-out never creates a global engine barrier, but a resume of that same source-retained object waits for its nonpreemptive demotion unless cancellation is enabled.",
+    "The conservative noncancellable baseline waits for an in-flight old-object demotion even when the next call reports zero reusable prefix; this wait is reported separately."
+  ],
+  "workload": {
+    "block_size": 16,
+    "calls": 357161,
+    "context_eligibility_semantics": "input_toks + output_toks <= max_context_tokens; the model context window includes both prompt and generated tokens",
+    "declared_zero_append_calls": 12,
+    "eligible_return_gap_type_counts": {
+      "human": 26952,
+      "mixed": 2557,
+      "tool": 308885
+    },
+    "fresh_prompt_token_semantics": "Execution fresh tokens are always max(0, input_toks - effective_reuse_toks). raw_newly_append_toks is preferred over newly_append_toks and preserved separately as declared_newly_append_tokens.",
+    "max_context_tokens": 1010000,
+    "path": "/tmp/tracelab-schema3-sps0.2-final.jsonl",
+    "return_gap_type_counts": {
+      "human": 31997,
+      "mixed": 3097,
+      "session_start": 4281,
+      "tool": 313179,
+      "unknown": 4607
+    },
+    "reuse_source_counts": {
+      "explicit_estimated": 345710
+    },
+    "selected_positive_transitions": 345710,
+    "selected_return_gap_type_counts": {
+      "human": 31960,
+      "mixed": 3057,
+      "tool": 310693
+    },
+    "selected_reuse_eligible_transitions": 338394,
+    "sessions": 4281,
+    "sha256": "b6188582aac9467cee8c73e4275f9a9606b359f8c2fa000d9f49a9ca3bde02f0",
+    "transitions_excluded_context": 0
+  }
+}

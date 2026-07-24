@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "hardware": {
+    "card_count": 8,
+    "hbf_capacity_bytes_per_card": 1280000000000,
+    "hbf_read_bandwidth_gbps_per_card": 3350.0,
+    "hbf_read_latency_us": 5.0,
+    "hbf_write_bandwidth_gbps_per_card": 335.0,
+    "hbf_write_latency_us": 20.0,
+    "npu_peak_tflops_per_card": 989.5,
+    "lpddr_capacity_bytes_per_card": 68719476736,
+    "lpddr_bandwidth_gbps_per_card": 409.6,
+    "intra_fabric_bandwidth_gbps_per_card": 50.0,
+    "intra_fabric_fixed_latency_us": 3.0,
+    "pcie_root_count": 2,
+    "cards_per_pcie_root": 4,
+    "pcie_card_to_root": [0, 0, 0, 0, 1, 1, 1, 1],
+    "pcie_nic_to_root": [0],
+    "pcie_resource_mode": "shared",
+    "pcie_p2p_mode": "cross_root",
+    "pcie_root_bandwidth_gbps": 200.0,
+    "pcie_root_fixed_latency_us": 0.0,
+    "pcie_inter_root_bandwidth_gbps": 100.0,
+    "pcie_inter_root_fixed_latency_us": 0.0,
+    "rdma_bandwidth_gbps": 80.0,
+    "rdma_one_way_latency_us": 10.0
+  },
+  "layouts": {
+    "dp8": {
+      "tp_size": 1,
+      "replicas": 8
+    },
+    "tp4": {
+      "tp_size": 4,
+      "replicas": 2
+    },
+    "tp8": {
+      "tp_size": 8,
+      "replicas": 1
+    }
+  }
+}

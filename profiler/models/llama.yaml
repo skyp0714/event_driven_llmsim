@@ -1,0 +1,65 @@
+# Llama 3.x family — class catalog (dense decoder-only LLMs).
+#
+# This file describes the vLLM class structure for the architecture;
+# per-checkpoint dimensions (hidden_size / num_heads / ...) come from
+# the HF model config selected at the CLI. One architecture covers
+# every size in the family (8B / 70B / 405B / ...).
+#
+# Uses ``Llama3RotaryEmbedding``, which is specific to Llama 3's
+# extended rope scaling — earlier Llama versions (1, 2) use the base
+# ``RotaryEmbedding`` class and will not match this catalog verbatim.
+#
+# Canonical layer names mirror vLLM's attribute names (see
+# ../vllm/vllm/model_executor/models/llama.py).
+#
+# ``sequence:`` describes the ordered pipeline the simulator's
+# trace_generator walks to emit one iteration. Names must appear in
+# ``catalog`` below. TP ALLREDUCE (after ``o_proj`` / ``down_proj``)
+# and EP ALLTOALL (around ``moe``) are attached by the simulator from
+# cluster config and need not be listed here.
+
+
+sequence:
+  prologue:  [embedding]
+  pre_attn:  [layernorm, qkv_proj, rotary_emb, attention]
+  post_attn: [o_proj, layernorm]
+  mlp_dense: [gate_up_proj, act_fn, down_proj]
+  mlp_moe:   []
+  head:      [final_layernorm, lm_head, sampler]
+
+
+catalog:
+  dense:
+    embedding:
+      vllm: VocabParallelEmbedding
+    layernorm:
+      vllm: RMSNorm
+      within: LlamaDecoderLayer
+      tp_stable: true
+    qkv_proj:
+      vllm: QKVParallelLinear
+    rotary_emb:
+      vllm: Llama3RotaryEmbedding
+    o_proj:
+      vllm: RowParallelLinear
+      within: LlamaAttention
+    gate_up_proj:
+      vllm: MergedColumnParallelLinear
+    act_fn:
+      vllm: SiluAndMul
+    down_proj:
+      vllm: RowParallelLinear
+      within: LlamaMLP
+    final_layernorm:
+      vllm: RMSNorm
+      within: LlamaForCausalLM
+      tp_stable: true
+  per_sequence:
+    lm_head:
+      vllm: LogitsProcessor
+    sampler:
+      vllm: Sampler
+      tp_stable: true
+  attention:
+    attention:
+      vllm: Attention

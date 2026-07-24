@@ -1,0 +1,237 @@
+---
+title: Cluster config explained
+sidebar_position: 1
+---
+
+# Cluster config explained
+
+Every simulation in LLMServingSim is driven by **one JSON file**: a
+*cluster config*. It captures the entire hardware topology, how many
+nodes, how many instances per node, what GPU each instance runs on,
+how memory is laid out, and how the model is parallelized.
+
+Once you understand this file, every example in this section is a
+small variation on the same shape.
+
+## The minimum viable config
+
+This is `configs/cluster/single_node_single_instance.json`: the
+smallest config that runs:
+
+```json title="configs/cluster/single_node_single_instance.json"
+{
+  "num_nodes": 1,
+  "link_bw": 16,
+  "link_latency": 20000,
+  "nodes": [
+    {
+      "num_instances": 1,
+      "cpu_mem": {
+        "mem_size": 512,
+        "mem_bw": 256,
+        "mem_latency": 0
+      },
+      "instances": [
+        {
+          "model_name": "meta-llama/Llama-3.1-8B",
+          "hardware": "RTXPRO6000",
+          "npu_mem": {
+            "mem_size": 96,
+            "mem_bw": 1597,
+            "mem_latency": 0
+          },
+          "num_npus": 1,
+          "tp_size": 1,
+          "pd_type": null
+        }
+      ]
+    }
+  ]
+}
+```
+
+That's: **one node**, **one instance**, running **Llama-3.1-8B** on
+**one RTXPRO6000 GPU** with **TP=1** (no parallelism).
+
+The file has three nested levels. We'll walk through them top-down.
+
+## 1. Top level, the cluster
+
+```json
+{
+  "num_nodes": 1,
+  "link_bw": 16,
+  "link_latency": 20000,
+  "nodes": [...]
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `num_nodes` | int | Number of physical nodes in the cluster |
+| `link_bw` | float or float[] | ASTRA-Sim topology link bandwidth in **GB/s** |
+| `link_latency` | float or float[] | ASTRA-Sim topology link latency in **ns** |
+| `nodes` | array | One entry per node (length must match `num_nodes`) |
+
+For multi-node setups (e.g., two boxes in a rack), set `num_nodes: 2`
+and add a second node entry. `link_bw` / `link_latency` can be either:
+
+- a scalar, broadcast to every ASTRA-Sim topology dimension
+- an array, with one value per final `network.yml::npus_count` dimension
+
+**Optional top-level fields:**
+
+| Field | Used for |
+| --- | --- |
+| `cxl_mem` | CXL memory expansion config (see [CXL memory tier](./memory-tiers/cxl-memory)) |
+
+## 2. Per-node level
+
+```json
+{
+  "num_instances": 1,
+  "cpu_mem": {
+    "mem_size": 512,
+    "mem_bw": 256,
+    "mem_latency": 0
+  },
+  "instances": [...]
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `num_instances` | int | How many serving instances live on this node |
+| `cpu_mem.mem_size` | float | Host CPU memory capacity (**GB**) |
+| `cpu_mem.mem_bw` | float | CPU memory bandwidth (**GB/s**) |
+| `cpu_mem.mem_latency` | float | CPU memory latency (**ns**) |
+| `instances` | array | One entry per instance (length = `num_instances`) |
+
+**Optional per-node fields:**
+
+| Field | Used for |
+| --- | --- |
+| `cpu_mem.pim_config` | Name of a PIM device config in `configs/pim/` (see [PIM attention offload](./disaggregated/pim-attention-offload)) |
+| `power` | Power model coefficients (see [Power modeling](./advanced/power-modeling)) |
+
+## 3. Per-instance level
+
+This is where the real work happens. An *instance* is one independent
+LLM serving replica, a model, a parallelism strategy, and a chunk of
+GPUs.
+
+```json
+{
+  "model_name": "meta-llama/Llama-3.1-8B",
+  "hardware": "RTXPRO6000",
+  "npu_mem": {"mem_size": 96, "mem_bw": 1597, "mem_latency": 0},
+  "num_npus": 1,
+  "tp_size": 1,
+  "pd_type": null
+}
+```
+
+### Required fields
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `model_name` | string | Hugging Face model id. Must match a config in `configs/model/{model_name}.json` |
+| `hardware` | string | Hardware tag. Must match `profiler/perf/{hardware}/` (e.g. `RTXPRO6000`, `H100`) |
+| `npu_mem` | object | Per-GPU memory: `mem_size` (GB), `mem_bw` (GB/s), `mem_latency` (ns) |
+| `pd_type` | string\|null | `"prefill"`, `"decode"`, or `null` for combined prefill+decode |
+
+### Parallelism fields (at least one required)
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `num_npus` | int | inferred | Total GPUs for this instance, equals `tp_size * pp_size` |
+| `tp_size` | int | inferred | Tensor-parallel degree |
+| `pp_size` | int | `1` | Pipeline-parallel degree |
+| `ep_size` | int | `tp_size` (MoE) / `1` (dense) | Expert-parallel degree |
+| `dp_group` | string\|null | `null` | Instances with the same string form a DP group and share experts via cross-instance ALLTOALL |
+
+You only need to provide **one of** `num_npus` or `tp_size`. The other
+gets inferred. So:
+
+- `tp_size: 4` → `num_npus = 4 * pp_size` (PP defaults to 1, so 4)
+- `num_npus: 4, pp_size: 2` → `tp_size = 2`
+
+**Parallelism rules to remember:**
+
+- `num_npus == tp_size * pp_size` (always)
+- TP and EP share the **same** GPUs: dense layers do TP-ALLREDUCE, MoE layers do EP-ALLTOALL
+- Without `dp_group`: `ep_size <= tp_size`
+- With `dp_group`: EP can scale beyond a single instance's GPUs (see DP+EP example)
+- For MoE models: `ep_size` must divide `num_local_experts`
+
+### Optional advanced fields
+
+| Field | Used for |
+| --- | --- |
+| `placement` | Per-layer / per-block weight + KV-cache placement (see [CXL memory](./memory-tiers/cxl-memory)) |
+
+## DP+EP, the topology that needs more explanation
+
+When multiple instances share the same `dp_group`, they form a **2D
+ASTRA-Sim topology** sized `[tp_size, dp_group_size]`. Collectives are
+scoped per dimension:
+
+- **TP ALLREDUCE** runs on dim 0 only (within an instance)
+- **EP ALLTOALL** runs on dim 1 only (across the DP group)
+
+All instances in a DP group share **one** ASTRA-Sim process with
+wave-synchronized scheduling. MoE expert weights are sharded by
+`ep_size`: each instance holds `num_local_experts / ep_size` experts.
+
+Concrete example: Qwen3-30B-A3B has 128 experts. With
+`tp_size=1, ep_size=2, dp_group="A"` and two instances, each holds
+64 experts. Per-token activation crosses the DP group via ALLTOALL.
+
+This is the [DP+EP MoE](./parallelism/dp-ep-moe) example.
+
+## What `config_builder.py` does with this file
+
+When you launch the simulator, `serving/core/config_builder.py` reads
+the cluster config and **generates three ASTRA-Sim input files** under
+`astra-sim/inputs/`:
+
+| Generated file | Driven by |
+| --- | --- |
+| `network/network.yml` | `link_bw`, `link_latency`, `[tp_size, dp_group_size]` topology |
+| `system/system.json` | Memory bandwidths, scheduling policy, per-dim collective implementations |
+| `memory/memory_expansion.json` | CXL devices and any extended memory tiers |
+
+You don't write these by hand, they're regenerated on every run from
+the cluster config.
+
+## Provided configs
+
+The repo ships 15 worked configs under `configs/cluster/`. Each
+example in this section uses one of them:
+
+| Config | Used by |
+| --- | --- |
+| `single_node_single_instance.json` | [Tensor parallel](./parallelism/tensor-parallel) (with `tp_size=2`) |
+| `single_node_multi_instance.json` | [Multi-instance LOAD routing](./disaggregated/multi-instance) |
+| `single_node_pd_instance.json` | [Prefill/decode split](./disaggregated/prefill-decode-split) |
+| `single_node_pd_per_instance_config.json` | P/D split with per-instance runtime limits |
+| `single_node_moe_single_instance.json` | [Expert parallel](./parallelism/expert-parallel) |
+| `single_node_moe_dp_ep_instance.json` | [DP+EP MoE](./parallelism/dp-ep-moe) |
+| `single_node_cxl_instance.json` | [CXL memory tier](./memory-tiers/cxl-memory) |
+| `single_node_pim_instance.json` | [PIM attention offload](./disaggregated/pim-attention-offload) |
+| `single_node_power_instance.json` | [Power modeling](./advanced/power-modeling) |
+| `dual_node_multi_instance.json` | Multi-node setups |
+| `dual_node_moe_dp_ep_intra_inter_instance.json` | Two-node DP+EP MoE with per-dimension intra/inter `link_bw` / `link_latency` |
+| ... | ... |
+
+## What's next
+
+Now that you can read a cluster config, pick an example and see how
+the same shape produces very different topologies:
+
+- **[Tensor parallel](./parallelism/tensor-parallel)**: simplest
+  non-trivial: TP=2 on one instance.
+- **[Multi-instance LOAD routing](./disaggregated/multi-instance)** -
+  shows what `num_instances > 1` does.
+- **[DP+EP MoE](./parallelism/dp-ep-moe)**: the most interesting
+  topology this simulator can model.

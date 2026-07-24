@@ -1,0 +1,61 @@
+# Phi MoE family — class catalog (Microsoft Phi mixture-of-experts models).
+#
+# This catalog covers Phi-3.5-MoE-instruct and related
+# ``PhiMoEForCausalLM`` variants. Pick the specific model at the CLI.
+#
+# Distinguishing feature: Phi MoE uses plain ``nn.LayerNorm`` (not
+# RMSNorm) for input/post/final layernorms. The catalog binding uses
+# ``vllm: LayerNorm`` to match the bare ``torch.nn.LayerNorm`` that
+# vLLM's CUDA profiler reports. ``num_experts`` / ``top_k`` are read
+# from the HF config at engine boot, not declared here.
+#
+# Canonical layer names mirror vLLM's attribute names (see
+# ../vllm/vllm/model_executor/models/phimoe.py).
+#
+# ``sequence:`` describes the ordered pipeline the simulator's
+# trace_generator walks to emit one iteration. Names must appear in
+# ``catalog`` below. TP ALLREDUCE (after ``o_proj`` / ``down_proj``)
+# and EP ALLTOALL (around ``moe``) are attached by the simulator from
+# cluster config and need not be listed here.
+
+
+sequence:
+  prologue:  [embedding]
+  pre_attn:  [layernorm, qkv_proj, rotary_emb, attention]
+  post_attn: [o_proj, layernorm]
+  mlp_dense: []
+  mlp_moe:   [moe]
+  head:      [final_layernorm, lm_head, sampler]
+
+
+catalog:
+  dense:
+    embedding:
+      vllm: VocabParallelEmbedding
+    layernorm:
+      vllm: LayerNorm
+      within: PhiMoEDecoderLayer
+      tp_stable: true
+    qkv_proj:
+      vllm: QKVParallelLinear
+    rotary_emb:
+      vllm: RotaryEmbedding
+    o_proj:
+      vllm: RowParallelLinear
+      within: PhiMoEAttention
+    final_layernorm:
+      vllm: LayerNorm
+      within: PhiMoEForCausalLM
+      tp_stable: true
+  per_sequence:
+    lm_head:
+      vllm: LogitsProcessor
+    sampler:
+      vllm: Sampler
+      tp_stable: true
+  attention:
+    attention:
+      vllm: Attention
+  moe:
+    moe:
+      vllm: PhiMoE

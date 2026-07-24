@@ -1,0 +1,116 @@
+---
+sidebar_position: 2
+title: Simulator setup
+---
+
+# Simulator setup
+
+The simulator runs in a Docker container based on
+[`astrasim/tutorial-micro2024`](https://hub.docker.com/r/astrasim/tutorial-micro2024).
+The container ships with the C++ ASTRA-Sim backend pre-built and
+provides a Python environment for the simulator.
+
+This is the install path **everyone needs**. If you also want to
+profile new hardware or run end-to-end vLLM validation, follow
+**[vLLM setup](./vllm)** afterwards.
+
+## 1. Clone the repository
+
+The repo includes ASTRA-Sim and Chakra as git submodules, so you must
+clone with `--recurse-submodules`:
+
+```bash
+git clone --recurse-submodules https://github.com/casys-kaist/LLMServingSim.git
+cd LLMServingSim
+```
+
+If you already cloned without `--recurse-submodules`, fix it with:
+
+```bash
+git submodule update --init --recursive
+```
+
+## 2. Launch the simulator container
+
+```bash
+./scripts/docker-sim.sh
+```
+
+This:
+
+- Mounts the repo root into the container at `/app/LLMServingSim`
+- Installs the Python deps the simulator needs
+  (`pyyaml`, `transformers`, `pandas`, `xgboost`, `matplotlib`, …)
+- Drops you into a `bash` shell at `/app/LLMServingSim`
+
+The container is named `servingsim_docker`. To re-attach later (e.g.,
+after a reboot):
+
+```bash
+docker start -ai servingsim_docker
+```
+
+To remove and start fresh:
+
+```bash
+docker rm -f servingsim_docker
+./scripts/docker-sim.sh
+```
+
+## 3. Build ASTRA-Sim and install Chakra
+
+Inside the simulator container, compile the analytical backend and
+install Chakra:
+
+```bash
+./scripts/compile.sh
+```
+
+What this does:
+
+- `pip install` Chakra (the C++ → protobuf converter ASTRA-Sim
+  consumes) from `astra-sim/extern/graph_frontend/chakra`.
+- Compile the **analytical backend** of ASTRA-Sim
+  (`astra-sim/build/astra_analytical/build.sh`).
+
+The build takes 2–5 minutes on a typical machine. When it finishes
+you should see:
+
+```text
+Compilation finished successfully.
+```
+
+:::tip ns3 backend
+The `compile.sh` script also has a commented-out block to build
+the ns3 backend (cycle-accurate network simulation). Most users
+don't need this. Uncomment it only if you set `--network-backend ns3`.
+:::
+
+## 4. Verify the install
+
+Run the bundled smoke test from inside the simulator container:
+
+```bash
+python -m serving \
+  --cluster-config 'configs/cluster/single_node_single_instance.json' \
+  --dtype float16 --block-size 16 \
+  --dataset 'workloads/example_trace.jsonl' \
+  --output 'outputs/example_single_run.csv' \
+  --log-interval 1.0
+```
+
+You should see throughput logs scrolling once per second, and a
+final per-request CSV at `outputs/example_single_run.csv`. If you
+see a `[FileNotFoundError: profile_*.csv]` or similar, check
+[Troubleshooting → Missing profile data](../troubleshooting#missing-profile-data).
+
+
+
+## You're done
+
+The simulator is installed. Continue with one of:
+
+- **[Quickstart](../quickstart)**: walk through the example run,
+  understand the flags, and read the output.
+- **[vLLM setup](./vllm)**: install the vLLM environment for
+  profiling new hardware or running the benchmark suite. (Optional.)

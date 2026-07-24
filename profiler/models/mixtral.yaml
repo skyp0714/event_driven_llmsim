@@ -1,0 +1,64 @@
+# Mixtral family — class catalog (mixture-of-experts decoder-only LLMs).
+#
+# This catalog covers Mixtral-8x7B, Mixtral-8x22B, and any variant
+# that instantiates ``MixtralForCausalLM``. Pick the specific model
+# at the CLI. Unlike Qwen3-MoE, Mixtral has no per-head QK
+# normalization; the attention block is the plain (qkv_proj →
+# rotary_emb → attention → o_proj) pipeline.
+#
+# The MoE block appears as ``self.block_sparse_moe`` on the decoder
+# layer and is implemented by the ``MixtralMoE`` class, which wraps
+# both the gate and the fused experts. We profile that wrapper as a
+# single unit. ``num_experts`` / ``top_k`` are read from the HF
+# config at engine boot, not declared here.
+#
+# Canonical layer names mirror vLLM's attribute names (see
+# ../vllm/vllm/model_executor/models/mixtral.py).
+#
+# ``sequence:`` describes the ordered pipeline the simulator's
+# trace_generator walks to emit one iteration. Names must appear in
+# ``catalog`` below. TP ALLREDUCE (after ``o_proj`` / ``down_proj``)
+# and EP ALLTOALL (around ``moe``) are attached by the simulator from
+# cluster config and need not be listed here.
+
+
+sequence:
+  prologue:  [embedding]
+  pre_attn:  [layernorm, qkv_proj, rotary_emb, attention]
+  post_attn: [o_proj, layernorm]
+  mlp_dense: []
+  mlp_moe:   [moe]
+  head:      [final_layernorm, lm_head, sampler]
+
+
+catalog:
+  dense:
+    embedding:
+      vllm: VocabParallelEmbedding
+    layernorm:
+      vllm: RMSNorm
+      within: MixtralDecoderLayer
+      tp_stable: true
+    qkv_proj:
+      vllm: QKVParallelLinear
+    rotary_emb:
+      vllm: RotaryEmbedding
+    o_proj:
+      vllm: RowParallelLinear
+      within: MixtralAttention
+    final_layernorm:
+      vllm: RMSNorm
+      within: MixtralForCausalLM
+      tp_stable: true
+  per_sequence:
+    lm_head:
+      vllm: LogitsProcessor
+    sampler:
+      vllm: Sampler
+      tp_stable: true
+  attention:
+    attention:
+      vllm: Attention
+  moe:
+    moe:
+      vllm: MixtralMoE

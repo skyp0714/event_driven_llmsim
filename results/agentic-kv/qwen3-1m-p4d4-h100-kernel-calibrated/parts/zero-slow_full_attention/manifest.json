@@ -1,0 +1,1395 @@
+{
+  "calibration_artifact": {
+    "base_calibration_metadata_sha256": "0097dfd92fa7e1d4de9a357d507fd6a019c40a86dba8906d7abc6c4b909a4d3b",
+    "bytes": 41590,
+    "endpoint_metadata_sha256": {
+      "slow_full_attention": "7ab34ecab1e29f81f109d4597e1dd24c0acdcc3dde5f9ee96109132252d72f69"
+    },
+    "path": "calibration.json",
+    "schema_version": 3,
+    "sha256": "4c7dedb6f388b6bd53de62896e9f99ba6060bedb0223defe0fefef1e3bba6cf2"
+  },
+  "calibration_boundary": {
+    "absolute_dgx_h100_latency_validated": false,
+    "attention_holdout_validates_long_k_or_1m": false,
+    "classification": "Legacy-H100-labeled kernel-calibrated analytical capacity, communication, and transfer-queue sensitivity; not a measured Qwen3, 1M, or DCA/MInference H100 result.",
+    "collective_latency_measured_or_fitted": false,
+    "component_holdout_is_target_end_to_end_accuracy": false,
+    "current_producer_revision_proven_to_match_csv": false,
+    "decode_compute_modeled": false,
+    "ep_collective_backend": "allgather_reducescatter",
+    "exact_legacy_h100_sku_known": false,
+    "fp16_to_bf16_kernel_efficiency_transfer_assumed": true,
+    "legacy_cuda_pytorch_flashattention_versions_known": false,
+    "legacy_h100_holdout_validation_used": true,
+    "legacy_h100_labeled_kernel_timing_evidence_used": true,
+    "legacy_h100_measured_kernel_evidence_used": true,
+    "legacy_h100_measurement_dtype": "float16",
+    "legacy_measurement_clock_state_known": false,
+    "legacy_measurement_command_known": false,
+    "llm_compute_queue_or_continuous_batching_modeled": false,
+    "measured_qwen3_1m_dca_h100_profile_used": false,
+    "measured_qwen3_h100_tp4_profile_used": false,
+    "profiler_perf_bundle_created": false,
+    "same_model_rtxpro6000_tp1_tp2_amdahl_evidence_used": false,
+    "target_qwen_compute_dtype": "bfloat16"
+  },
+  "command": "/usr/bin/python -m serving.agentic_kv_qwen3_1m_p4d4 --workload /tmp/tracelab-schema3-sps0.2-final.jsonl --workload-manifest /tmp/tracelab-schema3-sps0.2-final.jsonl.manifest.json --output-dir /home/hnpark2/LLMServingSim-repo/results/agentic-kv/qwen3-1m-p4d4-h100-kernel-calibrated/parts/zero-slow_full_attention --reserve-sweep zero --compute-endpoint slow_full_attention",
+  "compute_endpoints": [
+    {
+      "attention_multiplier": 1.0,
+      "band": "slow",
+      "name": "slow_full_attention",
+      "provenance": "Slow coefficient band from legacy-H100 fit uncertainty with full analytical causal-attention work. Optional sensitivity."
+    }
+  ],
+  "evidence_classes": {
+    "analytical_platform_assumption": "50 GB/s per-rank PCIe, 400 GB/s shared DRAM, and 450 GB/s one-way NVLink are explicit unmeasured inputs.",
+    "exact_model_geometry": "Revision-pinned Qwen config/checkpoint metadata and exact TP4 KV-head geometry.",
+    "exact_trace_observation": "Request geometry and inter-turn timing from the hashed input workload. Token counts remain source-tokenizer surrogates.",
+    "kernel_calibrated_analytical_compute_endpoint": "Kernel-decomposed analytical equations are fitted to legacy Llama-3.1-70B and Mixtral artifacts labeled H100. Exact H100 SKU and measurement software are unknown; Qwen geometry, 1M attention, and DCA/MInference remain extrapolations.",
+    "nominal_capacity_and_manufacturer_upper_bound": "H100 uses its marketed 80 GB SI capacity. Aggregate eight-drive CM6 55.2/33.6 GB/s is nameplate arithmetic, not an end-to-end fio measurement.",
+    "official_approximate_statement": "Qwen model-card 240 GB whole-engine and up-to-3x speedup statements; the speedup defines only a labeled one-third attention-work sensitivity, not a whole-prompt multiplier."
+  },
+  "excluded_repository_profile_evidence": {
+    "same_model_current_profile": {
+      "attention_backend_scope": "standard vLLM attention",
+      "hardware": "RTX PRO 6000 Blackwell Server Edition",
+      "maximum_profiled_attention_kv_tokens": 16384,
+      "path": "profiler/perf/RTXPRO6000/Qwen/Qwen3-30B-A3B-Instruct-2507/bf16/meta.yaml",
+      "reason": "Wrong hardware, no TP4 measurement, and no 1M DCA/MInference kernel surface. It cannot support an absolute H100 1M latency claim.",
+      "sha256": "e755433ea63a19e9d4a4919f04da412807aa520972dc97df3dfb8908b6a70f96",
+      "tp_degrees": [
+        1,
+        2
+      ],
+      "used": false
+    }
+  },
+  "experiment_contract": {
+    "block_size": 16,
+    "cpu_capacity_bytes": 2000000000000,
+    "cpu_dram_gbps_aggregate": 400.0,
+    "cpu_pcie_gbps_per_rank": 50.0,
+    "demotion_mode": "capacity-only",
+    "expert_parallel_size_per_role": 4,
+    "hardware": "H100",
+    "hbm_capacity_bytes_per_rank": 80000000000,
+    "infinite_hbm_oracle_paired_for_every_run": true,
+    "kv_dtype_bytes": 2,
+    "max_context_tokens": 1010000,
+    "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+    "pd_layout": "one TP4 prefill replica plus one TP4 decode replica",
+    "pd_nvlink_gbps_per_rank_one_way": 450.0,
+    "policies": [
+      "hbm_lru_recompute",
+      "hbm_ssd_direct",
+      "tiered"
+    ],
+    "prefill_chunk_size": 131072,
+    "restore_execution_mode": "async-pre-admission",
+    "same_prompt_predictor_object_for_finite_and_oracle": true,
+    "ssd_capacity_bytes": 30720000000000,
+    "ssd_read_gbps_aggregate": 55.2,
+    "ssd_write_gbps_aggregate": 33.6,
+    "tp_size_per_role": 4,
+    "weight_layout_semantics": "Attention and dense tensors are TP4-sharded; 128 MoE experts are evenly EP4-sharded on the same four GPUs.",
+    "whole_prompt_compute_scale": 1.0
+  },
+  "generated_at_utc": "2026-07-20T15:46:52.282383+00:00",
+  "git": {
+    "available": true,
+    "commit": "5bcc8740ab1e88e017d57745d85cfb922517a824",
+    "dirty": true,
+    "status_porcelain": [
+      " M docs/docs/reference/cli-flags.md",
+      " M serving/__main__.py",
+      "?? docs/docs/profiler/legacy-v0-calibration.md",
+      "?? profiler/kernel_calibration.py",
+      "?? profiler/legacy_adapter.py",
+      "?? results/agentic-kv/baseline/",
+      "?? results/agentic-kv/calibration/",
+      "?? results/agentic-kv/capacity-aware/",
+      "?? results/agentic-kv/capacity-replay/",
+      "?? results/agentic-kv/endurance_llama31_70b_fullwrite.csv",
+      "?? results/agentic-kv/endurance_llama31_70b_fullwrite.json",
+      "?? results/agentic-kv/endurance_llama31_70b_tiered.csv",
+      "?? results/agentic-kv/endurance_llama31_70b_tiered.json",
+      "?? results/agentic-kv/endurance_llama31_8b_fullwrite.csv",
+      "?? results/agentic-kv/endurance_llama31_8b_fullwrite.json",
+      "?? results/agentic-kv/endurance_llama31_8b_tiered.csv",
+      "?? results/agentic-kv/endurance_llama31_8b_tiered.json",
+      "?? results/agentic-kv/endurance_mixtral_8x7b_fullwrite.csv",
+      "?? results/agentic-kv/endurance_mixtral_8x7b_fullwrite.json",
+      "?? results/agentic-kv/endurance_mixtral_8x7b_tiered.csv",
+      "?? results/agentic-kv/endurance_mixtral_8x7b_tiered.json",
+      "?? results/agentic-kv/endurance_qwen3_30b_a3b_fullwrite.csv",
+      "?? results/agentic-kv/endurance_qwen3_30b_a3b_fullwrite.json",
+      "?? results/agentic-kv/endurance_qwen3_30b_a3b_tiered.csv",
+      "?? results/agentic-kv/endurance_qwen3_30b_a3b_tiered.json",
+      "?? results/agentic-kv/endurance_qwen3_32b_fullwrite.csv",
+      "?? results/agentic-kv/endurance_qwen3_32b_fullwrite.json",
+      "?? results/agentic-kv/endurance_qwen3_32b_tiered.csv",
+      "?? results/agentic-kv/endurance_qwen3_32b_tiered.json",
+      "?? results/agentic-kv/legacy_h100_tp8_llama31_70b.csv",
+      "?? results/agentic-kv/legacy_h100_tp8_llama31_70b.json",
+      "?? results/agentic-kv/legacy_h100_tp8_llama31_8b.csv",
+      "?? results/agentic-kv/legacy_h100_tp8_llama31_8b.json",
+      "?? results/agentic-kv/legacy_h100_tp8_mixtral_8x7b.csv",
+      "?? results/agentic-kv/legacy_h100_tp8_mixtral_8x7b.json",
+      "?? results/agentic-kv/legacy_profile_inventory.json",
+      "?? results/agentic-kv/swebench_tp8_8ssd.csv",
+      "?? results/agentic-kv/swebench_tp8_8ssd.json",
+      "?? results/agentic-kv/tracelab_context32k_tp8_8ssd.csv",
+      "?? results/agentic-kv/tracelab_context32k_tp8_8ssd.json",
+      "?? results/agentic-kv/tracelab_context32k_tp8_8ssd_blocking.csv",
+      "?? results/agentic-kv/tracelab_context32k_tp8_8ssd_blocking.json",
+      "?? results/agentic-kv/tracelab_context32k_tp8_8ssd_fullwrite.csv",
+      "?? results/agentic-kv/tracelab_context32k_tp8_8ssd_fullwrite.json",
+      "?? tests/test_kernel_calibration.py",
+      "?? tests/test_legacy_profile_adapter.py"
+    ],
+    "status_sha256": "f1389f0592888e79efc4fdb1dacd1dff7007d1c343eedea45a2e07e538ab4b33"
+  },
+  "hardware_sources": {
+    "dgx_h100_nvme_guide": {
+      "evidence_class": "manufacturer_system_guide",
+      "observed_bytes": 29431,
+      "observed_sha256": "44cbee198269ab8702247a1df1b3054be25201dec4dbf64c40ce6e7173a24c9a",
+      "supports": "example KIOXIA KCM6DRUL3T84 device identity",
+      "url": "https://docs.nvidia.com/dgx/dgxh100-fw-update-guide/nvme-fw-update.html"
+    },
+    "dgx_h100_system_guide": {
+      "evidence_class": "manufacturer_system_specification",
+      "observed_bytes": 45788,
+      "observed_sha256": "aa3dd7e72e910b03e697dfe7cfb76efc04bb9382f0c73cf620eba348eea6c945",
+      "supports": "80 GB GPUs, 2 TB system memory, 8 x 3.84 TB SSD",
+      "url": "https://docs.nvidia.com/dgx/dgxh100-user-guide/introduction-to-dgxh100.html"
+    },
+    "h100_specification": {
+      "evidence_class": "manufacturer_accelerator_specification",
+      "observed_bytes": 288443,
+      "observed_sha256": "09cee4d569656179646f4aed350f39ec1a5f6b13be50de3b0f46183c9ab7a2f2",
+      "supports": "H100 roofline and 900 GB/s aggregate NVLink source; 450 GB/s one-way is an explicit directional inference",
+      "url": "https://www.nvidia.com/en-us/data-center/h100/"
+    },
+    "hash_semantics": "Observed source bytes on 2026-07-20 UTC. NVIDIA web pages are not revision pinned or vendored, so their hashes identify the consulted page representations rather than immutable artifacts. The KIOXIA PDF is a directly hashed product brief.",
+    "kioxia_cm6_product_brief": {
+      "bytes": 133166,
+      "evidence_class": "manufacturer_storage_specification",
+      "sha256": "1e22a2f5a19b89bbaa156bcdffaaecc3c99b67d1f10594126b42f5f968b91a3e",
+      "supports": "6.9/4.2 GB/s per-device nameplate upper bounds",
+      "url": "https://americas.kioxia.com/content/dam/kioxia/shared/business/ssd/enterprise-ssd/asset/productbrief/eSSD-CM6-R-product-brief.pdf"
+    }
+  },
+  "local_source_sha256": {
+    "configs/model/Qwen/Qwen3-30B-A3B-Instruct-2507.json": "0736f3bafb95cc658776c92ab34f5f98d8169634a3a36b84892d71448a1f19d3",
+    "profiler/perf/RTXPRO6000/Qwen/Qwen3-30B-A3B-Instruct-2507/bf16/meta.yaml": "e755433ea63a19e9d4a4919f04da412807aa520972dc97df3dfb8908b6a70f96",
+    "profiler/v0/models/llama.py": "34d71e5b76427464120b6347e901cbe9963b74cc794c72ed11934b606ebdf33f",
+    "profiler/v0/models/mixtral.py": "6143be0e5ce3b4cd5abc17cf3acca8321718422f2e35dacbd144020cb329c988",
+    "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/attention.csv": "93d67794cf243fb481a0598549b94caa77e20ad0c8a215344a86ac8b9f5a5146",
+    "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/layers.csv": "41fd31dd27f5295d309bc2c926a0c01dc1c772f321074afe84f41d81f6a60735",
+    "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/attention.csv": "69b42685767810ae7419d8b08302714047444f3051246fd1ca7939318ae57a6d",
+    "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/layers.csv": "afcb40d69e346db7521540c6f09604183fb5ca42d675c0c53a6a9753dbb15ee4",
+    "profiler/v0/profiler/attention/attention_input.py": "d6abf7003532cd093aab8c18b612864fc6f66aef64814796a097e7ae397e7d2b",
+    "profiler/v0/profiler/attention/attention_profiler.py": "3998208c081bc39c38f84122fbc7177f11f6bb8413916027fd68f3443bc690a4",
+    "profiler/v0/profiler/attention/batch_sampling.py": "3641a23e6de5bc301af53a2202da29d3c1f54112e5f4c1c577e3e7c23c841bac",
+    "profiler/v0/profiler/attention/main.py": "c0b281351fae3cf2f3f3d550568880d07973da97f52efe94e1a4d7a106a10d7e",
+    "profiler/v0/profiler/common/timer.py": "4152a18b2b99aa13647ad33ad66b84208efcba9e85ce9af0137bf63d52a44464",
+    "profiler/v0/profiler/common/timer_stats_store.py": "16d52eb14a9a9234c8243364da41f1f82e891e5b78064758eb2495d7a18a4805",
+    "profiler/v0/profiler/layers/main.py": "285051ddcae012bb933c707734642ee399feb88488329f98bcb1e775bcabe3fe",
+    "profiler/v0/profiler/utils/__init__.py": "5a89d2bfa6205d2c739b8e6514e65d86e9f27d07e0e02f588139950e4048e00f",
+    "profiler/v0/profiler/utils/record_function_tracer.py": "22f7a41174ed6d405d4854f0ba8d2389d8103a63e5cf0c68264456f7fcf913a3",
+    "serving/agentic_kv_qwen3_1m_p4d4.py": "619dfd25bde6d183b601d903f0a7b3bef8e0dd03f1f9e088256cc42fe5cd7183",
+    "serving/core/agentic_kv_capacity_replay.py": "49b32599872a58a3fa9a524a4d5706455056b945ed66d5e2ec1233fbc013b663",
+    "serving/core/agentic_kv_roofline.py": "76e2e93e39503aef164d4a6dfe07320f4108386c95d97d9aa481e821ef13190f",
+    "serving/core/h100_kernel_calibrated_prompt.py": "6ab51d8f56d96a25003f064f3da670257e8dcb2124016abae4316a7473d9fac8"
+  },
+  "model_geometry": {
+    "architecture_minus_checkpoint_bytes_per_rank": 19166208,
+    "architecture_weight_bytes_per_rank": 15285227520,
+    "checkpoint_bytes_per_tp4_rank": 15266061312,
+    "checkpoint_bytes_total": 61064245248,
+    "full_context_kv_bytes_per_tp4_rank": 24821760000,
+    "kv_bytes_per_token_per_tp4_rank": 24576,
+    "kv_storage_semantics": "Retain BF16 K and V for every token at all 48 layers. DCA and MInference change the compute endpoint but are not assumed to compress or discard the reusable KV allocation.",
+    "local_simulator_config_path": "configs/model/Qwen/Qwen3-30B-A3B-Instruct-2507.json",
+    "local_simulator_config_sha256": "0736f3bafb95cc658776c92ab34f5f98d8169634a3a36b84892d71448a1f19d3",
+    "qwen_revision": "0d7cf23991f47feeb3a57ecb4c9cee8ea4a17bfe",
+    "tp4_kv_head_replication_factor": 1.0
+  },
+  "official_qwen_sources": {
+    "checkpoint_index": {
+      "bytes": 1699758,
+      "evidence_class": "official_revision_pinned_model_artifact",
+      "metadata_total_size": 61064245248,
+      "sha256": "8dde190b862c7c80ec7403c6495de00c60bbaf246ed479cee4506284989c584c",
+      "url": "https://huggingface.co/Qwen/Qwen3-30B-A3B-Instruct-2507/blob/0d7cf23991f47feeb3a57ecb4c9cee8ea4a17bfe/model.safetensors.index.json"
+    },
+    "config_1m": {
+      "bytes": 77313,
+      "evidence_class": "official_revision_pinned_model_artifact",
+      "sha256": "bacd81916858d5b9f5daa616ee3aca13e3f888ceeb374cc804546de008dc85d0",
+      "url": "https://huggingface.co/Qwen/Qwen3-30B-A3B-Instruct-2507/blob/0d7cf23991f47feeb3a57ecb4c9cee8ea4a17bfe/config_1m.json"
+    },
+    "model_card": {
+      "bytes": 15418,
+      "evidence_class": "official_approximate_system_statement",
+      "sha256": "5d25d4b43cdfaf83e3d71df8f3436703ab26d92c07305053be667f577a49bb9e",
+      "url": "https://huggingface.co/Qwen/Qwen3-30B-A3B-Instruct-2507/blob/0d7cf23991f47feeb3a57ecb4c9cee8ea4a17bfe/README.md"
+    },
+    "repository": "https://huggingface.co/Qwen/Qwen3-30B-A3B-Instruct-2507",
+    "revision": "0d7cf23991f47feeb3a57ecb4c9cee8ea4a17bfe"
+  },
+  "prompt_compute_calibration": {
+    "endpoint_metadata": {
+      "slow_full_attention": {
+        "absolute_dgx_h100_calibration_validated": false,
+        "analytical_model": {
+          "attention_occupancy": "ceil(q/128)*local_q_heads partial-wave proxy",
+          "bands": "p10/p50/p90 fitted eta sensitivities, not confidence intervals",
+          "equation": "t=max(t0,t_roof*eta); t_roof=max((F/P_peak)*u,bytes/BW_peak)",
+          "eta_fit": "robust p50 of a contiguous upper-shape training tail; fast=p10 and slow=p90",
+          "gemm_occupancy": "folded into eta because legacy traces lack selected cuBLAS tile and thread-block geometry",
+          "reference": "KernelSight-LM, arXiv:2606.28565",
+          "source_attention_causal_pairs": "bottom-right aligned: q*(k-q)+q*(q+1)/2"
+        },
+        "attention_multiplier": 1.0,
+        "band": "slow",
+        "calibrated_from_measurements": true,
+        "collective_model": {
+          "backend": "allgather_reducescatter",
+          "bandwidth_and_latency_contract": "analytical intra-node sensitivity using 450 GB/s and 3 us per collective",
+          "contention_modeled": false,
+          "ep_combine": "ring ReduceScatter of the full hidden buffer",
+          "ep_dispatch": "ring AllGather of max(1,floor(q/EP)) per-rank (hidden+router_logits) tokens",
+          "measured_or_fitted": false
+        },
+        "description": "Kernel-decomposed Qwen3 TP4/EP4 prompt prediction fitted to legacy TP4 component artifacts labeled H100. Exact measurement-system identity is unavailable.",
+        "hardware": {
+          "collective_fixed_microseconds": 3.0,
+          "collective_gb_per_second": 450.0,
+          "dense_bf16_tflops": 989.5,
+          "hbm_tb_per_second": 3.35,
+          "sms": 132
+        },
+        "kernel_fits": {
+          "dense_activation": {
+            "eta_central": 1.7469051408078196,
+            "eta_fast": 1.6630042554035525,
+            "eta_slow": 1.7779082742059302,
+            "family": "dense_activation",
+            "holdout_mape": 0.0480451834471384,
+            "holdout_p90_ape": 0.0797636080479726,
+            "holdout_rows": 512,
+            "holdout_signed_mean": -0.0480451834471384,
+            "launch_floor_seconds": 4.0475e-06,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B"
+            ],
+            "training_rows": 512
+          },
+          "dense_ffn_down": {
+            "eta_central": 1.286194802914077,
+            "eta_fast": 1.2669168737261767,
+            "eta_slow": 1.3255236917568418,
+            "family": "dense_ffn_down",
+            "holdout_mape": 0.017782953108549656,
+            "holdout_p90_ape": 0.033508681850731616,
+            "holdout_rows": 512,
+            "holdout_signed_mean": 7.353637856880678e-05,
+            "launch_floor_seconds": 4.03355e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B"
+            ],
+            "training_rows": 512
+          },
+          "dense_ffn_up": {
+            "eta_central": 1.2791603157413192,
+            "eta_fast": 1.2405520769766034,
+            "eta_slow": 1.317469459848034,
+            "family": "dense_ffn_up",
+            "holdout_mape": 0.024105851028291953,
+            "holdout_p90_ape": 0.041947938811878055,
+            "holdout_rows": 1024,
+            "holdout_signed_mean": 0.021661770197597376,
+            "launch_floor_seconds": 4.05191e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B"
+            ],
+            "training_rows": 1024
+          },
+          "embedding": {
+            "eta_central": 11.062423913569283,
+            "eta_fast": 10.50345071591579,
+            "eta_slow": 11.67859705047617,
+            "family": "embedding",
+            "holdout_mape": 0.03719909603897705,
+            "holdout_p90_ape": 0.06577516984925474,
+            "holdout_rows": 1024,
+            "holdout_signed_mean": 0.01869494874992987,
+            "launch_floor_seconds": 3.5344e-06,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 1024
+          },
+          "expert_activation": {
+            "eta_central": 1.9143495299924012,
+            "eta_fast": 1.8926478954537806,
+            "eta_slow": 1.9303893066424447,
+            "family": "expert_activation",
+            "holdout_mape": 0.018401637965214167,
+            "holdout_p90_ape": 0.024344612763768356,
+            "holdout_rows": 512,
+            "holdout_signed_mean": 0.018401637965214167,
+            "launch_floor_seconds": 4.394000000000001e-06,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 512
+          },
+          "expert_down": {
+            "eta_central": 1.2692233976831828,
+            "eta_fast": 1.2495858644712579,
+            "eta_slow": 1.2960385380984545,
+            "family": "expert_down",
+            "holdout_mape": 0.01405455416363598,
+            "holdout_p90_ape": 0.02511596183469495,
+            "holdout_rows": 512,
+            "holdout_signed_mean": 0.008882145891593115,
+            "launch_floor_seconds": 4.32525e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 512
+          },
+          "expert_up": {
+            "eta_central": 1.332519109312827,
+            "eta_fast": 1.2804500124661489,
+            "eta_slow": 1.3870143878434629,
+            "family": "expert_up",
+            "holdout_mape": 0.036124873399207114,
+            "holdout_p90_ape": 0.05815037609181682,
+            "holdout_rows": 1024,
+            "holdout_signed_mean": 0.034925559599819044,
+            "launch_floor_seconds": 4.00679e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 1024
+          },
+          "kv_projection": {
+            "eta_central": 2.402675118512974,
+            "eta_fast": 2.0902446352205843,
+            "eta_slow": 2.810338904082241,
+            "family": "kv_projection",
+            "holdout_mape": 0.1916716529028661,
+            "holdout_p90_ape": 0.33948897173385206,
+            "holdout_rows": 2048,
+            "holdout_signed_mean": 0.18513029100438655,
+            "launch_floor_seconds": 6.910800000000001e-06,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 2048
+          },
+          "lm_head": {
+            "eta_central": 1.324669192157946,
+            "eta_fast": 1.2722790635908063,
+            "eta_slow": 1.3610521033130771,
+            "family": "lm_head",
+            "holdout_mape": 0.022508211180712223,
+            "holdout_p90_ape": 0.0414837951163217,
+            "holdout_rows": 1024,
+            "holdout_signed_mean": 0.0006028652421603117,
+            "launch_floor_seconds": 2.47075e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 1024
+          },
+          "norm": {
+            "eta_central": 13.919822212353626,
+            "eta_fast": 12.996983371656048,
+            "eta_slow": 14.57460409637947,
+            "family": "norm",
+            "holdout_mape": 0.02816145377042605,
+            "holdout_p90_ape": 0.043141094936968605,
+            "holdout_rows": 3072,
+            "holdout_signed_mean": -0.02750710137004085,
+            "launch_floor_seconds": 2.02425e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 3072
+          },
+          "o_projection": {
+            "eta_central": 1.5634737594518457,
+            "eta_fast": 1.3578499673462454,
+            "eta_slow": 1.7815371036529544,
+            "family": "o_projection",
+            "holdout_mape": 0.07322940196079007,
+            "holdout_p90_ape": 0.15194546186652302,
+            "holdout_rows": 1024,
+            "holdout_signed_mean": 0.05817836502555926,
+            "launch_floor_seconds": 5.522000000000001e-06,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 1024
+          },
+          "prefill_attention": {
+            "eta_central": 7.574777748241797,
+            "eta_fast": 4.5862650456847645,
+            "eta_slow": 8.901783320621103,
+            "family": "prefill_attention",
+            "holdout_mape": 0.049087227792162375,
+            "holdout_p90_ape": 0.09216913790333807,
+            "holdout_rows": 16,
+            "holdout_signed_mean": -0.018249340252716916,
+            "launch_floor_seconds": 1.0520000000000001e-05,
+            "occupancy_contract": "u uses ceil(q/128) * local_q_heads thread-block proxy and 132 H100 SMs",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 32
+          },
+          "q_projection": {
+            "eta_central": 1.521033158697143,
+            "eta_fast": 1.2985035523959096,
+            "eta_slow": 1.986247959229737,
+            "family": "q_projection",
+            "holdout_mape": 0.12249455891736498,
+            "holdout_p90_ape": 0.20095690803953964,
+            "holdout_rows": 1024,
+            "holdout_signed_mean": 0.08192665937709646,
+            "launch_floor_seconds": 8.1402e-06,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 1024
+          },
+          "rope": {
+            "eta_central": 21.646792854479983,
+            "eta_fast": 17.4542476775717,
+            "eta_slow": 27.39511019775854,
+            "family": "rope",
+            "holdout_mape": 0.20110635215418876,
+            "holdout_p90_ape": 0.3894281080031784,
+            "holdout_rows": 1024,
+            "holdout_signed_mean": 0.19664873548685657,
+            "launch_floor_seconds": 2.76252e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 1024
+          },
+          "router": {
+            "eta_central": 18.716328385702752,
+            "eta_fast": 16.570049974552656,
+            "eta_slow": 21.760577125955983,
+            "family": "router",
+            "holdout_mape": 0.32054692433953635,
+            "holdout_p90_ape": 0.43982086525814323,
+            "holdout_rows": 512,
+            "holdout_signed_mean": 0.32054692433953635,
+            "launch_floor_seconds": 4.3441000000000006e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 512
+          }
+        },
+        "legacy_h100_fp16_component_calibration": true,
+        "legacy_h100_labeled_component_measurements_used": true,
+        "limitations": {
+          "absolute_dgx_h100_accuracy_validated": false,
+          "aggregate_holdout_is_target_end_to_end_accuracy": false,
+          "attention_holdout_validates_long_k": false,
+          "attention_multiplier_scope": "prefill attention only",
+          "collective_terms_measured_or_fitted": false,
+          "current_producer_revision_is_measurement_revision": false,
+          "decode_compute_modeled": false,
+          "exact_legacy_h100_sku_known": false,
+          "fp16_to_bf16_efficiency_transfer_assumed": true,
+          "fused_qkv_measured_as_target_shape": false,
+          "host_scheduler_and_continuous_batching_modeled": false,
+          "latency_cache_max_scalar_entries": 131072,
+          "legacy_measurement_command_known": false,
+          "legacy_measurement_software_versions_known": false,
+          "measured_dca_or_minference": false,
+          "measured_qwen3_h100": false,
+          "moe_grouped_fusion_and_imbalance_measured": false,
+          "one_million_token_attention_is_extrapolated": true,
+          "qk_norm_head_width_measured": false,
+          "router_e128_top8_measured": false,
+          "sampler_and_serving_host_overhead_modeled": false,
+          "source_dense_m_max": 2048,
+          "source_measurement_dtype": "float16",
+          "source_prefill_kv_max": 2016,
+          "source_prefill_q_max": 1024,
+          "target_context_max": 1010000,
+          "target_dense_m_max": 131072,
+          "target_model_dtype": "bfloat16",
+          "target_prefill_q_max": 131072
+        },
+        "model_kind": "h100_kernel_calibrated_prompt",
+        "prefill_chunk_size": 131072,
+        "producer_source_sha256": {
+          "profiler/v0/models/llama.py": "34d71e5b76427464120b6347e901cbe9963b74cc794c72ed11934b606ebdf33f",
+          "profiler/v0/models/mixtral.py": "6143be0e5ce3b4cd5abc17cf3acca8321718422f2e35dacbd144020cb329c988",
+          "profiler/v0/profiler/attention/attention_input.py": "d6abf7003532cd093aab8c18b612864fc6f66aef64814796a097e7ae397e7d2b",
+          "profiler/v0/profiler/attention/attention_profiler.py": "3998208c081bc39c38f84122fbc7177f11f6bb8413916027fd68f3443bc690a4",
+          "profiler/v0/profiler/attention/batch_sampling.py": "3641a23e6de5bc301af53a2202da29d3c1f54112e5f4c1c577e3e7c23c841bac",
+          "profiler/v0/profiler/attention/main.py": "c0b281351fae3cf2f3f3d550568880d07973da97f52efe94e1a4d7a106a10d7e",
+          "profiler/v0/profiler/common/timer.py": "4152a18b2b99aa13647ad33ad66b84208efcba9e85ce9af0137bf63d52a44464",
+          "profiler/v0/profiler/common/timer_stats_store.py": "16d52eb14a9a9234c8243364da41f1f82e891e5b78064758eb2495d7a18a4805",
+          "profiler/v0/profiler/layers/main.py": "285051ddcae012bb933c707734642ee399feb88488329f98bcb1e775bcabe3fe",
+          "profiler/v0/profiler/utils/__init__.py": "5a89d2bfa6205d2c739b8e6514e65d86e9f27d07e0e02f588139950e4048e00f",
+          "profiler/v0/profiler/utils/record_function_tracer.py": "22f7a41174ed6d405d4854f0ba8d2389d8103a63e5cf0c68264456f7fcf913a3"
+        },
+        "schema_version": 3,
+        "source_identity": {
+          "artifact_label": "legacy-H100-labeled",
+          "cuda_pytorch_flashattention_versions_known": false,
+          "current_producer_revision_proven_to_have_generated_csv": false,
+          "exact_h100_sku_known": false,
+          "measurement_clock_state_known": false,
+          "measurement_command_known": false,
+          "producer_hash_scope": "Current repository snapshot of the relevant legacy producer implementation; it is not a recovered measurement-environment manifest."
+        },
+        "source_row_accounting": {
+          "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/attention.csv": {
+            "eligible_prefill_rows": 232,
+            "fit_holdout_points": 8,
+            "fit_training_points": 16,
+            "raw_rows": 21603,
+            "unique_prefill_points": 216
+          },
+          "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/layers.csv": {
+            "eligible_component_rows": 28672,
+            "raw_rows": 30720
+          },
+          "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/attention.csv": {
+            "eligible_prefill_rows": 232,
+            "fit_holdout_points": 8,
+            "fit_training_points": 16,
+            "raw_rows": 24979,
+            "unique_prefill_points": 216
+          },
+          "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/layers.csv": {
+            "eligible_component_rows": 30720,
+            "raw_rows": 30720
+          }
+        },
+        "source_rows": {
+          "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/attention.csv": 21603,
+          "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/layers.csv": 30720,
+          "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/attention.csv": 24979,
+          "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/layers.csv": 30720
+        },
+        "source_sha256": {
+          "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/attention.csv": "93d67794cf243fb481a0598549b94caa77e20ad0c8a215344a86ac8b9f5a5146",
+          "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/layers.csv": "41fd31dd27f5295d309bc2c926a0c01dc1c772f321074afe84f41d81f6a60735",
+          "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/attention.csv": "69b42685767810ae7419d8b08302714047444f3051246fd1ca7939318ae57a6d",
+          "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/layers.csv": "afcb40d69e346db7521540c6f09604183fb5ca42d675c0c53a6a9753dbb15ee4"
+        },
+        "target_geometry": {
+          "balanced_expert_pairs_per_rank_per_token": 2.0,
+          "config_sha256": "0736f3bafb95cc658776c92ab34f5f98d8169634a3a36b84892d71448a1f19d3",
+          "ep": 4,
+          "experts": 128,
+          "experts_per_rank": 32,
+          "fused_qkv_output_per_rank": 1280,
+          "head_dim": 128,
+          "hidden_size": 2048,
+          "kv_heads_per_rank": 1,
+          "layers": 48,
+          "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+          "q_heads_per_rank": 8,
+          "top_k": 8,
+          "tp": 4
+        },
+        "target_qwen_shape_extrapolation": true,
+        "validation": {
+          "holdout": {
+            "attention_boundary": "the attention holdout varies q only and contains no long-K cached-suffix validation",
+            "interpretation": "component-family interpolation check only; it is not an end-to-end Qwen3 or one-million-token accuracy estimate",
+            "per_family": {
+              "dense_activation": {
+                "mape": 0.0480451834471384,
+                "p90_ape": 0.0797636080479726,
+                "rows": 512,
+                "signed_mean": -0.0480451834471384
+              },
+              "dense_ffn_down": {
+                "mape": 0.017782953108549656,
+                "p90_ape": 0.033508681850731616,
+                "rows": 512,
+                "signed_mean": 7.353637856880678e-05
+              },
+              "dense_ffn_up": {
+                "mape": 0.024105851028291953,
+                "p90_ape": 0.041947938811878055,
+                "rows": 1024,
+                "signed_mean": 0.021661770197597376
+              },
+              "embedding": {
+                "mape": 0.03719909603897705,
+                "p90_ape": 0.06577516984925474,
+                "rows": 1024,
+                "signed_mean": 0.01869494874992987
+              },
+              "expert_activation": {
+                "mape": 0.018401637965214167,
+                "p90_ape": 0.024344612763768356,
+                "rows": 512,
+                "signed_mean": 0.018401637965214167
+              },
+              "expert_down": {
+                "mape": 0.01405455416363598,
+                "p90_ape": 0.02511596183469495,
+                "rows": 512,
+                "signed_mean": 0.008882145891593115
+              },
+              "expert_up": {
+                "mape": 0.036124873399207114,
+                "p90_ape": 0.05815037609181682,
+                "rows": 1024,
+                "signed_mean": 0.034925559599819044
+              },
+              "kv_projection": {
+                "mape": 0.1916716529028661,
+                "p90_ape": 0.33948897173385206,
+                "rows": 2048,
+                "signed_mean": 0.18513029100438655
+              },
+              "lm_head": {
+                "mape": 0.022508211180712223,
+                "p90_ape": 0.0414837951163217,
+                "rows": 1024,
+                "signed_mean": 0.0006028652421603117
+              },
+              "norm": {
+                "mape": 0.02816145377042605,
+                "p90_ape": 0.043141094936968605,
+                "rows": 3072,
+                "signed_mean": -0.02750710137004085
+              },
+              "o_projection": {
+                "mape": 0.07322940196079007,
+                "p90_ape": 0.15194546186652302,
+                "rows": 1024,
+                "signed_mean": 0.05817836502555926
+              },
+              "prefill_attention": {
+                "mape": 0.049087227792162375,
+                "p90_ape": 0.09216913790333807,
+                "rows": 16,
+                "signed_mean": -0.018249340252716916
+              },
+              "q_projection": {
+                "mape": 0.12249455891736498,
+                "p90_ape": 0.20095690803953964,
+                "rows": 1024,
+                "signed_mean": 0.08192665937709646
+              },
+              "rope": {
+                "mape": 0.20110635215418876,
+                "p90_ape": 0.3894281080031784,
+                "rows": 1024,
+                "signed_mean": 0.19664873548685657
+              },
+              "router": {
+                "mape": 0.32054692433953635,
+                "p90_ape": 0.43982086525814323,
+                "rows": 512,
+                "signed_mean": 0.32054692433953635
+              }
+            },
+            "rows": 14864,
+            "split": "layers: train M=1025..1536, contiguous holdout M=1537..2048; attention: train q=512..768, contiguous holdout q=800..1024",
+            "weighted_mape": 0.08230983001027048,
+            "weighted_signed_mean": 0.05855914341959838
+          }
+        }
+      }
+    },
+    "endpoint_metadata_sha256": {
+      "slow_full_attention": "7ab34ecab1e29f81f109d4597e1dd24c0acdcc3dde5f9ee96109132252d72f69"
+    },
+    "fit_invocations_this_driver_run": 1,
+    "fit_shared_across_selected_endpoints": true,
+    "holdout_validation_by_endpoint": {
+      "slow_full_attention": {
+        "holdout": {
+          "attention_boundary": "the attention holdout varies q only and contains no long-K cached-suffix validation",
+          "interpretation": "component-family interpolation check only; it is not an end-to-end Qwen3 or one-million-token accuracy estimate",
+          "per_family": {
+            "dense_activation": {
+              "mape": 0.0480451834471384,
+              "p90_ape": 0.0797636080479726,
+              "rows": 512,
+              "signed_mean": -0.0480451834471384
+            },
+            "dense_ffn_down": {
+              "mape": 0.017782953108549656,
+              "p90_ape": 0.033508681850731616,
+              "rows": 512,
+              "signed_mean": 7.353637856880678e-05
+            },
+            "dense_ffn_up": {
+              "mape": 0.024105851028291953,
+              "p90_ape": 0.041947938811878055,
+              "rows": 1024,
+              "signed_mean": 0.021661770197597376
+            },
+            "embedding": {
+              "mape": 0.03719909603897705,
+              "p90_ape": 0.06577516984925474,
+              "rows": 1024,
+              "signed_mean": 0.01869494874992987
+            },
+            "expert_activation": {
+              "mape": 0.018401637965214167,
+              "p90_ape": 0.024344612763768356,
+              "rows": 512,
+              "signed_mean": 0.018401637965214167
+            },
+            "expert_down": {
+              "mape": 0.01405455416363598,
+              "p90_ape": 0.02511596183469495,
+              "rows": 512,
+              "signed_mean": 0.008882145891593115
+            },
+            "expert_up": {
+              "mape": 0.036124873399207114,
+              "p90_ape": 0.05815037609181682,
+              "rows": 1024,
+              "signed_mean": 0.034925559599819044
+            },
+            "kv_projection": {
+              "mape": 0.1916716529028661,
+              "p90_ape": 0.33948897173385206,
+              "rows": 2048,
+              "signed_mean": 0.18513029100438655
+            },
+            "lm_head": {
+              "mape": 0.022508211180712223,
+              "p90_ape": 0.0414837951163217,
+              "rows": 1024,
+              "signed_mean": 0.0006028652421603117
+            },
+            "norm": {
+              "mape": 0.02816145377042605,
+              "p90_ape": 0.043141094936968605,
+              "rows": 3072,
+              "signed_mean": -0.02750710137004085
+            },
+            "o_projection": {
+              "mape": 0.07322940196079007,
+              "p90_ape": 0.15194546186652302,
+              "rows": 1024,
+              "signed_mean": 0.05817836502555926
+            },
+            "prefill_attention": {
+              "mape": 0.049087227792162375,
+              "p90_ape": 0.09216913790333807,
+              "rows": 16,
+              "signed_mean": -0.018249340252716916
+            },
+            "q_projection": {
+              "mape": 0.12249455891736498,
+              "p90_ape": 0.20095690803953964,
+              "rows": 1024,
+              "signed_mean": 0.08192665937709646
+            },
+            "rope": {
+              "mape": 0.20110635215418876,
+              "p90_ape": 0.3894281080031784,
+              "rows": 1024,
+              "signed_mean": 0.19664873548685657
+            },
+            "router": {
+              "mape": 0.32054692433953635,
+              "p90_ape": 0.43982086525814323,
+              "rows": 512,
+              "signed_mean": 0.32054692433953635
+            }
+          },
+          "rows": 14864,
+          "split": "layers: train M=1025..1536, contiguous holdout M=1537..2048; attention: train q=512..768, contiguous holdout q=800..1024",
+          "weighted_mape": 0.08230983001027048,
+          "weighted_signed_mean": 0.05855914341959838
+        }
+      }
+    },
+    "method_reference": {
+      "adapted_equation": "t=max(t_roof*eta,t0); t_roof=max((F/P_peak)*u,B/BW_peak); u=ceil(thread_blocks/num_sms)*num_sms/thread_blocks",
+      "name": "KernelSight-LM kernel-level roofline",
+      "url": "https://arxiv.org/abs/2606.28565"
+    },
+    "producer_source_sha256": {
+      "profiler/v0/models/llama.py": "34d71e5b76427464120b6347e901cbe9963b74cc794c72ed11934b606ebdf33f",
+      "profiler/v0/models/mixtral.py": "6143be0e5ce3b4cd5abc17cf3acca8321718422f2e35dacbd144020cb329c988",
+      "profiler/v0/profiler/attention/attention_input.py": "d6abf7003532cd093aab8c18b612864fc6f66aef64814796a097e7ae397e7d2b",
+      "profiler/v0/profiler/attention/attention_profiler.py": "3998208c081bc39c38f84122fbc7177f11f6bb8413916027fd68f3443bc690a4",
+      "profiler/v0/profiler/attention/batch_sampling.py": "3641a23e6de5bc301af53a2202da29d3c1f54112e5f4c1c577e3e7c23c841bac",
+      "profiler/v0/profiler/attention/main.py": "c0b281351fae3cf2f3f3d550568880d07973da97f52efe94e1a4d7a106a10d7e",
+      "profiler/v0/profiler/common/timer.py": "4152a18b2b99aa13647ad33ad66b84208efcba9e85ce9af0137bf63d52a44464",
+      "profiler/v0/profiler/common/timer_stats_store.py": "16d52eb14a9a9234c8243364da41f1f82e891e5b78064758eb2495d7a18a4805",
+      "profiler/v0/profiler/layers/main.py": "285051ddcae012bb933c707734642ee399feb88488329f98bcb1e775bcabe3fe",
+      "profiler/v0/profiler/utils/__init__.py": "5a89d2bfa6205d2c739b8e6514e65d86e9f27d07e0e02f588139950e4048e00f",
+      "profiler/v0/profiler/utils/record_function_tracer.py": "22f7a41174ed6d405d4854f0ba8d2389d8103a63e5cf0c68264456f7fcf913a3"
+    },
+    "same_endpoint_predictor_object_for_finite_and_oracle": true,
+    "source_sha256": {
+      "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/attention.csv": "93d67794cf243fb481a0598549b94caa77e20ad0c8a215344a86ac8b9f5a5146",
+      "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/layers.csv": "41fd31dd27f5295d309bc2c926a0c01dc1c772f321074afe84f41d81f6a60735",
+      "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/attention.csv": "69b42685767810ae7419d8b08302714047444f3051246fd1ca7939318ae57a6d",
+      "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/layers.csv": "afcb40d69e346db7521540c6f09604183fb5ca42d675c0c53a6a9753dbb15ee4"
+    },
+    "whole_prompt_compute_scale": 1.0
+  },
+  "python": {
+    "implementation": "CPython",
+    "platform": "Linux-5.15.0-78-generic-x86_64-with-glibc2.31",
+    "version": "3.9.5"
+  },
+  "repository_profile_evidence": {
+    "current_legacy_producer_snapshot": {
+      "proven_to_be_measurement_revision": false,
+      "scope": "Hash binding for the current repository implementation; the CSVs do not carry a producer commit or environment manifest that proves this was the generating revision.",
+      "source_sha256": {
+        "profiler/v0/models/llama.py": "34d71e5b76427464120b6347e901cbe9963b74cc794c72ed11934b606ebdf33f",
+        "profiler/v0/models/mixtral.py": "6143be0e5ce3b4cd5abc17cf3acca8321718422f2e35dacbd144020cb329c988",
+        "profiler/v0/profiler/attention/attention_input.py": "d6abf7003532cd093aab8c18b612864fc6f66aef64814796a097e7ae397e7d2b",
+        "profiler/v0/profiler/attention/attention_profiler.py": "3998208c081bc39c38f84122fbc7177f11f6bb8413916027fd68f3443bc690a4",
+        "profiler/v0/profiler/attention/batch_sampling.py": "3641a23e6de5bc301af53a2202da29d3c1f54112e5f4c1c577e3e7c23c841bac",
+        "profiler/v0/profiler/attention/main.py": "c0b281351fae3cf2f3f3d550568880d07973da97f52efe94e1a4d7a106a10d7e",
+        "profiler/v0/profiler/common/timer.py": "4152a18b2b99aa13647ad33ad66b84208efcba9e85ce9af0137bf63d52a44464",
+        "profiler/v0/profiler/common/timer_stats_store.py": "16d52eb14a9a9234c8243364da41f1f82e891e5b78064758eb2495d7a18a4805",
+        "profiler/v0/profiler/layers/main.py": "285051ddcae012bb933c707734642ee399feb88488329f98bcb1e775bcabe3fe",
+        "profiler/v0/profiler/utils/__init__.py": "5a89d2bfa6205d2c739b8e6514e65d86e9f27d07e0e02f588139950e4048e00f",
+        "profiler/v0/profiler/utils/record_function_tracer.py": "22f7a41174ed6d405d4854f0ba8d2389d8103a63e5cf0c68264456f7fcf913a3"
+      }
+    },
+    "hash_binding": "Every source is hashed from repository bytes at experiment start. Predictor metadata carries the same source hashes.",
+    "legacy_h100_kernel_calibration": [
+      {
+        "artifact_kind": "layers",
+        "measurement_dtype": "float16",
+        "model": "meta-llama/Llama-3.1-70B",
+        "path": "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/layers.csv",
+        "sha256": "41fd31dd27f5295d309bc2c926a0c01dc1c772f321074afe84f41d81f6a60735",
+        "tp_size": 4,
+        "use": "Legacy component timing artifact labeled H100, used for calibration and/or held-out validation of the analytical Qwen projection. Exact measurement-system identity is unavailable.",
+        "used": true
+      },
+      {
+        "artifact_kind": "attention",
+        "measurement_dtype": "float16",
+        "model": "meta-llama/Llama-3.1-70B",
+        "path": "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/attention.csv",
+        "sha256": "93d67794cf243fb481a0598549b94caa77e20ad0c8a215344a86ac8b9f5a5146",
+        "tp_size": 4,
+        "use": "Legacy component timing artifact labeled H100, used for calibration and/or held-out validation of the analytical Qwen projection. Exact measurement-system identity is unavailable.",
+        "used": true
+      },
+      {
+        "artifact_kind": "layers",
+        "measurement_dtype": "float16",
+        "model": "mistralai/Mixtral-8x7B-v0.1",
+        "path": "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/layers.csv",
+        "sha256": "afcb40d69e346db7521540c6f09604183fb5ca42d675c0c53a6a9753dbb15ee4",
+        "tp_size": 4,
+        "use": "Legacy component timing artifact labeled H100, used for calibration and/or held-out validation of the analytical Qwen projection. Exact measurement-system identity is unavailable.",
+        "used": true
+      },
+      {
+        "artifact_kind": "attention",
+        "measurement_dtype": "float16",
+        "model": "mistralai/Mixtral-8x7B-v0.1",
+        "path": "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/attention.csv",
+        "sha256": "69b42685767810ae7419d8b08302714047444f3051246fd1ca7939318ae57a6d",
+        "tp_size": 4,
+        "use": "Legacy component timing artifact labeled H100, used for calibration and/or held-out validation of the analytical Qwen projection. Exact measurement-system identity is unavailable.",
+        "used": true
+      }
+    ]
+  },
+  "reserve_derivation": {
+    "cases": [
+      {
+        "common_bytes_per_rank": 0,
+        "decode_bytes_per_rank": null,
+        "name": "zero_residual",
+        "prefill_bytes_per_rank": null,
+        "provenance": "Sensitivity derived from the official model card's approximate 240 GB whole-engine statement. The target non-KV bytes/rank equal exact checkpoint bytes/rank plus 0 times the inferred residual. The core reserve is adjusted because the replay subtracts its architecture-derived weight estimate. At zero residual, a negative adjustment is not representable, so zero is used and the small weight-estimate delta is reported.",
+        "target_residual_fraction": 0.0
+      }
+    ],
+    "formula": "residual = 240,000,000,000 / 4 - 61,064,245,248 / 4 - 1,010,000 * 24,576",
+    "full_residual_core_reserve_formula": "checkpoint_bytes_per_rank + inferred_residual - architecture_weight_bytes_per_rank",
+    "inferred_runtime_residual_bytes_per_rank": 19912178688,
+    "interpretation": "Residual inferred from an approximate whole-engine model-card statement after exact checkpoint and KV subtraction. It is not a measured activation or runtime reserve.",
+    "model_card_approx_engine_bytes_per_tp4_rank": 60000000000,
+    "model_card_approx_engine_bytes_total": 240000000000,
+    "pd_application": "The sensitivity is applied independently to both P4 roles. P4+D4 duplicates weights and role-local runtime state; the model card's approximate 240 GB statement is not itself a P/D-topology measurement."
+  },
+  "runs": [
+    {
+      "attention_multiplier": 1.0,
+      "calibration_band": "slow",
+      "compute_endpoint": "slow_full_attention",
+      "paired_infinite_hbm_oracle": true,
+      "policy": "hbm_lru_recompute",
+      "prompt_compute_calibration_metadata_sha256": "7ab34ecab1e29f81f109d4597e1dd24c0acdcc3dde5f9ee96109132252d72f69",
+      "report": "zero_residual__slow_full_attention__hbm_lru_recompute.json",
+      "report_schema_version": 15,
+      "report_sha256": "f0c60691efcb13107fd0e56209200b03d36199be3030e7d1a3aca910e0cc8f59",
+      "reserve_case": "zero_residual",
+      "resolved_config": {
+        "block_size": 16,
+        "cancel_migration_on_resume": false,
+        "cpu_capacity_bytes": 2000000000000,
+        "cpu_ttl_ns": 30000000000,
+        "decode_hbm_static_reserve_bytes_per_rank": null,
+        "demotion_mode": "capacity-only",
+        "enable_transfer_queueing": true,
+        "hbm_capacity_bytes_per_rank": 80000000000,
+        "hbm_static_reserve_bytes_per_rank": 0,
+        "hbm_ttl_ns": 50000000,
+        "pd_disaggregated": true,
+        "pd_fixed_latency_us": 3.0,
+        "pd_link_gbps_per_rank": 450.0,
+        "policy": "hbm_lru_recompute",
+        "prefill_chunk_size": 131072,
+        "prefill_hbm_static_reserve_bytes_per_rank": null,
+        "prompt_compute_scale": 1.0,
+        "prompt_compute_scale_provenance": "Identity whole-prompt scale. Compute-band and attention-only sensitivity are represented inside the calibrated prompt predictor: Slow coefficient band from legacy-H100 fit uncertainty with full analytical causal-attention work. Optional sensitivity.",
+        "restore_execution_mode": "async-pre-admission",
+        "ssd_capacity_bytes": 30720000000000,
+        "ssd_ttl_ns": 3600000000000,
+        "weight_dtype_bytes": 2
+      },
+      "run_id": "zero_residual__slow_full_attention__hbm_lru_recompute"
+    },
+    {
+      "attention_multiplier": 1.0,
+      "calibration_band": "slow",
+      "compute_endpoint": "slow_full_attention",
+      "paired_infinite_hbm_oracle": true,
+      "policy": "hbm_ssd_direct",
+      "prompt_compute_calibration_metadata_sha256": "7ab34ecab1e29f81f109d4597e1dd24c0acdcc3dde5f9ee96109132252d72f69",
+      "report": "zero_residual__slow_full_attention__hbm_ssd_direct.json",
+      "report_schema_version": 15,
+      "report_sha256": "341601bb1f08e3d27ce7f158f22a5d9d213a06c53b0b5a21c07d599546d92c88",
+      "reserve_case": "zero_residual",
+      "resolved_config": {
+        "block_size": 16,
+        "cancel_migration_on_resume": false,
+        "cpu_capacity_bytes": 2000000000000,
+        "cpu_ttl_ns": 30000000000,
+        "decode_hbm_static_reserve_bytes_per_rank": null,
+        "demotion_mode": "capacity-only",
+        "enable_transfer_queueing": true,
+        "hbm_capacity_bytes_per_rank": 80000000000,
+        "hbm_static_reserve_bytes_per_rank": 0,
+        "hbm_ttl_ns": 50000000,
+        "pd_disaggregated": true,
+        "pd_fixed_latency_us": 3.0,
+        "pd_link_gbps_per_rank": 450.0,
+        "policy": "hbm_ssd_direct",
+        "prefill_chunk_size": 131072,
+        "prefill_hbm_static_reserve_bytes_per_rank": null,
+        "prompt_compute_scale": 1.0,
+        "prompt_compute_scale_provenance": "Identity whole-prompt scale. Compute-band and attention-only sensitivity are represented inside the calibrated prompt predictor: Slow coefficient band from legacy-H100 fit uncertainty with full analytical causal-attention work. Optional sensitivity.",
+        "restore_execution_mode": "async-pre-admission",
+        "ssd_capacity_bytes": 30720000000000,
+        "ssd_ttl_ns": 3600000000000,
+        "weight_dtype_bytes": 2
+      },
+      "run_id": "zero_residual__slow_full_attention__hbm_ssd_direct"
+    },
+    {
+      "attention_multiplier": 1.0,
+      "calibration_band": "slow",
+      "compute_endpoint": "slow_full_attention",
+      "paired_infinite_hbm_oracle": true,
+      "policy": "tiered",
+      "prompt_compute_calibration_metadata_sha256": "7ab34ecab1e29f81f109d4597e1dd24c0acdcc3dde5f9ee96109132252d72f69",
+      "report": "zero_residual__slow_full_attention__tiered.json",
+      "report_schema_version": 15,
+      "report_sha256": "6524dab67ad126e19eb4af6a97cf7432a487b0575cf9e16a426f1923cd3f085a",
+      "reserve_case": "zero_residual",
+      "resolved_config": {
+        "block_size": 16,
+        "cancel_migration_on_resume": false,
+        "cpu_capacity_bytes": 2000000000000,
+        "cpu_ttl_ns": 30000000000,
+        "decode_hbm_static_reserve_bytes_per_rank": null,
+        "demotion_mode": "capacity-only",
+        "enable_transfer_queueing": true,
+        "hbm_capacity_bytes_per_rank": 80000000000,
+        "hbm_static_reserve_bytes_per_rank": 0,
+        "hbm_ttl_ns": 50000000,
+        "pd_disaggregated": true,
+        "pd_fixed_latency_us": 3.0,
+        "pd_link_gbps_per_rank": 450.0,
+        "policy": "tiered",
+        "prefill_chunk_size": 131072,
+        "prefill_hbm_static_reserve_bytes_per_rank": null,
+        "prompt_compute_scale": 1.0,
+        "prompt_compute_scale_provenance": "Identity whole-prompt scale. Compute-band and attention-only sensitivity are represented inside the calibrated prompt predictor: Slow coefficient band from legacy-H100 fit uncertainty with full analytical causal-attention work. Optional sensitivity.",
+        "restore_execution_mode": "async-pre-admission",
+        "ssd_capacity_bytes": 30720000000000,
+        "ssd_ttl_ns": 3600000000000,
+        "weight_dtype_bytes": 2
+      },
+      "run_id": "zero_residual__slow_full_attention__tiered"
+    }
+  ],
+  "schema_version": 3,
+  "tables": {
+    "return_sources.csv": {
+      "rows": 60,
+      "sha256": "6d600fd0bd25bdb3b2614ecf3f983a2c8cec1a2034feb61bc14a8b87e34a9804"
+    },
+    "summary.csv": {
+      "rows": 3,
+      "sha256": "3efac54224e0e968f31207e0514fb543414cd4b38885b603047714366c37879b"
+    },
+    "transfer_stages.csv": {
+      "rows": 14,
+      "sha256": "de8f0a49bd5ed8a752aa51b3818d5e86532cd8026e07eb0f5e6fd58b5830a0a5"
+    }
+  },
+  "working_directory": "/home/hnpark2/LLMServingSim-repo",
+  "workload": {
+    "block_size": 16,
+    "calls": 357161,
+    "calls_above_native_262144": 34954,
+    "context_eligibility_semantics": "input_toks + output_toks <= max_context_tokens; the model context window includes both prompt and generated tokens",
+    "declared_zero_append_calls": 12,
+    "eligible_return_gap_type_counts": {
+      "human": 26952,
+      "mixed": 2557,
+      "tool": 308885
+    },
+    "fraction_calls_above_native_262144": 0.0978662283955975,
+    "fresh_prompt_token_semantics": "Execution fresh tokens are always max(0, input_toks - effective_reuse_toks). raw_newly_append_toks is preferred over newly_append_toks and preserved separately as declared_newly_append_tokens.",
+    "input_token_distribution": {
+      "count": 357161,
+      "max": 999888,
+      "mean": 153707.60142064784,
+      "min": 1,
+      "p50": 124018,
+      "p90": 256767,
+      "p95": 406015,
+      "p99": 822895,
+      "percentile_method": "nearest_rank"
+    },
+    "max_context_tokens": 1010000,
+    "path": "/tmp/tracelab-schema3-sps0.2-final.jsonl",
+    "prompt_plus_output_token_distribution": {
+      "count": 357161,
+      "max": 1006146,
+      "mean": 154231.01810948004,
+      "min": 2,
+      "p50": 124536,
+      "p90": 257628,
+      "p95": 407025,
+      "p99": 823622,
+      "percentile_method": "nearest_rank"
+    },
+    "resolved_path": "/tmp/tracelab-schema3-sps0.2-final.jsonl",
+    "return_gap_type_counts": {
+      "human": 31997,
+      "mixed": 3097,
+      "session_start": 4281,
+      "tool": 313179,
+      "unknown": 4607
+    },
+    "reuse_source_counts": {
+      "explicit_estimated": 345710
+    },
+    "selected_positive_transitions": 345710,
+    "selected_return_gap_type_counts": {
+      "human": 31960,
+      "mixed": 3057,
+      "tool": 310693
+    },
+    "selected_reuse_eligible_transitions": 338394,
+    "sessions": 4281,
+    "sha256": "b6188582aac9467cee8c73e4275f9a9606b359f8c2fa000d9f49a9ca3bde02f0",
+    "token_count_provenance": "TraceLab source-provider token-count surrogates; not exact Qwen tokenizer IDs. No request is padded to 1M.",
+    "transitions_excluded_context": 0
+  },
+  "workload_provenance": {
+    "converter": {
+      "arguments": {
+        "first_arrival_sec": 0.0,
+        "hf_config": null,
+        "max_sessions": 0,
+        "max_source_rows": 0,
+        "seed": 42,
+        "sessions_per_second": 0.2,
+        "source_format": "tracelab",
+        "source_revision": "v0.0.1",
+        "split": "train",
+        "strict": false,
+        "target_tokenizer": null,
+        "target_tokenizer_revision": null,
+        "tool_wait_mode": "union",
+        "tracelab_reuse_mode": "eligible",
+        "trust_remote_code": false
+      },
+      "commit": "42a84b9ccff12a52ebfafa5f900e0d28e3015a8f",
+      "commit_status": "declared",
+      "generator": "workloads.generators.agent_traces",
+      "git_dirty_tracked_files": false,
+      "module_sha256": "679427d03da64ac69de20a3fae6c6fcfe78a6b228a76d9406880a4306e98be26",
+      "schema_version": 3,
+      "schema_version_status": "declared",
+      "version": null,
+      "version_status": "missing"
+    },
+    "discovery": "explicit",
+    "output_binding": {
+      "actual_sha256": "b6188582aac9467cee8c73e4275f9a9606b359f8c2fa000d9f49a9ca3bde02f0",
+      "declared_sha256": "b6188582aac9467cee8c73e4275f9a9606b359f8c2fa000d9f49a9ca3bde02f0",
+      "status": "verified"
+    },
+    "raw_manifest": {
+      "arrivals": {
+        "distribution": "poisson",
+        "first_arrival_sec": 0.0,
+        "seed": 42,
+        "sessions_per_second": 0.2
+      },
+      "converter": {
+        "arguments": {
+          "first_arrival_sec": 0.0,
+          "hf_config": null,
+          "max_sessions": 0,
+          "max_source_rows": 0,
+          "seed": 42,
+          "sessions_per_second": 0.2,
+          "source_format": "tracelab",
+          "source_revision": "v0.0.1",
+          "split": "train",
+          "strict": false,
+          "target_tokenizer": null,
+          "target_tokenizer_revision": null,
+          "tool_wait_mode": "union",
+          "tracelab_reuse_mode": "eligible",
+          "trust_remote_code": false
+        },
+        "git_commit": "42a84b9ccff12a52ebfafa5f900e0d28e3015a8f",
+        "git_dirty_tracked_files": false,
+        "module": "workloads.generators.agent_traces",
+        "module_sha256": "679427d03da64ac69de20a3fae6c6fcfe78a6b228a76d9406880a4306e98be26"
+      },
+      "generator": "workloads.generators.agent_traces",
+      "output": {
+        "path": "/tmp/tracelab-schema3-sps0.2-final.jsonl",
+        "sha256": "b6188582aac9467cee8c73e4275f9a9606b359f8c2fa000d9f49a9ca3bde02f0"
+      },
+      "schema_version": 3,
+      "source": {
+        "format": "tracelab",
+        "hf_config": null,
+        "location": "/tmp/syfi_coding_trace.jsonl.gz",
+        "models": [
+          "claude-haiku-4-5-20251001",
+          "claude-opus-4-1-20250805",
+          "claude-opus-4-5-20251101",
+          "claude-opus-4-6",
+          "claude-opus-4-7",
+          "claude-opus-4-8",
+          "claude-sonnet-4-20250514",
+          "claude-sonnet-4-5-20250929",
+          "claude-sonnet-4-6",
+          "codex-auto-review",
+          "gpt-5",
+          "gpt-5-codex",
+          "gpt-5.1",
+          "gpt-5.1-codex",
+          "gpt-5.1-codex-max",
+          "gpt-5.1-codex-mini",
+          "gpt-5.2",
+          "gpt-5.2-codex",
+          "gpt-5.3-codex",
+          "gpt-5.3-codex-spark",
+          "gpt-5.4",
+          "gpt-5.4-mini",
+          "gpt-5.5"
+        ],
+        "revision": "v0.0.1",
+        "rows_read": 357161,
+        "sha256": "9d265eae69a31cae203848bea936f018148eed7ca8bf56050c5abe96da0b4e6b",
+        "size_bytes": 53601226,
+        "split": "train",
+        "tracelab_reuse_mode": "eligible"
+      },
+      "summary": {
+        "input_tokens": {
+          "max": 999888,
+          "mean": 153707.60142064784,
+          "min": 1,
+          "p50": 124018,
+          "p90": 256767
+        },
+        "inter_turn_gap_type_counts": {
+          "human": 31997,
+          "mixed": 3097,
+          "none": 4281,
+          "tool": 313179,
+          "unknown": 4607
+        },
+        "lineage_status_counts": {
+          "adjacent_estimate": 345013,
+          "context_shrink": 7867,
+          "session_start": 4281
+        },
+        "observed_provider_hit_tokens": {
+          "max": 999469,
+          "mean": 147168.49646517957,
+          "min": 0,
+          "p50": 118656,
+          "p90": 247834
+        },
+        "output_tokens": {
+          "max": 64000,
+          "mean": 523.4166888322073,
+          "min": 1,
+          "p50": 214,
+          "p90": 1169
+        },
+        "policy_independent_reuse_tokens": {
+          "max": 999699,
+          "mean": 149829.8677599178,
+          "min": 0,
+          "p50": 120663,
+          "p90": 255833
+        },
+        "prefix_reuse_source_counts": {
+          "estimated": 357161
+        },
+        "sessions_emitted": 4281,
+        "sessions_seen": 4281,
+        "sessions_skipped": 0,
+        "sub_requests_emitted": 357161,
+        "token_count_source_counts": {
+          "input:reported_source_tokenizer": 357161,
+          "output:reported_source_tokenizer": 357161
+        },
+        "tool_wait_ns": {
+          "max": 2703598603000000,
+          "mean": 320516490960.6592,
+          "min": 0,
+          "p50": 324000000,
+          "p90": 53178000000
+        },
+        "tool_wait_source_counts": {
+          "session_end": 4281,
+          "tracelab_event_boundary": 316371,
+          "tracelab_negative_event_boundary_zero": 17,
+          "tracelab_tool_union_fallback": 31885,
+          "tracelab_unmeasurable_zero": 4607
+        },
+        "total_tool_wait_ns": 114475990428000000,
+        "turns_per_session": {
+          "max": 7610,
+          "mean": 83.42933893950011,
+          "min": 1,
+          "p50": 17,
+          "p90": 157
+        }
+      },
+      "tokenizers": {
+        "mixed_source_and_target_counts": false,
+        "note": "TraceLab has no sanitized prompt text. LMCache has no standalone output field, but a normal continuation carries the previous assistant message in its next cumulative prompt. Source-reported counts are retained where target retokenization is impossible.",
+        "source": "reported per source model when available",
+        "target": null,
+        "target_revision": null
+      },
+      "validation": {
+        "error_count": 0,
+        "status": "passed_with_warnings",
+        "warning_count": 44464,
+        "warning_counts": {
+          "source_session_id_collision_disambiguated": 32,
+          "tracelab_context_shrink_lineage_reset": 7867,
+          "tracelab_event_boundary_missing_used_tool_fallback": 31885,
+          "tracelab_negative_event_boundary_gap_zeroed": 17,
+          "tracelab_tool_latency_missing": 12,
+          "tracelab_transition_gap_unmeasurable_zeroed": 4607,
+          "tracelab_zero_append_promoted_to_one": 12,
+          "tracelab_zero_output_promoted_to_one": 32
+        }
+      }
+    },
+    "sidecar": {
+      "bytes": 4875,
+      "exists": true,
+      "path": "/tmp/tracelab-schema3-sps0.2-final.jsonl.manifest.json",
+      "sha256": "e45575b40c204df259ad8535a2022ccce7d5c09f9265303d14040d47e0cc1e3e"
+    },
+    "status": "loaded",
+    "tracelab_source": {
+      "computed_sha256": "9d265eae69a31cae203848bea936f018148eed7ca8bf56050c5abe96da0b4e6b",
+      "declared_sha256": "9d265eae69a31cae203848bea936f018148eed7ca8bf56050c5abe96da0b4e6b",
+      "format": "tracelab",
+      "location": "/tmp/syfi_coding_trace.jsonl.gz",
+      "resolved_local_path": "/tmp/syfi_coding_trace.jsonl.gz",
+      "revision": "v0.0.1",
+      "revision_status": "declared",
+      "sha256": "9d265eae69a31cae203848bea936f018148eed7ca8bf56050c5abe96da0b4e6b",
+      "sha256_interpretation": "A declared_and_verified hash is bound by both the sidecar and the currently readable source file. A computed-only hash identifies the source path at experiment time but does not prove that identical bytes were used at conversion time.",
+      "sha256_status": "declared_and_verified"
+    },
+    "validation": {
+      "error_count": 0,
+      "status": "passed_with_warnings",
+      "status_provenance": "declared",
+      "warning_count": 44464,
+      "warning_count_matches_counters": true,
+      "warning_counts": {
+        "source_session_id_collision_disambiguated": 32,
+        "tracelab_context_shrink_lineage_reset": 7867,
+        "tracelab_event_boundary_missing_used_tool_fallback": 31885,
+        "tracelab_negative_event_boundary_gap_zeroed": 17,
+        "tracelab_tool_latency_missing": 12,
+        "tracelab_transition_gap_unmeasurable_zeroed": 4607,
+        "tracelab_zero_append_promoted_to_one": 12,
+        "tracelab_zero_output_promoted_to_one": 32
+      }
+    },
+    "warning": null
+  }
+}

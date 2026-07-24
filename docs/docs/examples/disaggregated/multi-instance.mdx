@@ -1,0 +1,118 @@
+---
+title: Multi-instance LOAD routing
+sidebar_position: 1
+---
+
+# Multi-instance with LOAD routing
+
+> **What this demonstrates:** running two independent serving
+> instances on the same node with vLLM-style load-aware request
+> routing.
+
+This is the simplest "scale out" pattern: replicate the same model
+across multiple instances and let the router pick the least-loaded
+one for each new request. It's what real production deployments
+(vLLM, TGI, SGLang) do under a load balancer.
+
+## Prerequisites
+
+- Simulator container set up
+- Bundled RTXPRO6000 profile for `meta-llama/Llama-3.1-8B`
+
+## Cluster config
+
+`configs/cluster/single_node_multi_instance.json`:
+
+```json title="configs/cluster/single_node_multi_instance.json"
+{
+  "num_nodes": 1,
+  "link_bw": 16,
+  "link_latency": 20000,
+  "nodes": [
+    {
+      "num_instances": 2,
+      "cpu_mem": {"mem_size": 512, "mem_bw": 256, "mem_latency": 0},
+      "instances": [
+        {
+          "model_name": "meta-llama/Llama-3.1-8B",
+          "hardware": "RTXPRO6000",
+          "npu_mem": {"mem_size": 96, "mem_bw": 1597, "mem_latency": 0},
+          "pd_type": null,
+          "tp_size": 1
+        },
+        {
+          "model_name": "meta-llama/Llama-3.1-8B",
+          "hardware": "RTXPRO6000",
+          "npu_mem": {"mem_size": 96, "mem_bw": 1597, "mem_latency": 0},
+          "pd_type": null,
+          "tp_size": 1
+        }
+      ]
+    }
+  ]
+}
+```
+
+The two pieces:
+
+- `num_instances: 2` and matching `instances` array length.
+- Each instance is independent, same model, same hardware, **no**
+  `dp_group` (so they don't share experts or wave-sync).
+
+## Run
+
+```bash
+python -m serving \
+  --cluster-config 'configs/cluster/single_node_multi_instance.json' \
+  --dtype float16 --block-size 16 \
+  --dataset 'workloads/example_trace.jsonl' \
+  --output 'outputs/multi_instance_run.csv' \
+  --request-routing-policy LOAD \
+  --log-interval 1.0
+```
+
+`--request-routing-policy LOAD` is the default but explicit here for
+clarity. Options:
+
+- `LOAD`: vLLM-style least-loaded — score `waiting * 4 + running`
+- `RR`: pure round-robin
+- `RAND`: random pick
+- `CUSTOM`: pluggable in `serving/core/router.py`
+
+## Expected output
+
+```text
+[INFO] step=20 inst0_batch=6 inst1_batch=4 prompt_t=2.4k tok/s decode_t=820 tok/s
+       npu_mem=[63.2 GB, 63.2 GB]
+[INFO] step=21 inst0_batch=6 inst1_batch=5 prompt_t=2.5k tok/s decode_t=860 tok/s
+       npu_mem=[63.2 GB, 63.2 GB]
+```
+
+The router fills the lighter-loaded instance first. With LOAD policy,
+pending tokens (running + waiting) and active KV-cache footprint both
+weight the choice, same algorithm vLLM uses.
+
+The output CSV gets one row per finished request as usual; each row
+has an `instance_id` column so you can split by replica.
+
+## What's interesting
+
+- **Throughput roughly 2× single-instance** for typical workloads,
+  modulo PCIe / link contention from the shared host (modeled via
+  `link_bw`).
+- **Memory doubles linearly**: the model is fully replicated. No
+  free lunch on weight memory; that's what TP / EP / DP+EP solve.
+- **Per-instance KV cache.** Prefix caching is per-instance by
+  default, a request that lands on instance 1 can't reuse a prefix
+  computed on instance 0 unless prefix sharing is enabled (see
+  [Prefix caching](../memory-tiers/prefix-caching)).
+
+## Related examples
+
+- **[Tensor parallel](../parallelism/tensor-parallel)**: the
+  alternative way to use 2 GPUs (one bigger instance instead of two
+  replicas).
+- **[Prefill/decode split](./prefill-decode-split)**: multi-instance
+  but with *specialized* roles per instance.
+- **[DP+EP MoE](../parallelism/dp-ep-moe)**: multi-instance for MoE
+  with cross-instance expert sharing.

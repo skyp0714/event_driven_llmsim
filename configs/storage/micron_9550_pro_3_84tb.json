@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "profile_id": "micron_9550_pro_3_84tb",
+  "vendor": "Micron",
+  "model": "9550 PRO 3.84TB",
+  "capacity_gb_decimal": 3840,
+  "default_rating": "conservative_4k_random",
+  "ratings": {
+    "conservative_4k_random": {
+      "accounting_basis": "host_tbw",
+      "rated_tbw_tb": 7008,
+      "rated_dwpd": 1.0,
+      "warranty_years": 5,
+      "workload": "100% random aligned 4KB host writes with the drive 100% full"
+    },
+    "sequential_128k_sensitivity": {
+      "accounting_basis": "host_tbw",
+      "rated_tbw_tb": 29400,
+      "warranty_years": 5,
+      "workload": "100% sequential 128KB host writes",
+      "sensitivity_only": true
+    }
+  },
+  "source": {
+    "title": "Micron 9550 SSD Series Technical Product Specification",
+    "revision": "Rev. A, February 2025, Table 3",
+    "url": "https://www.micron.com/content/dam/micron/global/public/products/data-sheet/ssd/9550-nvme-ssd-tech-prod-spec.pdf"
+  },
+  "performance": {
+    "sequential_128k_read_gbps": 14.0,
+    "sequential_128k_write_gbps": 6.0,
+    "random_4k_read_kiops": 3000,
+    "random_4k_write_kiops": 300,
+    "typical_read_latency_us": 60,
+    "typical_write_latency_us": 11
+  },
+  "notes": "Use conservative_4k_random for the primary result. The sequential rating is an optimistic sensitivity for a measured large, sequential, log-structured KV write path. The 3.84TB SKU sustains 14/6 GB/s sequential read/write; the 10 GB/s headline write rate applies only to larger capacities."
+}

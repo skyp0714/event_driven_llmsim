@@ -1,0 +1,99 @@
+.grid {
+  display: grid;
+  gap: 1.1rem;
+  margin: 1.5rem 0 2rem;
+}
+
+.cols2 {
+  grid-template-columns: repeat(2, 1fr);
+}
+.cols3 {
+  grid-template-columns: repeat(3, 1fr);
+}
+.cols4 {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+@media (max-width: 996px) {
+  .cols3,
+  .cols4 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 600px) {
+  .cols2,
+  .cols3,
+  .cols4 {
+    grid-template-columns: 1fr;
+  }
+}
+
+.card {
+  padding: 1.5rem 1.35rem 1.4rem;
+  border-radius: 12px;
+  background: var(
+    --ifm-card-background-color,
+    var(--ifm-background-surface-color)
+  );
+  border: 1px solid var(--ifm-color-emphasis-200);
+  transition: transform 0.18s ease, box-shadow 0.18s ease,
+    border-color 0.18s ease;
+  display: flex;
+  flex-direction: column;
+  text-decoration: none;
+  color: inherit;
+}
+
+a.card:hover {
+  text-decoration: none;
+  transform: translateY(-2px);
+  border-color: var(--ifm-color-primary-light);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
+  color: inherit;
+}
+
+[data-theme='dark'] a.card:hover {
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+  border-color: var(--ifm-color-primary-lighter);
+}
+
+.iconBadge {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--ifm-color-primary);
+  margin-bottom: 0.9rem;
+  flex-shrink: 0;
+}
+
+[data-theme='dark'] .iconBadge {
+  background: rgba(129, 140, 248, 0.16);
+  color: var(--ifm-color-primary-lighter);
+}
+
+a.card:hover .iconBadge {
+  background: rgba(99, 102, 241, 0.16);
+}
+
+[data-theme='dark'] a.card:hover .iconBadge {
+  background: rgba(129, 140, 248, 0.22);
+}
+
+.title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin: 0 0 0.4rem;
+  letter-spacing: -0.01em;
+}
+
+.description {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: var(--ifm-color-emphasis-700);
+}

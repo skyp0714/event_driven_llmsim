@@ -1,0 +1,941 @@
+{
+  "base_calibration_metadata": {
+    "duplicate_attention_points_coalesced": 32,
+    "kernel_fits": {
+      "dense_activation": {
+        "eta_central": 1.7469051408078196,
+        "eta_fast": 1.6630042554035525,
+        "eta_slow": 1.7779082742059302,
+        "family": "dense_activation",
+        "holdout_mape": 0.0480451834471384,
+        "holdout_p90_ape": 0.0797636080479726,
+        "holdout_rows": 512,
+        "holdout_signed_mean": -0.0480451834471384,
+        "launch_floor_seconds": 4.0475e-06,
+        "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+        "source_models": [
+          "meta-llama/Llama-3.1-70B"
+        ],
+        "training_rows": 512
+      },
+      "dense_ffn_down": {
+        "eta_central": 1.286194802914077,
+        "eta_fast": 1.2669168737261767,
+        "eta_slow": 1.3255236917568418,
+        "family": "dense_ffn_down",
+        "holdout_mape": 0.017782953108549656,
+        "holdout_p90_ape": 0.033508681850731616,
+        "holdout_rows": 512,
+        "holdout_signed_mean": 7.353637856880678e-05,
+        "launch_floor_seconds": 4.03355e-05,
+        "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+        "source_models": [
+          "meta-llama/Llama-3.1-70B"
+        ],
+        "training_rows": 512
+      },
+      "dense_ffn_up": {
+        "eta_central": 1.2791603157413192,
+        "eta_fast": 1.2405520769766034,
+        "eta_slow": 1.317469459848034,
+        "family": "dense_ffn_up",
+        "holdout_mape": 0.024105851028291953,
+        "holdout_p90_ape": 0.041947938811878055,
+        "holdout_rows": 1024,
+        "holdout_signed_mean": 0.021661770197597376,
+        "launch_floor_seconds": 4.05191e-05,
+        "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+        "source_models": [
+          "meta-llama/Llama-3.1-70B"
+        ],
+        "training_rows": 1024
+      },
+      "embedding": {
+        "eta_central": 11.062423913569283,
+        "eta_fast": 10.50345071591579,
+        "eta_slow": 11.67859705047617,
+        "family": "embedding",
+        "holdout_mape": 0.03719909603897705,
+        "holdout_p90_ape": 0.06577516984925474,
+        "holdout_rows": 1024,
+        "holdout_signed_mean": 0.01869494874992987,
+        "launch_floor_seconds": 3.5344e-06,
+        "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+        "source_models": [
+          "meta-llama/Llama-3.1-70B",
+          "mistralai/Mixtral-8x7B-v0.1"
+        ],
+        "training_rows": 1024
+      },
+      "expert_activation": {
+        "eta_central": 1.9143495299924012,
+        "eta_fast": 1.8926478954537806,
+        "eta_slow": 1.9303893066424447,
+        "family": "expert_activation",
+        "holdout_mape": 0.018401637965214167,
+        "holdout_p90_ape": 0.024344612763768356,
+        "holdout_rows": 512,
+        "holdout_signed_mean": 0.018401637965214167,
+        "launch_floor_seconds": 4.394000000000001e-06,
+        "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+        "source_models": [
+          "mistralai/Mixtral-8x7B-v0.1"
+        ],
+        "training_rows": 512
+      },
+      "expert_down": {
+        "eta_central": 1.2692233976831828,
+        "eta_fast": 1.2495858644712579,
+        "eta_slow": 1.2960385380984545,
+        "family": "expert_down",
+        "holdout_mape": 0.01405455416363598,
+        "holdout_p90_ape": 0.02511596183469495,
+        "holdout_rows": 512,
+        "holdout_signed_mean": 0.008882145891593115,
+        "launch_floor_seconds": 4.32525e-05,
+        "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+        "source_models": [
+          "mistralai/Mixtral-8x7B-v0.1"
+        ],
+        "training_rows": 512
+      },
+      "expert_up": {
+        "eta_central": 1.332519109312827,
+        "eta_fast": 1.2804500124661489,
+        "eta_slow": 1.3870143878434629,
+        "family": "expert_up",
+        "holdout_mape": 0.036124873399207114,
+        "holdout_p90_ape": 0.05815037609181682,
+        "holdout_rows": 1024,
+        "holdout_signed_mean": 0.034925559599819044,
+        "launch_floor_seconds": 4.00679e-05,
+        "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+        "source_models": [
+          "mistralai/Mixtral-8x7B-v0.1"
+        ],
+        "training_rows": 1024
+      },
+      "kv_projection": {
+        "eta_central": 2.402675118512974,
+        "eta_fast": 2.0902446352205843,
+        "eta_slow": 2.810338904082241,
+        "family": "kv_projection",
+        "holdout_mape": 0.1916716529028661,
+        "holdout_p90_ape": 0.33948897173385206,
+        "holdout_rows": 2048,
+        "holdout_signed_mean": 0.18513029100438655,
+        "launch_floor_seconds": 6.910800000000001e-06,
+        "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+        "source_models": [
+          "meta-llama/Llama-3.1-70B",
+          "mistralai/Mixtral-8x7B-v0.1"
+        ],
+        "training_rows": 2048
+      },
+      "lm_head": {
+        "eta_central": 1.324669192157946,
+        "eta_fast": 1.2722790635908063,
+        "eta_slow": 1.3610521033130771,
+        "family": "lm_head",
+        "holdout_mape": 0.022508211180712223,
+        "holdout_p90_ape": 0.0414837951163217,
+        "holdout_rows": 1024,
+        "holdout_signed_mean": 0.0006028652421603117,
+        "launch_floor_seconds": 2.47075e-05,
+        "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+        "source_models": [
+          "meta-llama/Llama-3.1-70B",
+          "mistralai/Mixtral-8x7B-v0.1"
+        ],
+        "training_rows": 1024
+      },
+      "norm": {
+        "eta_central": 13.919822212353626,
+        "eta_fast": 12.996983371656048,
+        "eta_slow": 14.57460409637947,
+        "family": "norm",
+        "holdout_mape": 0.02816145377042605,
+        "holdout_p90_ape": 0.043141094936968605,
+        "holdout_rows": 3072,
+        "holdout_signed_mean": -0.02750710137004085,
+        "launch_floor_seconds": 2.02425e-05,
+        "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+        "source_models": [
+          "meta-llama/Llama-3.1-70B",
+          "mistralai/Mixtral-8x7B-v0.1"
+        ],
+        "training_rows": 3072
+      },
+      "o_projection": {
+        "eta_central": 1.5634737594518457,
+        "eta_fast": 1.3578499673462454,
+        "eta_slow": 1.7815371036529544,
+        "family": "o_projection",
+        "holdout_mape": 0.07322940196079007,
+        "holdout_p90_ape": 0.15194546186652302,
+        "holdout_rows": 1024,
+        "holdout_signed_mean": 0.05817836502555926,
+        "launch_floor_seconds": 5.522000000000001e-06,
+        "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+        "source_models": [
+          "meta-llama/Llama-3.1-70B",
+          "mistralai/Mixtral-8x7B-v0.1"
+        ],
+        "training_rows": 1024
+      },
+      "prefill_attention": {
+        "eta_central": 7.574777748241797,
+        "eta_fast": 4.5862650456847645,
+        "eta_slow": 8.901783320621103,
+        "family": "prefill_attention",
+        "holdout_mape": 0.049087227792162375,
+        "holdout_p90_ape": 0.09216913790333807,
+        "holdout_rows": 16,
+        "holdout_signed_mean": -0.018249340252716916,
+        "launch_floor_seconds": 1.0520000000000001e-05,
+        "occupancy_contract": "u uses ceil(q/128) * local_q_heads thread-block proxy and 132 H100 SMs",
+        "source_models": [
+          "meta-llama/Llama-3.1-70B",
+          "mistralai/Mixtral-8x7B-v0.1"
+        ],
+        "training_rows": 32
+      },
+      "q_projection": {
+        "eta_central": 1.521033158697143,
+        "eta_fast": 1.2985035523959096,
+        "eta_slow": 1.986247959229737,
+        "family": "q_projection",
+        "holdout_mape": 0.12249455891736498,
+        "holdout_p90_ape": 0.20095690803953964,
+        "holdout_rows": 1024,
+        "holdout_signed_mean": 0.08192665937709646,
+        "launch_floor_seconds": 8.1402e-06,
+        "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+        "source_models": [
+          "meta-llama/Llama-3.1-70B",
+          "mistralai/Mixtral-8x7B-v0.1"
+        ],
+        "training_rows": 1024
+      },
+      "rope": {
+        "eta_central": 21.646792854479983,
+        "eta_fast": 17.4542476775717,
+        "eta_slow": 27.39511019775854,
+        "family": "rope",
+        "holdout_mape": 0.20110635215418876,
+        "holdout_p90_ape": 0.3894281080031784,
+        "holdout_rows": 1024,
+        "holdout_signed_mean": 0.19664873548685657,
+        "launch_floor_seconds": 2.76252e-05,
+        "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+        "source_models": [
+          "meta-llama/Llama-3.1-70B",
+          "mistralai/Mixtral-8x7B-v0.1"
+        ],
+        "training_rows": 1024
+      },
+      "router": {
+        "eta_central": 18.716328385702752,
+        "eta_fast": 16.570049974552656,
+        "eta_slow": 21.760577125955983,
+        "family": "router",
+        "holdout_mape": 0.32054692433953635,
+        "holdout_p90_ape": 0.43982086525814323,
+        "holdout_rows": 512,
+        "holdout_signed_mean": 0.32054692433953635,
+        "launch_floor_seconds": 4.3441000000000006e-05,
+        "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+        "source_models": [
+          "mistralai/Mixtral-8x7B-v0.1"
+        ],
+        "training_rows": 512
+      }
+    },
+    "producer_source_sha256": {
+      "profiler/v0/models/llama.py": "34d71e5b76427464120b6347e901cbe9963b74cc794c72ed11934b606ebdf33f",
+      "profiler/v0/models/mixtral.py": "6143be0e5ce3b4cd5abc17cf3acca8321718422f2e35dacbd144020cb329c988",
+      "profiler/v0/profiler/attention/attention_input.py": "d6abf7003532cd093aab8c18b612864fc6f66aef64814796a097e7ae397e7d2b",
+      "profiler/v0/profiler/attention/attention_profiler.py": "3998208c081bc39c38f84122fbc7177f11f6bb8413916027fd68f3443bc690a4",
+      "profiler/v0/profiler/attention/batch_sampling.py": "3641a23e6de5bc301af53a2202da29d3c1f54112e5f4c1c577e3e7c23c841bac",
+      "profiler/v0/profiler/attention/main.py": "c0b281351fae3cf2f3f3d550568880d07973da97f52efe94e1a4d7a106a10d7e",
+      "profiler/v0/profiler/common/timer.py": "4152a18b2b99aa13647ad33ad66b84208efcba9e85ce9af0137bf63d52a44464",
+      "profiler/v0/profiler/common/timer_stats_store.py": "16d52eb14a9a9234c8243364da41f1f82e891e5b78064758eb2495d7a18a4805",
+      "profiler/v0/profiler/layers/main.py": "285051ddcae012bb933c707734642ee399feb88488329f98bcb1e775bcabe3fe",
+      "profiler/v0/profiler/utils/__init__.py": "5a89d2bfa6205d2c739b8e6514e65d86e9f27d07e0e02f588139950e4048e00f",
+      "profiler/v0/profiler/utils/record_function_tracer.py": "22f7a41174ed6d405d4854f0ba8d2389d8103a63e5cf0c68264456f7fcf913a3"
+    },
+    "schema_version": 2,
+    "source_identity": {
+      "artifact_label": "legacy-H100-labeled",
+      "cuda_pytorch_flashattention_versions_known": false,
+      "current_producer_revision_proven_to_have_generated_csv": false,
+      "exact_h100_sku_known": false,
+      "measurement_clock_state_known": false,
+      "measurement_command_known": false,
+      "producer_hash_scope": "Current repository snapshot of the relevant legacy producer implementation; it is not a recovered measurement-environment manifest."
+    },
+    "source_row_accounting": {
+      "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/attention.csv": {
+        "eligible_prefill_rows": 232,
+        "fit_holdout_points": 8,
+        "fit_training_points": 16,
+        "raw_rows": 21603,
+        "unique_prefill_points": 216
+      },
+      "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/layers.csv": {
+        "eligible_component_rows": 28672,
+        "raw_rows": 30720
+      },
+      "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/attention.csv": {
+        "eligible_prefill_rows": 232,
+        "fit_holdout_points": 8,
+        "fit_training_points": 16,
+        "raw_rows": 24979,
+        "unique_prefill_points": 216
+      },
+      "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/layers.csv": {
+        "eligible_component_rows": 30720,
+        "raw_rows": 30720
+      }
+    },
+    "source_rows": {
+      "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/attention.csv": 21603,
+      "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/layers.csv": 30720,
+      "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/attention.csv": 24979,
+      "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/layers.csv": 30720
+    },
+    "source_sha256": {
+      "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/attention.csv": "93d67794cf243fb481a0598549b94caa77e20ad0c8a215344a86ac8b9f5a5146",
+      "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/layers.csv": "41fd31dd27f5295d309bc2c926a0c01dc1c772f321074afe84f41d81f6a60735",
+      "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/attention.csv": "69b42685767810ae7419d8b08302714047444f3051246fd1ca7939318ae57a6d",
+      "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/layers.csv": "afcb40d69e346db7521540c6f09604183fb5ca42d675c0c53a6a9753dbb15ee4"
+    },
+    "validation": {
+      "holdout": {
+        "attention_boundary": "the attention holdout varies q only and contains no long-K cached-suffix validation",
+        "interpretation": "component-family interpolation check only; it is not an end-to-end Qwen3 or one-million-token accuracy estimate",
+        "per_family": {
+          "dense_activation": {
+            "mape": 0.0480451834471384,
+            "p90_ape": 0.0797636080479726,
+            "rows": 512,
+            "signed_mean": -0.0480451834471384
+          },
+          "dense_ffn_down": {
+            "mape": 0.017782953108549656,
+            "p90_ape": 0.033508681850731616,
+            "rows": 512,
+            "signed_mean": 7.353637856880678e-05
+          },
+          "dense_ffn_up": {
+            "mape": 0.024105851028291953,
+            "p90_ape": 0.041947938811878055,
+            "rows": 1024,
+            "signed_mean": 0.021661770197597376
+          },
+          "embedding": {
+            "mape": 0.03719909603897705,
+            "p90_ape": 0.06577516984925474,
+            "rows": 1024,
+            "signed_mean": 0.01869494874992987
+          },
+          "expert_activation": {
+            "mape": 0.018401637965214167,
+            "p90_ape": 0.024344612763768356,
+            "rows": 512,
+            "signed_mean": 0.018401637965214167
+          },
+          "expert_down": {
+            "mape": 0.01405455416363598,
+            "p90_ape": 0.02511596183469495,
+            "rows": 512,
+            "signed_mean": 0.008882145891593115
+          },
+          "expert_up": {
+            "mape": 0.036124873399207114,
+            "p90_ape": 0.05815037609181682,
+            "rows": 1024,
+            "signed_mean": 0.034925559599819044
+          },
+          "kv_projection": {
+            "mape": 0.1916716529028661,
+            "p90_ape": 0.33948897173385206,
+            "rows": 2048,
+            "signed_mean": 0.18513029100438655
+          },
+          "lm_head": {
+            "mape": 0.022508211180712223,
+            "p90_ape": 0.0414837951163217,
+            "rows": 1024,
+            "signed_mean": 0.0006028652421603117
+          },
+          "norm": {
+            "mape": 0.02816145377042605,
+            "p90_ape": 0.043141094936968605,
+            "rows": 3072,
+            "signed_mean": -0.02750710137004085
+          },
+          "o_projection": {
+            "mape": 0.07322940196079007,
+            "p90_ape": 0.15194546186652302,
+            "rows": 1024,
+            "signed_mean": 0.05817836502555926
+          },
+          "prefill_attention": {
+            "mape": 0.049087227792162375,
+            "p90_ape": 0.09216913790333807,
+            "rows": 16,
+            "signed_mean": -0.018249340252716916
+          },
+          "q_projection": {
+            "mape": 0.12249455891736498,
+            "p90_ape": 0.20095690803953964,
+            "rows": 1024,
+            "signed_mean": 0.08192665937709646
+          },
+          "rope": {
+            "mape": 0.20110635215418876,
+            "p90_ape": 0.3894281080031784,
+            "rows": 1024,
+            "signed_mean": 0.19664873548685657
+          },
+          "router": {
+            "mape": 0.32054692433953635,
+            "p90_ape": 0.43982086525814323,
+            "rows": 512,
+            "signed_mean": 0.32054692433953635
+          }
+        },
+        "rows": 14864,
+        "split": "layers: train M=1025..1536, contiguous holdout M=1537..2048; attention: train q=512..768, contiguous holdout q=800..1024",
+        "weighted_mape": 0.08230983001027048,
+        "weighted_signed_mean": 0.05855914341959838
+      }
+    }
+  },
+  "base_calibration_metadata_sha256": "0097dfd92fa7e1d4de9a357d507fd6a019c40a86dba8906d7abc6c4b909a4d3b",
+  "endpoints": {
+    "fast_full_attention": {
+      "configuration": {
+        "attention_multiplier": 1.0,
+        "band": "fast",
+        "name": "fast_full_attention",
+        "provenance": "Fast coefficient band from legacy-H100 fit uncertainty with full analytical causal-attention work. Optional sensitivity."
+      },
+      "metadata": {
+        "absolute_dgx_h100_calibration_validated": false,
+        "analytical_model": {
+          "attention_occupancy": "ceil(q/128)*local_q_heads partial-wave proxy",
+          "bands": "p10/p50/p90 fitted eta sensitivities, not confidence intervals",
+          "equation": "t=max(t0,t_roof*eta); t_roof=max((F/P_peak)*u,bytes/BW_peak)",
+          "eta_fit": "robust p50 of a contiguous upper-shape training tail; fast=p10 and slow=p90",
+          "gemm_occupancy": "folded into eta because legacy traces lack selected cuBLAS tile and thread-block geometry",
+          "reference": "KernelSight-LM, arXiv:2606.28565",
+          "source_attention_causal_pairs": "bottom-right aligned: q*(k-q)+q*(q+1)/2"
+        },
+        "attention_multiplier": 1.0,
+        "band": "fast",
+        "calibrated_from_measurements": true,
+        "collective_model": {
+          "backend": "allgather_reducescatter",
+          "bandwidth_and_latency_contract": "analytical intra-node sensitivity using 450 GB/s and 3 us per collective",
+          "contention_modeled": false,
+          "ep_combine": "ring ReduceScatter of the full hidden buffer",
+          "ep_dispatch": "ring AllGather of max(1,floor(q/EP)) per-rank (hidden+router_logits) tokens",
+          "measured_or_fitted": false
+        },
+        "description": "Kernel-decomposed Qwen3 TP4/EP4 prompt prediction fitted to legacy TP4 component artifacts labeled H100. Exact measurement-system identity is unavailable.",
+        "hardware": {
+          "collective_fixed_microseconds": 3.0,
+          "collective_gb_per_second": 450.0,
+          "dense_bf16_tflops": 989.5,
+          "hbm_tb_per_second": 3.35,
+          "sms": 132
+        },
+        "kernel_fits": {
+          "dense_activation": {
+            "eta_central": 1.7469051408078196,
+            "eta_fast": 1.6630042554035525,
+            "eta_slow": 1.7779082742059302,
+            "family": "dense_activation",
+            "holdout_mape": 0.0480451834471384,
+            "holdout_p90_ape": 0.0797636080479726,
+            "holdout_rows": 512,
+            "holdout_signed_mean": -0.0480451834471384,
+            "launch_floor_seconds": 4.0475e-06,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B"
+            ],
+            "training_rows": 512
+          },
+          "dense_ffn_down": {
+            "eta_central": 1.286194802914077,
+            "eta_fast": 1.2669168737261767,
+            "eta_slow": 1.3255236917568418,
+            "family": "dense_ffn_down",
+            "holdout_mape": 0.017782953108549656,
+            "holdout_p90_ape": 0.033508681850731616,
+            "holdout_rows": 512,
+            "holdout_signed_mean": 7.353637856880678e-05,
+            "launch_floor_seconds": 4.03355e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B"
+            ],
+            "training_rows": 512
+          },
+          "dense_ffn_up": {
+            "eta_central": 1.2791603157413192,
+            "eta_fast": 1.2405520769766034,
+            "eta_slow": 1.317469459848034,
+            "family": "dense_ffn_up",
+            "holdout_mape": 0.024105851028291953,
+            "holdout_p90_ape": 0.041947938811878055,
+            "holdout_rows": 1024,
+            "holdout_signed_mean": 0.021661770197597376,
+            "launch_floor_seconds": 4.05191e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B"
+            ],
+            "training_rows": 1024
+          },
+          "embedding": {
+            "eta_central": 11.062423913569283,
+            "eta_fast": 10.50345071591579,
+            "eta_slow": 11.67859705047617,
+            "family": "embedding",
+            "holdout_mape": 0.03719909603897705,
+            "holdout_p90_ape": 0.06577516984925474,
+            "holdout_rows": 1024,
+            "holdout_signed_mean": 0.01869494874992987,
+            "launch_floor_seconds": 3.5344e-06,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 1024
+          },
+          "expert_activation": {
+            "eta_central": 1.9143495299924012,
+            "eta_fast": 1.8926478954537806,
+            "eta_slow": 1.9303893066424447,
+            "family": "expert_activation",
+            "holdout_mape": 0.018401637965214167,
+            "holdout_p90_ape": 0.024344612763768356,
+            "holdout_rows": 512,
+            "holdout_signed_mean": 0.018401637965214167,
+            "launch_floor_seconds": 4.394000000000001e-06,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 512
+          },
+          "expert_down": {
+            "eta_central": 1.2692233976831828,
+            "eta_fast": 1.2495858644712579,
+            "eta_slow": 1.2960385380984545,
+            "family": "expert_down",
+            "holdout_mape": 0.01405455416363598,
+            "holdout_p90_ape": 0.02511596183469495,
+            "holdout_rows": 512,
+            "holdout_signed_mean": 0.008882145891593115,
+            "launch_floor_seconds": 4.32525e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 512
+          },
+          "expert_up": {
+            "eta_central": 1.332519109312827,
+            "eta_fast": 1.2804500124661489,
+            "eta_slow": 1.3870143878434629,
+            "family": "expert_up",
+            "holdout_mape": 0.036124873399207114,
+            "holdout_p90_ape": 0.05815037609181682,
+            "holdout_rows": 1024,
+            "holdout_signed_mean": 0.034925559599819044,
+            "launch_floor_seconds": 4.00679e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 1024
+          },
+          "kv_projection": {
+            "eta_central": 2.402675118512974,
+            "eta_fast": 2.0902446352205843,
+            "eta_slow": 2.810338904082241,
+            "family": "kv_projection",
+            "holdout_mape": 0.1916716529028661,
+            "holdout_p90_ape": 0.33948897173385206,
+            "holdout_rows": 2048,
+            "holdout_signed_mean": 0.18513029100438655,
+            "launch_floor_seconds": 6.910800000000001e-06,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 2048
+          },
+          "lm_head": {
+            "eta_central": 1.324669192157946,
+            "eta_fast": 1.2722790635908063,
+            "eta_slow": 1.3610521033130771,
+            "family": "lm_head",
+            "holdout_mape": 0.022508211180712223,
+            "holdout_p90_ape": 0.0414837951163217,
+            "holdout_rows": 1024,
+            "holdout_signed_mean": 0.0006028652421603117,
+            "launch_floor_seconds": 2.47075e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 1024
+          },
+          "norm": {
+            "eta_central": 13.919822212353626,
+            "eta_fast": 12.996983371656048,
+            "eta_slow": 14.57460409637947,
+            "family": "norm",
+            "holdout_mape": 0.02816145377042605,
+            "holdout_p90_ape": 0.043141094936968605,
+            "holdout_rows": 3072,
+            "holdout_signed_mean": -0.02750710137004085,
+            "launch_floor_seconds": 2.02425e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 3072
+          },
+          "o_projection": {
+            "eta_central": 1.5634737594518457,
+            "eta_fast": 1.3578499673462454,
+            "eta_slow": 1.7815371036529544,
+            "family": "o_projection",
+            "holdout_mape": 0.07322940196079007,
+            "holdout_p90_ape": 0.15194546186652302,
+            "holdout_rows": 1024,
+            "holdout_signed_mean": 0.05817836502555926,
+            "launch_floor_seconds": 5.522000000000001e-06,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 1024
+          },
+          "prefill_attention": {
+            "eta_central": 7.574777748241797,
+            "eta_fast": 4.5862650456847645,
+            "eta_slow": 8.901783320621103,
+            "family": "prefill_attention",
+            "holdout_mape": 0.049087227792162375,
+            "holdout_p90_ape": 0.09216913790333807,
+            "holdout_rows": 16,
+            "holdout_signed_mean": -0.018249340252716916,
+            "launch_floor_seconds": 1.0520000000000001e-05,
+            "occupancy_contract": "u uses ceil(q/128) * local_q_heads thread-block proxy and 132 H100 SMs",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 32
+          },
+          "q_projection": {
+            "eta_central": 1.521033158697143,
+            "eta_fast": 1.2985035523959096,
+            "eta_slow": 1.986247959229737,
+            "family": "q_projection",
+            "holdout_mape": 0.12249455891736498,
+            "holdout_p90_ape": 0.20095690803953964,
+            "holdout_rows": 1024,
+            "holdout_signed_mean": 0.08192665937709646,
+            "launch_floor_seconds": 8.1402e-06,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 1024
+          },
+          "rope": {
+            "eta_central": 21.646792854479983,
+            "eta_fast": 17.4542476775717,
+            "eta_slow": 27.39511019775854,
+            "family": "rope",
+            "holdout_mape": 0.20110635215418876,
+            "holdout_p90_ape": 0.3894281080031784,
+            "holdout_rows": 1024,
+            "holdout_signed_mean": 0.19664873548685657,
+            "launch_floor_seconds": 2.76252e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "meta-llama/Llama-3.1-70B",
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 1024
+          },
+          "router": {
+            "eta_central": 18.716328385702752,
+            "eta_fast": 16.570049974552656,
+            "eta_slow": 21.760577125955983,
+            "family": "router",
+            "holdout_mape": 0.32054692433953635,
+            "holdout_p90_ape": 0.43982086525814323,
+            "holdout_rows": 512,
+            "holdout_signed_mean": 0.32054692433953635,
+            "launch_floor_seconds": 4.3441000000000006e-05,
+            "occupancy_contract": "legacy trace lacks selected CUDA tile/block geometry; occupancy is folded into eta",
+            "source_models": [
+              "mistralai/Mixtral-8x7B-v0.1"
+            ],
+            "training_rows": 512
+          }
+        },
+        "legacy_h100_fp16_component_calibration": true,
+        "legacy_h100_labeled_component_measurements_used": true,
+        "limitations": {
+          "absolute_dgx_h100_accuracy_validated": false,
+          "aggregate_holdout_is_target_end_to_end_accuracy": false,
+          "attention_holdout_validates_long_k": false,
+          "attention_multiplier_scope": "prefill attention only",
+          "collective_terms_measured_or_fitted": false,
+          "current_producer_revision_is_measurement_revision": false,
+          "decode_compute_modeled": false,
+          "exact_legacy_h100_sku_known": false,
+          "fp16_to_bf16_efficiency_transfer_assumed": true,
+          "fused_qkv_measured_as_target_shape": false,
+          "host_scheduler_and_continuous_batching_modeled": false,
+          "latency_cache_max_scalar_entries": 131072,
+          "legacy_measurement_command_known": false,
+          "legacy_measurement_software_versions_known": false,
+          "measured_dca_or_minference": false,
+          "measured_qwen3_h100": false,
+          "moe_grouped_fusion_and_imbalance_measured": false,
+          "one_million_token_attention_is_extrapolated": true,
+          "qk_norm_head_width_measured": false,
+          "router_e128_top8_measured": false,
+          "sampler_and_serving_host_overhead_modeled": false,
+          "source_dense_m_max": 2048,
+          "source_measurement_dtype": "float16",
+          "source_prefill_kv_max": 2016,
+          "source_prefill_q_max": 1024,
+          "target_context_max": 1010000,
+          "target_dense_m_max": 131072,
+          "target_model_dtype": "bfloat16",
+          "target_prefill_q_max": 131072
+        },
+        "model_kind": "h100_kernel_calibrated_prompt",
+        "prefill_chunk_size": 131072,
+        "producer_source_sha256": {
+          "profiler/v0/models/llama.py": "34d71e5b76427464120b6347e901cbe9963b74cc794c72ed11934b606ebdf33f",
+          "profiler/v0/models/mixtral.py": "6143be0e5ce3b4cd5abc17cf3acca8321718422f2e35dacbd144020cb329c988",
+          "profiler/v0/profiler/attention/attention_input.py": "d6abf7003532cd093aab8c18b612864fc6f66aef64814796a097e7ae397e7d2b",
+          "profiler/v0/profiler/attention/attention_profiler.py": "3998208c081bc39c38f84122fbc7177f11f6bb8413916027fd68f3443bc690a4",
+          "profiler/v0/profiler/attention/batch_sampling.py": "3641a23e6de5bc301af53a2202da29d3c1f54112e5f4c1c577e3e7c23c841bac",
+          "profiler/v0/profiler/attention/main.py": "c0b281351fae3cf2f3f3d550568880d07973da97f52efe94e1a4d7a106a10d7e",
+          "profiler/v0/profiler/common/timer.py": "4152a18b2b99aa13647ad33ad66b84208efcba9e85ce9af0137bf63d52a44464",
+          "profiler/v0/profiler/common/timer_stats_store.py": "16d52eb14a9a9234c8243364da41f1f82e891e5b78064758eb2495d7a18a4805",
+          "profiler/v0/profiler/layers/main.py": "285051ddcae012bb933c707734642ee399feb88488329f98bcb1e775bcabe3fe",
+          "profiler/v0/profiler/utils/__init__.py": "5a89d2bfa6205d2c739b8e6514e65d86e9f27d07e0e02f588139950e4048e00f",
+          "profiler/v0/profiler/utils/record_function_tracer.py": "22f7a41174ed6d405d4854f0ba8d2389d8103a63e5cf0c68264456f7fcf913a3"
+        },
+        "schema_version": 3,
+        "source_identity": {
+          "artifact_label": "legacy-H100-labeled",
+          "cuda_pytorch_flashattention_versions_known": false,
+          "current_producer_revision_proven_to_have_generated_csv": false,
+          "exact_h100_sku_known": false,
+          "measurement_clock_state_known": false,
+          "measurement_command_known": false,
+          "producer_hash_scope": "Current repository snapshot of the relevant legacy producer implementation; it is not a recovered measurement-environment manifest."
+        },
+        "source_row_accounting": {
+          "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/attention.csv": {
+            "eligible_prefill_rows": 232,
+            "fit_holdout_points": 8,
+            "fit_training_points": 16,
+            "raw_rows": 21603,
+            "unique_prefill_points": 216
+          },
+          "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/layers.csv": {
+            "eligible_component_rows": 28672,
+            "raw_rows": 30720
+          },
+          "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/attention.csv": {
+            "eligible_prefill_rows": 232,
+            "fit_holdout_points": 8,
+            "fit_training_points": 16,
+            "raw_rows": 24979,
+            "unique_prefill_points": 216
+          },
+          "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/layers.csv": {
+            "eligible_component_rows": 30720,
+            "raw_rows": 30720
+          }
+        },
+        "source_rows": {
+          "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/attention.csv": 21603,
+          "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/layers.csv": 30720,
+          "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/attention.csv": 24979,
+          "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/layers.csv": 30720
+        },
+        "source_sha256": {
+          "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/attention.csv": "93d67794cf243fb481a0598549b94caa77e20ad0c8a215344a86ac8b9f5a5146",
+          "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/layers.csv": "41fd31dd27f5295d309bc2c926a0c01dc1c772f321074afe84f41d81f6a60735",
+          "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/attention.csv": "69b42685767810ae7419d8b08302714047444f3051246fd1ca7939318ae57a6d",
+          "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/layers.csv": "afcb40d69e346db7521540c6f09604183fb5ca42d675c0c53a6a9753dbb15ee4"
+        },
+        "target_geometry": {
+          "balanced_expert_pairs_per_rank_per_token": 2.0,
+          "config_sha256": "0736f3bafb95cc658776c92ab34f5f98d8169634a3a36b84892d71448a1f19d3",
+          "ep": 4,
+          "experts": 128,
+          "experts_per_rank": 32,
+          "fused_qkv_output_per_rank": 1280,
+          "head_dim": 128,
+          "hidden_size": 2048,
+          "kv_heads_per_rank": 1,
+          "layers": 48,
+          "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+          "q_heads_per_rank": 8,
+          "top_k": 8,
+          "tp": 4
+        },
+        "target_qwen_shape_extrapolation": true,
+        "validation": {
+          "holdout": {
+            "attention_boundary": "the attention holdout varies q only and contains no long-K cached-suffix validation",
+            "interpretation": "component-family interpolation check only; it is not an end-to-end Qwen3 or one-million-token accuracy estimate",
+            "per_family": {
+              "dense_activation": {
+                "mape": 0.0480451834471384,
+                "p90_ape": 0.0797636080479726,
+                "rows": 512,
+                "signed_mean": -0.0480451834471384
+              },
+              "dense_ffn_down": {
+                "mape": 0.017782953108549656,
+                "p90_ape": 0.033508681850731616,
+                "rows": 512,
+                "signed_mean": 7.353637856880678e-05
+              },
+              "dense_ffn_up": {
+                "mape": 0.024105851028291953,
+                "p90_ape": 0.041947938811878055,
+                "rows": 1024,
+                "signed_mean": 0.021661770197597376
+              },
+              "embedding": {
+                "mape": 0.03719909603897705,
+                "p90_ape": 0.06577516984925474,
+                "rows": 1024,
+                "signed_mean": 0.01869494874992987
+              },
+              "expert_activation": {
+                "mape": 0.018401637965214167,
+                "p90_ape": 0.024344612763768356,
+                "rows": 512,
+                "signed_mean": 0.018401637965214167
+              },
+              "expert_down": {
+                "mape": 0.01405455416363598,
+                "p90_ape": 0.02511596183469495,
+                "rows": 512,
+                "signed_mean": 0.008882145891593115
+              },
+              "expert_up": {
+                "mape": 0.036124873399207114,
+                "p90_ape": 0.05815037609181682,
+                "rows": 1024,
+                "signed_mean": 0.034925559599819044
+              },
+              "kv_projection": {
+                "mape": 0.1916716529028661,
+                "p90_ape": 0.33948897173385206,
+                "rows": 2048,
+                "signed_mean": 0.18513029100438655
+              },
+              "lm_head": {
+                "mape": 0.022508211180712223,
+                "p90_ape": 0.0414837951163217,
+                "rows": 1024,
+                "signed_mean": 0.0006028652421603117
+              },
+              "norm": {
+                "mape": 0.02816145377042605,
+                "p90_ape": 0.043141094936968605,
+                "rows": 3072,
+                "signed_mean": -0.02750710137004085
+              },
+              "o_projection": {
+                "mape": 0.07322940196079007,
+                "p90_ape": 0.15194546186652302,
+                "rows": 1024,
+                "signed_mean": 0.05817836502555926
+              },
+              "prefill_attention": {
+                "mape": 0.049087227792162375,
+                "p90_ape": 0.09216913790333807,
+                "rows": 16,
+                "signed_mean": -0.018249340252716916
+              },
+              "q_projection": {
+                "mape": 0.12249455891736498,
+                "p90_ape": 0.20095690803953964,
+                "rows": 1024,
+                "signed_mean": 0.08192665937709646
+              },
+              "rope": {
+                "mape": 0.20110635215418876,
+                "p90_ape": 0.3894281080031784,
+                "rows": 1024,
+                "signed_mean": 0.19664873548685657
+              },
+              "router": {
+                "mape": 0.32054692433953635,
+                "p90_ape": 0.43982086525814323,
+                "rows": 512,
+                "signed_mean": 0.32054692433953635
+              }
+            },
+            "rows": 14864,
+            "split": "layers: train M=1025..1536, contiguous holdout M=1537..2048; attention: train q=512..768, contiguous holdout q=800..1024",
+            "weighted_mape": 0.08230983001027048,
+            "weighted_signed_mean": 0.05855914341959838
+          }
+        }
+      },
+      "metadata_sha256": "908fedc4041e2d2c6a4d7a226648e263a274c677bc6c35b86d0fefd2fd26f2dc"
+    }
+  },
+  "fit_invocations_this_driver_run": 1,
+  "fit_shared_across_selected_endpoints": true,
+  "schema_version": 3,
+  "source_unit_contract": {
+    "attention.csv": "time_stats.attn_prefill.median is parsed as milliseconds and multiplied by 1e-3",
+    "layers.csv": "latency(ns) is parsed as nanoseconds and multiplied by 1e-9"
+  },
+  "source_work_contract": {
+    "attention_causal_pairs": "bottom-right aligned q*(k-q)+q*(q+1)/2",
+    "collective_terms_measured_or_fitted": false,
+    "current_producer_revision_proven_to_match_csv": false,
+    "dtype_efficiency_transfer_assumed": true,
+    "ep_collective_backend": "allgather_reducescatter",
+    "exact_h100_sku_and_software_stack_known": false,
+    "legacy_h100_artifact_label_only": true,
+    "measurement_dtype": "float16",
+    "target_config_sha256": "0736f3bafb95cc658776c92ab34f5f98d8169634a3a36b84892d71448a1f19d3",
+    "target_dtype": "bfloat16"
+  }
+}

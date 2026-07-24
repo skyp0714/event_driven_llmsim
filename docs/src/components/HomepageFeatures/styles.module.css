@@ -1,0 +1,69 @@
+.features {
+  padding: 4rem 0 5rem;
+  width: 100%;
+}
+
+.featureCol {
+  display: flex;
+  margin-bottom: 1.5rem;
+}
+
+.featureCard {
+  width: 100%;
+  padding: 2rem 1.75rem;
+  border-radius: 12px;
+  background: var(--ifm-card-background-color, var(--ifm-background-surface-color));
+  border: 1px solid var(--ifm-color-emphasis-200);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+  display: flex;
+  flex-direction: column;
+}
+
+.featureCard:hover {
+  transform: translateY(-3px);
+  border-color: var(--ifm-color-primary-light);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.08);
+}
+
+[data-theme='dark'] .featureCard:hover {
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+}
+
+.featureIcon {
+  width: 52px;
+  height: 52px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--ifm-color-primary);
+  margin-bottom: 1.25rem;
+}
+
+[data-theme='dark'] .featureIcon {
+  background: rgba(129, 140, 248, 0.16);
+  color: var(--ifm-color-primary-lighter);
+}
+
+.featureCard:hover .featureIcon {
+  background: rgba(99, 102, 241, 0.16);
+}
+
+[data-theme='dark'] .featureCard:hover .featureIcon {
+  background: rgba(129, 140, 248, 0.22);
+}
+
+.featureTitle {
+  font-size: 1.35rem;
+  font-weight: 700;
+  margin-bottom: 0.7rem;
+  letter-spacing: -0.01em;
+}
+
+.featureDescription {
+  margin: 0;
+  font-size: 1.05rem;
+  line-height: 1.6;
+  color: var(--ifm-color-emphasis-700);
+}

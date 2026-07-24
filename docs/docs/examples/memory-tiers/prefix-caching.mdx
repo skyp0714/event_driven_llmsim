@@ -1,0 +1,138 @@
+---
+title: Prefix caching
+sidebar_position: 1
+---
+
+# Prefix caching
+
+> **What this demonstrates:** reusing pre-computed KV cache across
+> requests with shared prompt prefixes, including a second-tier CPU
+> pool shared across instances.
+
+For workloads where many requests share a system prompt, RAG context,
+or a long instruction (e.g., agent traces), recomputing prefill for
+each request is wasted work. Prefix caching keeps prefix KV blocks
+around (in NPU memory by default; optionally also in CPU or CXL) and
+reuses them on hits.
+
+LLMServingSim ships RadixAttention-style prefix caching (adapted from
+SGLang) with three flavors:
+
+1. **Per-instance NPU cache** (default, always on).
+2. **Cross-instance shared CPU pool**: second-tier prefix cache.
+3. **CXL-backed pool**: same as above but in CXL memory.
+
+## Prerequisites
+
+- Simulator container set up
+- A workload with shared prefixes (the bundled `example_trace.jsonl`
+  has some, real ShareGPT or agentic traces have a lot)
+
+## Cluster config
+
+The simplest setup uses
+`configs/cluster/single_node_multi_instance.json` (two instances on
+one node, no special memory config). The shared CPU pool is enabled
+at runtime via CLI flags, not the config:
+
+```json title="configs/cluster/single_node_multi_instance.json"
+{
+  "num_nodes": 1,
+  "link_bw": 16,
+  "link_latency": 20000,
+  "nodes": [
+    {
+      "num_instances": 2,
+      "cpu_mem": {"mem_size": 512, "mem_bw": 256, "mem_latency": 0},
+      "instances": [
+        {
+          "model_name": "meta-llama/Llama-3.1-8B",
+          "hardware": "RTXPRO6000",
+          "npu_mem": {"mem_size": 96, "mem_bw": 1597, "mem_latency": 0},
+          "pd_type": null,
+          "tp_size": 1
+        },
+        { "...": "second instance, identical" }
+      ]
+    }
+  ]
+}
+```
+
+The `cpu_mem.mem_size` (512 GB here) caps how big the CPU prefix pool
+can grow.
+
+## Run
+
+### Per-instance prefix caching (default)
+
+```bash
+python -m serving \
+  --cluster-config 'configs/cluster/single_node_multi_instance.json' \
+  --dtype float16 --block-size 16 \
+  --dataset 'workloads/example_trace.jsonl' \
+  --output 'outputs/prefix_default_run.csv'
+```
+
+`--enable-prefix-caching` is on by default. Prefix blocks are kept
+in each instance's own NPU memory; if a request lands on instance A
+that prefixes-into a cached block on instance B, no reuse happens.
+
+### Shared CPU prefix pool
+
+```bash
+python -m serving \
+  --cluster-config 'configs/cluster/single_node_multi_instance.json' \
+  --dtype float16 --block-size 16 \
+  --enable-prefix-caching --enable-prefix-sharing --prefix-storage CPU \
+  --dataset 'workloads/example_trace.jsonl' \
+  --output 'outputs/prefix_cpu_pool_run.csv'
+```
+
+The two extra flags:
+
+- `--enable-prefix-sharing`: turn on the second-tier pool.
+- `--prefix-storage CPU`: pool lives in `cpu_mem`. Other options:
+  `CXL` (requires a `cxl_mem` config block), `None` (NPU-only).
+
+When an NPU prefix is evicted, it spills to the CPU pool instead of
+disappearing. Requests on **any** instance can now hit the CPU pool
+on lookup.
+
+## Expected output
+
+With the shared CPU pool enabled, the throughput log gains prefix
+hit-rate counters:
+
+```text
+[INFO] step=20 inst0_batch=6 inst1_batch=4 prompt_t=2.4k tok/s decode_t=820 tok/s
+       prefix_hit=78% (npu=42%, cpu=36%)
+```
+
+The `prompt_t` (prompt throughput) counts **all** input tokens,
+including those served from cache, matching vLLM's reporting
+convention.
+
+## What's interesting
+
+- **NPU memory pressure stays bounded** even on workloads with huge
+  shared prefixes. The CPU pool absorbs eviction.
+- **Cross-instance reuse** is the killer feature for multi-replica
+  deployments. Without prefix sharing, a 90% prefix-overlap workload
+  effectively sees prefix caching as 1/N as effective with N
+  instances.
+- **CXL pool is an option when CPU memory is the bottleneck.** Set
+  `--prefix-storage CXL` and add a `cxl_mem` block to the cluster
+  config (see [CXL memory tier](./cxl-memory)). The pool then lives
+  in CXL memory at CXL latency.
+- **Block-aware tracking.** The simulator's
+  `prompt_t` accumulator includes prefix-cache-hit tokens, so its
+  reported prompt throughput matches vLLM's (which also counts cached
+  tokens).
+
+## Related examples
+
+- **[CXL memory tier](./cxl-memory)**: backing the prefix pool with
+  CXL memory.
+- **[Multi-instance LOAD routing](../disaggregated/multi-instance)** -
+  the multi-instance baseline this builds on.

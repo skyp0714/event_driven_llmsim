@@ -1,0 +1,87 @@
+{
+  "name": "online-tracelab-qwen3-1m-p4d4-quick-poisson",
+  "dataset": "workloads/generated/tracelab-schema3-sps0.2-final.jsonl",
+  "dataset_contract": {
+    "format": "tracelab-agentic-schema-3",
+    "expected_schema_version": 3,
+    "expected_source_session_count": 4281,
+    "source_revision": "v0.0.1",
+    "source_sha256": "9d265eae69a31cae203848bea936f018148eed7ca8bf56050c5abe96da0b4e6b",
+    "expected_sha256": "b6188582aac9467cee8c73e4275f9a9606b359f8c2fa000d9f49a9ca3bde02f0",
+    "manifest": "workloads/generated/tracelab-schema3-sps0.2-final.jsonl.manifest.json",
+    "expected_manifest_sha256": "e45575b40c204df259ad8535a2022ccce7d5c09f9265303d14040d47e0cc1e3e",
+    "tracelab_reuse_mode": "eligible",
+    "expected_selected_template_count": 2,
+    "expected_selected_request_count": 4,
+    "expected_selected_session_identity_hash": "c458507d7c117a0741630783eeb5dcbdd6ab1cc57b56c78dc0ed94b1f06f8fbf"
+  },
+  "output_dir": "results/online/online-tracelab-qwen3-1m-p4d4-quick-poisson",
+  "cluster_config": "configs/cluster/single_node_qwen3_1m_pd_p4d4_h100.json",
+  "policies": {
+    "hbm_lru_recompute": "configs/agentic_kv/qwen3_1m_p4d4/hbm_lru_recompute.json",
+    "hbm_ssd_direct": {
+      "agentic_kv_config": "configs/agentic_kv/qwen3_1m_p4d4/hbm_ssd_direct.json",
+      "durable_capacity_contract": "lossless-working-set"
+    },
+    "hbm_cpu_ssd": {
+      "agentic_kv_config": "configs/agentic_kv/qwen3_1m_p4d4/tiered.json",
+      "durable_capacity_contract": "lossless-working-set"
+    },
+    "hbm_cpu_ssd_queue_recompute": "configs/agentic_kv/qwen3_1m_p4d4/tiered_queue_recompute.json"
+  },
+  "oracle_label": "infinite_hbm_oracle",
+  "oracle_agentic_kv_config": "configs/agentic_kv/qwen3_1m_p4d4/tiered.json",
+  "workload_selection": {
+    "strategy": "all",
+    "include_source_indices": [
+      2113,
+      3726
+    ],
+    "min_context_tokens": 12000,
+    "max_output_tokens_per_session": 110,
+    "min_requests_per_session": 2,
+    "max_requests_per_session": 2,
+    "min_reuse_eligible_transitions": 1,
+    "allowed_gap_types": [
+      "human",
+      "tool"
+    ],
+    "max_sessions": 2,
+    "target_max_sequence_tokens": 1000000
+  },
+  "modes": {
+    "poisson": {
+      "rates_sps": [
+        0.00035,
+        0.00075,
+        0.006
+      ],
+      "session_repetitions": 4,
+      "arrival_seeds": [
+        41,
+        42,
+        43
+      ],
+      "warmup_completions": 0,
+      "measure_completions": "all",
+      "measurement_cohort_selection": "completion_order",
+      "stop_after_measurement": false,
+      "require_complete_session_cohort": true,
+      "allow_timing_warnings": false,
+      "allowed_timing_warning_codes": [
+        "request_latency_over_one_hour"
+      ]
+    }
+  },
+  "common_serving_args": [
+    "--network-backend",
+    "analytical-congestion-aware",
+    "--no-enable-prefix-caching",
+    "--log-level",
+    "WARNING",
+    "--log-interval",
+    "1000000"
+  ],
+  "max_parallel": 2,
+  "timeout_seconds": 600
+}

@@ -1,0 +1,70 @@
+# Qwen3 family — class catalog (dense decoder-only LLMs, non-MoE).
+#
+# This catalog covers every dense Qwen3 checkpoint
+# (Qwen3-0.6B / 1.7B / 4B / 8B / 14B / 32B / ...). Pick the specific
+# model at the CLI. The MoE variants (Qwen3-*-A*B) instantiate a
+# different ForCausalLM class and live in qwen3-moe.yaml.
+#
+# Qwen3 introduces per-head QK normalization: an RMSNorm on Q and
+# another on K before rotary. Both are merged into one canonical
+# ``qk_norm`` entry; the profiler sums timings from all RMSNorm
+# instances inside Qwen3Attention.
+#
+# Canonical layer names mirror vLLM's attribute names (see
+# ../vllm/vllm/model_executor/models/qwen3.py).
+#
+# ``sequence:`` describes the ordered pipeline the simulator's
+# trace_generator walks to emit one iteration. Names must appear in
+# ``catalog`` below. TP ALLREDUCE (after ``o_proj`` / ``down_proj``)
+# and EP ALLTOALL (around ``moe``) are attached by the simulator from
+# cluster config and need not be listed here.
+
+
+sequence:
+  prologue:  [embedding]
+  pre_attn:  [layernorm, qkv_proj, qk_norm, rotary_emb, attention]
+  post_attn: [o_proj, layernorm]
+  mlp_dense: [gate_up_proj, act_fn, down_proj]
+  mlp_moe:   []
+  head:      [final_layernorm, lm_head, sampler]
+
+
+catalog:
+  dense:
+    embedding:
+      vllm: VocabParallelEmbedding
+    layernorm:
+      vllm: RMSNorm
+      within: Qwen3DecoderLayer
+      tp_stable: true
+    qkv_proj:
+      vllm: QKVParallelLinear
+    qk_norm:
+      vllm: RMSNorm
+      within: Qwen3Attention
+      tp_stable: true
+    rotary_emb:
+      vllm: RotaryEmbedding
+    o_proj:
+      vllm: RowParallelLinear
+      within: Qwen3Attention
+    gate_up_proj:
+      vllm: MergedColumnParallelLinear
+    act_fn:
+      vllm: SiluAndMul
+    down_proj:
+      vllm: RowParallelLinear
+      within: Qwen2MLP
+    final_layernorm:
+      vllm: RMSNorm
+      within: Qwen3ForCausalLM
+      tp_stable: true
+  per_sequence:
+    lm_head:
+      vllm: LogitsProcessor
+    sampler:
+      vllm: Sampler
+      tp_stable: true
+  attention:
+    attention:
+      vllm: Attention

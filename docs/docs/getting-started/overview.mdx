@@ -1,0 +1,87 @@
+---
+sidebar_position: 1
+title: Overview
+---
+
+import IconCardGrid from '@site/src/components/IconCardGrid';
+import {
+  Network, Cpu, BadgeCheck, Sparkles,
+  Download, Rocket, LifeBuoy,
+} from 'lucide-react';
+
+# Welcome to LLMServingSim
+
+LLMServingSim is your sandbox for **heterogeneous and disaggregated
+LLM serving infrastructure**. Want to model a brand-new GPU? Sweep
+parallelism strategies? Throw exotic memory tiers (CXL, PIM) at a
+workload? Try a 32-GPU cluster you don't have? It's all within reach.
+
+Setup is genuinely quick, clone, launch a container, compile, run.
+**~10 minutes.** Once you're in, the simulator gets out of your way.
+
+## What you can do
+
+<IconCardGrid columns={2} cards={[
+  {
+    Icon: Network,
+    title: 'Any topology, instantly',
+    description: 'TP / PP / EP / DP+EP across multiple instances. Chunked prefill, prefix caching, MoE expert routing, KV-cache offloading, mix and match in a config file. No code changes.',
+  },
+  {
+    Icon: Cpu,
+    title: 'Any hardware, profiled',
+    description: 'Plug in a new GPU, CXL tier, or PIM device. The vLLM-based layerwise profiler captures real CUDA timings and feeds them straight into the simulator.',
+  },
+  {
+    Icon: BadgeCheck,
+    title: 'Validated against vLLM',
+    description: 'Sub-3% error end-to-end on TTFT, TPOT, and throughput. The numbers really do reflect what production serving delivers.',
+  },
+  {
+    Icon: Sparkles,
+    title: 'Wild scenarios welcome',
+    description: 'ShareGPT traces, agentic sessions, 10× clusters, unreleased GPUs, exotic memory tiers, run experiments you cannot easily run on real hardware.',
+  },
+]} />
+
+## Three steps to your first simulation
+
+<IconCardGrid columns={3} cards={[
+  {
+    Icon: Download,
+    title: '1. Install',
+    description: 'Clone, launch the simulator container, build ASTRA-Sim. About 10 minutes.',
+    to: '/docs/getting-started/installation/prerequisites',
+  },
+  {
+    Icon: Rocket,
+    title: '2. Run',
+    description: 'Copy one command and watch your first end-to-end simulation. Output CSV ready to read.',
+    to: '/docs/getting-started/quickstart',
+  },
+  {
+    Icon: LifeBuoy,
+    title: '3. Get unstuck',
+    description: 'Hit a snag? Common errors and concrete fixes, all in one place.',
+    to: '/docs/getting-started/troubleshooting',
+  },
+]} />
+
+## Prerequisites at a glance
+
+A Linux host with Docker is all you need to get started.
+
+| Required | Optional but recommended |
+| --- | --- |
+| Linux (Ubuntu 22.04+ tested) | NVIDIA GPU + Container Toolkit (only for profiling new HW) |
+| Docker | Hugging Face token (for gated model configs) |
+| Git with submodule support | 32 GB RAM (for the vLLM benchmark side) |
+| ~12 GB free disk |  |
+
+> Already have everything? Jump straight to **[Simulator setup](./installation/simulator)** and run your first sim in 10 minutes.
+
+## Need a hand?
+
+- **Bug or feature request:** [GitHub Issues](https://github.com/casys-kaist/LLMServingSim/issues)
+- **Discussion:** [GitHub Discussions](https://github.com/casys-kaist/LLMServingSim/discussions)
+- **Want to add new hardware or models?** Profile it yourself with our [profiler guide](/docs/profiler/overview): it's the same flow we use internally.

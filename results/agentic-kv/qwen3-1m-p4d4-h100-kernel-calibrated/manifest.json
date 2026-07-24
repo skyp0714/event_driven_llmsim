@@ -1,0 +1,431 @@
+{
+  "authority": {
+    "root_index_reinterprets_experiment_values": false,
+    "statement": "Each shard manifest is authoritative for its reports, calibration artifact, and shard-local tables. This root index only verifies and concatenates those records."
+  },
+  "bindings": {
+    "base_calibration_metadata_sha256": "0097dfd92fa7e1d4de9a357d507fd6a019c40a86dba8906d7abc6c4b909a4d3b",
+    "calibration_producer_source_sha256": {
+      "profiler/v0/models/llama.py": "34d71e5b76427464120b6347e901cbe9963b74cc794c72ed11934b606ebdf33f",
+      "profiler/v0/models/mixtral.py": "6143be0e5ce3b4cd5abc17cf3acca8321718422f2e35dacbd144020cb329c988",
+      "profiler/v0/profiler/attention/attention_input.py": "d6abf7003532cd093aab8c18b612864fc6f66aef64814796a097e7ae397e7d2b",
+      "profiler/v0/profiler/attention/attention_profiler.py": "3998208c081bc39c38f84122fbc7177f11f6bb8413916027fd68f3443bc690a4",
+      "profiler/v0/profiler/attention/batch_sampling.py": "3641a23e6de5bc301af53a2202da29d3c1f54112e5f4c1c577e3e7c23c841bac",
+      "profiler/v0/profiler/attention/main.py": "c0b281351fae3cf2f3f3d550568880d07973da97f52efe94e1a4d7a106a10d7e",
+      "profiler/v0/profiler/common/timer.py": "4152a18b2b99aa13647ad33ad66b84208efcba9e85ce9af0137bf63d52a44464",
+      "profiler/v0/profiler/common/timer_stats_store.py": "16d52eb14a9a9234c8243364da41f1f82e891e5b78064758eb2495d7a18a4805",
+      "profiler/v0/profiler/layers/main.py": "285051ddcae012bb933c707734642ee399feb88488329f98bcb1e775bcabe3fe",
+      "profiler/v0/profiler/utils/__init__.py": "5a89d2bfa6205d2c739b8e6514e65d86e9f27d07e0e02f588139950e4048e00f",
+      "profiler/v0/profiler/utils/record_function_tracer.py": "22f7a41174ed6d405d4854f0ba8d2389d8103a63e5cf0c68264456f7fcf913a3"
+    },
+    "calibration_source_sha256": {
+      "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/attention.csv": "93d67794cf243fb481a0598549b94caa77e20ad0c8a215344a86ac8b9f5a5146",
+      "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/layers.csv": "41fd31dd27f5295d309bc2c926a0c01dc1c772f321074afe84f41d81f6a60735",
+      "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/attention.csv": "69b42685767810ae7419d8b08302714047444f3051246fd1ca7939318ae57a6d",
+      "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/layers.csv": "afcb40d69e346db7521540c6f09604183fb5ca42d675c0c53a6a9753dbb15ee4"
+    },
+    "calibration_work_contract_sha256": "b98ea9a18e8a2214771389be84b4a0e565cd31e5ae0111f1586a4308ce3866b5",
+    "endpoint_calibration_equality_scope": "Exact metadata-hash and endpoint-configuration equality across zero, half, and full reserve shards for each endpoint.",
+    "endpoint_calibration_metadata_sha256": {
+      "central_attention_one_third": "c1ab0f4597c5a8b591c735268b84b084f90e35d54845f9f08ecaa286bf217b3b",
+      "central_full_attention": "5bf691d7096b9510215c4fdf6d6a48312020e58ebb5620f7a6594464959f40a2",
+      "fast_full_attention": "908fedc4041e2d2c6a4d7a226648e263a274c677bc6c35b86d0fefd2fd26f2dc",
+      "slow_full_attention": "7ab34ecab1e29f81f109d4597e1dd24c0acdcc3dde5f9ee96109132252d72f69"
+    },
+    "git": {
+      "commit": "5bcc8740ab1e88e017d57745d85cfb922517a824",
+      "commit_equality_required": true,
+      "dirty_by_shard": {
+        "full-central_attention_one_third": true,
+        "full-central_full_attention": true,
+        "full-fast_full_attention": true,
+        "full-slow_full_attention": true,
+        "half-central_attention_one_third": true,
+        "half-central_full_attention": true,
+        "half-fast_full_attention": true,
+        "half-slow_full_attention": true,
+        "zero-central_attention_one_third": true,
+        "zero-central_full_attention": true,
+        "zero-fast_full_attention": true,
+        "zero-slow_full_attention": true
+      },
+      "dirty_equality_is_rejection_condition": false,
+      "provenance_sha256_by_shard": {
+        "full-central_attention_one_third": "2d904c814dc5b83114b542b1664785c735cb6a6eef9908d267215aa32038719e",
+        "full-central_full_attention": "2d904c814dc5b83114b542b1664785c735cb6a6eef9908d267215aa32038719e",
+        "full-fast_full_attention": "2d904c814dc5b83114b542b1664785c735cb6a6eef9908d267215aa32038719e",
+        "full-slow_full_attention": "2d904c814dc5b83114b542b1664785c735cb6a6eef9908d267215aa32038719e",
+        "half-central_attention_one_third": "2d904c814dc5b83114b542b1664785c735cb6a6eef9908d267215aa32038719e",
+        "half-central_full_attention": "2d904c814dc5b83114b542b1664785c735cb6a6eef9908d267215aa32038719e",
+        "half-fast_full_attention": "2d904c814dc5b83114b542b1664785c735cb6a6eef9908d267215aa32038719e",
+        "half-slow_full_attention": "2d904c814dc5b83114b542b1664785c735cb6a6eef9908d267215aa32038719e",
+        "zero-central_attention_one_third": "2d904c814dc5b83114b542b1664785c735cb6a6eef9908d267215aa32038719e",
+        "zero-central_full_attention": "2d904c814dc5b83114b542b1664785c735cb6a6eef9908d267215aa32038719e",
+        "zero-fast_full_attention": "2d904c814dc5b83114b542b1664785c735cb6a6eef9908d267215aa32038719e",
+        "zero-slow_full_attention": "2d904c814dc5b83114b542b1664785c735cb6a6eef9908d267215aa32038719e"
+      },
+      "status_differences_are_rejection_condition": false,
+      "status_sha256_by_shard": {
+        "full-central_attention_one_third": "f1389f0592888e79efc4fdb1dacd1dff7007d1c343eedea45a2e07e538ab4b33",
+        "full-central_full_attention": "f1389f0592888e79efc4fdb1dacd1dff7007d1c343eedea45a2e07e538ab4b33",
+        "full-fast_full_attention": "f1389f0592888e79efc4fdb1dacd1dff7007d1c343eedea45a2e07e538ab4b33",
+        "full-slow_full_attention": "f1389f0592888e79efc4fdb1dacd1dff7007d1c343eedea45a2e07e538ab4b33",
+        "half-central_attention_one_third": "f1389f0592888e79efc4fdb1dacd1dff7007d1c343eedea45a2e07e538ab4b33",
+        "half-central_full_attention": "f1389f0592888e79efc4fdb1dacd1dff7007d1c343eedea45a2e07e538ab4b33",
+        "half-fast_full_attention": "f1389f0592888e79efc4fdb1dacd1dff7007d1c343eedea45a2e07e538ab4b33",
+        "half-slow_full_attention": "f1389f0592888e79efc4fdb1dacd1dff7007d1c343eedea45a2e07e538ab4b33",
+        "zero-central_attention_one_third": "f1389f0592888e79efc4fdb1dacd1dff7007d1c343eedea45a2e07e538ab4b33",
+        "zero-central_full_attention": "f1389f0592888e79efc4fdb1dacd1dff7007d1c343eedea45a2e07e538ab4b33",
+        "zero-fast_full_attention": "f1389f0592888e79efc4fdb1dacd1dff7007d1c343eedea45a2e07e538ab4b33",
+        "zero-slow_full_attention": "f1389f0592888e79efc4fdb1dacd1dff7007d1c343eedea45a2e07e538ab4b33"
+      }
+    },
+    "invariant_manifest_field_sha256": {
+      "calibration_boundary": "702c45c236e535033e3cb7195af17754c2d28002fd0b3c0142c907435b9de857",
+      "evidence_classes": "bb5b39a1361b068e4009332d7ddb7505f86b24809450800ad5ec5f8db06f681d",
+      "excluded_repository_profile_evidence": "1e9fd94740af918222c28e7fb21c774f77e67cbae0b0e9cc399e56e50d697ef3",
+      "experiment_contract": "806dae2d9a2545ea4aaba813fa708c0de06ea1842929cb21e70a58c5ec988540",
+      "hardware_sources": "937d32d62fa5ce4bd9334bfe2874265260192990927c722399e7267b07f9ba28",
+      "model_geometry": "d00eeb334739a594c02b6bc6876cb2344e9ea619f61a9927ef877424839beea1",
+      "official_qwen_sources": "eaa23c4de5686a3d9532cdb9269d63ad021936203a0c17ed9ca68f21d4c1d2ba",
+      "repository_profile_evidence": "6b1a472b2943ac8c2450e5f589938f71642bc50efcf454372fffcb9ba0a58a90"
+    },
+    "local_source_comparison": "Exact equality across shards; calibration source hashes must also be an exact matching subset in every shard.",
+    "local_source_sha256": {
+      "configs/model/Qwen/Qwen3-30B-A3B-Instruct-2507.json": "0736f3bafb95cc658776c92ab34f5f98d8169634a3a36b84892d71448a1f19d3",
+      "profiler/perf/RTXPRO6000/Qwen/Qwen3-30B-A3B-Instruct-2507/bf16/meta.yaml": "e755433ea63a19e9d4a4919f04da412807aa520972dc97df3dfb8908b6a70f96",
+      "profiler/v0/models/llama.py": "34d71e5b76427464120b6347e901cbe9963b74cc794c72ed11934b606ebdf33f",
+      "profiler/v0/models/mixtral.py": "6143be0e5ce3b4cd5abc17cf3acca8321718422f2e35dacbd144020cb329c988",
+      "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/attention.csv": "93d67794cf243fb481a0598549b94caa77e20ad0c8a215344a86ac8b9f5a5146",
+      "profiler/v0/perf_models/H100/meta-llama/Llama-3.1-70B/tp4/layers.csv": "41fd31dd27f5295d309bc2c926a0c01dc1c772f321074afe84f41d81f6a60735",
+      "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/attention.csv": "69b42685767810ae7419d8b08302714047444f3051246fd1ca7939318ae57a6d",
+      "profiler/v0/perf_models/H100/mistralai/Mixtral-8x7B-v0.1/tp4/layers.csv": "afcb40d69e346db7521540c6f09604183fb5ca42d675c0c53a6a9753dbb15ee4",
+      "profiler/v0/profiler/attention/attention_input.py": "d6abf7003532cd093aab8c18b612864fc6f66aef64814796a097e7ae397e7d2b",
+      "profiler/v0/profiler/attention/attention_profiler.py": "3998208c081bc39c38f84122fbc7177f11f6bb8413916027fd68f3443bc690a4",
+      "profiler/v0/profiler/attention/batch_sampling.py": "3641a23e6de5bc301af53a2202da29d3c1f54112e5f4c1c577e3e7c23c841bac",
+      "profiler/v0/profiler/attention/main.py": "c0b281351fae3cf2f3f3d550568880d07973da97f52efe94e1a4d7a106a10d7e",
+      "profiler/v0/profiler/common/timer.py": "4152a18b2b99aa13647ad33ad66b84208efcba9e85ce9af0137bf63d52a44464",
+      "profiler/v0/profiler/common/timer_stats_store.py": "16d52eb14a9a9234c8243364da41f1f82e891e5b78064758eb2495d7a18a4805",
+      "profiler/v0/profiler/layers/main.py": "285051ddcae012bb933c707734642ee399feb88488329f98bcb1e775bcabe3fe",
+      "profiler/v0/profiler/utils/__init__.py": "5a89d2bfa6205d2c739b8e6514e65d86e9f27d07e0e02f588139950e4048e00f",
+      "profiler/v0/profiler/utils/record_function_tracer.py": "22f7a41174ed6d405d4854f0ba8d2389d8103a63e5cf0c68264456f7fcf913a3",
+      "serving/agentic_kv_qwen3_1m_p4d4.py": "619dfd25bde6d183b601d903f0a7b3bef8e0dd03f1f9e088256cc42fe5cd7183",
+      "serving/core/agentic_kv_capacity_replay.py": "49b32599872a58a3fa9a524a4d5706455056b945ed66d5e2ec1233fbc013b663",
+      "serving/core/agentic_kv_roofline.py": "76e2e93e39503aef164d4a6dfe07320f4108386c95d97d9aa481e821ef13190f",
+      "serving/core/h100_kernel_calibrated_prompt.py": "6ab51d8f56d96a25003f064f3da670257e8dcb2124016abae4316a7473d9fac8"
+    },
+    "normalized_common_resolved_config_sha256": "c28cbb9e526bb674165e6e802daf24cb80195f321c6709d42b48b52195c77095",
+    "resolved_config_normalization": {
+      "all_remaining_fields_equal_across_shards": true,
+      "removed_variant_fields": [
+        "policy",
+        "hbm_static_reserve_bytes_per_rank",
+        "prefill_hbm_static_reserve_bytes_per_rank",
+        "decode_hbm_static_reserve_bytes_per_rank",
+        "prompt_compute_scale_provenance"
+      ]
+    },
+    "workload_metadata_comparison": "Exact equality of the complete workload object in every shard manifest, in addition to the workload content hash.",
+    "workload_metadata_sha256": "4cb73df75699567178bbc39084edc5518259eef6e2fe24b00bac9e1ed26b83dd",
+    "workload_provenance_sha256": "414b02bd9d343f8aca6ea960fa4245a103a3b75690c069273531d8351ce2c914",
+    "workload_sha256": "b6188582aac9467cee8c73e4275f9a9606b359f8c2fa000d9f49a9ca3bde02f0"
+  },
+  "collector_source": {
+    "path": "serving/agentic_kv_qwen3_1m_collect.py",
+    "sha256": "d1e213c9fcf2304586e022826d26ac1a974fe907fc1c2a8a04386dbe9781edc2"
+  },
+  "combined_tables": {
+    "return_sources.csv": {
+      "bytes": 111992,
+      "columns": [
+        "run_id",
+        "compute_endpoint",
+        "reserve_case",
+        "baseline",
+        "return_gap_type",
+        "all_requests_in_class",
+        "reuse_eligible_in_class",
+        "source",
+        "count",
+        "reusable_tokens",
+        "fraction_of_all_requests_in_class",
+        "fraction_of_reuse_eligible_in_class"
+      ],
+      "path": "return_sources.csv",
+      "rows": 720,
+      "sha256": "b75ef3e83e61586499d920258e638c5076710ab9c743e2101a3ac74c89335948"
+    },
+    "summary.csv": {
+      "bytes": 23054,
+      "columns": [
+        "run_id",
+        "compute_endpoint",
+        "calibration_band",
+        "attention_multiplier",
+        "prompt_compute_scale",
+        "prompt_compute_calibration_metadata_sha256",
+        "reserve_case",
+        "baseline",
+        "report_schema_version",
+        "tp_size",
+        "max_context_tokens",
+        "hbm_total_bytes_per_rank",
+        "model_weight_bytes_per_rank_estimate",
+        "common_hbm_reserve_bytes_per_rank",
+        "prefill_hbm_reserve_bytes_per_rank",
+        "decode_hbm_reserve_bytes_per_rank",
+        "prefill_hbm_kv_budget_bytes_per_rank",
+        "decode_hbm_kv_budget_bytes_per_rank",
+        "all_request_count",
+        "context_admissible_request_count",
+        "reuse_eligible_transition_count",
+        "decode_hbm_resume_count",
+        "cpu_resume_count",
+        "ssd_resume_count",
+        "recompute_count",
+        "decode_hbm_resume_fraction_all_requests",
+        "cpu_resume_fraction_all_requests",
+        "ssd_resume_fraction_all_requests",
+        "cpu_or_ssd_resume_fraction_all_requests",
+        "recompute_fraction_all_requests",
+        "recompute_fraction_executed_prompt_compute",
+        "restore_raw_request_sum_seconds",
+        "restore_exposed_request_sum_seconds",
+        "restore_exposed_wall_union_seconds",
+        "transfer_queue_wait_seconds",
+        "transfer_service_seconds",
+        "oracle_request_summed_service_slowdown_fraction",
+        "oracle_session_e2e_slowdown_fraction",
+        "oracle_trace_makespan_slowdown_fraction",
+        "request_makespan_seconds",
+        "report_sha256"
+      ],
+      "path": "summary.csv",
+      "rows": 36,
+      "sha256": "047d474468e97c6809de79b353ad062623f3792f2b3a77cdcc7d9d5a5383c8ba"
+    },
+    "transfer_stages.csv": {
+      "bytes": 28628,
+      "columns": [
+        "run_id",
+        "compute_endpoint",
+        "reserve_case",
+        "baseline",
+        "stage",
+        "jobs",
+        "bytes",
+        "queue_wait_seconds",
+        "service_seconds"
+      ],
+      "path": "transfer_stages.csv",
+      "rows": 168,
+      "sha256": "56c2d10d78bcf5513b247d7d525b448dd76862494d5a99e08c02c8d89864b158"
+    }
+  },
+  "command": "/usr/bin/python -m serving.agentic_kv_qwen3_1m_collect --root results/agentic-kv/qwen3-1m-p4d4-h100-kernel-calibrated",
+  "generated_at_utc": "2026-07-20T15:47:10.530936+00:00",
+  "git": {
+    "available": true,
+    "commit": "5bcc8740ab1e88e017d57745d85cfb922517a824",
+    "dirty": true,
+    "status_porcelain": [
+      " M docs/docs/reference/cli-flags.md",
+      " M serving/__main__.py",
+      "?? docs/docs/profiler/legacy-v0-calibration.md",
+      "?? profiler/kernel_calibration.py",
+      "?? profiler/legacy_adapter.py",
+      "?? results/agentic-kv/baseline/",
+      "?? results/agentic-kv/calibration/",
+      "?? results/agentic-kv/capacity-aware/",
+      "?? results/agentic-kv/capacity-replay/",
+      "?? results/agentic-kv/endurance_llama31_70b_fullwrite.csv",
+      "?? results/agentic-kv/endurance_llama31_70b_fullwrite.json",
+      "?? results/agentic-kv/endurance_llama31_70b_tiered.csv",
+      "?? results/agentic-kv/endurance_llama31_70b_tiered.json",
+      "?? results/agentic-kv/endurance_llama31_8b_fullwrite.csv",
+      "?? results/agentic-kv/endurance_llama31_8b_fullwrite.json",
+      "?? results/agentic-kv/endurance_llama31_8b_tiered.csv",
+      "?? results/agentic-kv/endurance_llama31_8b_tiered.json",
+      "?? results/agentic-kv/endurance_mixtral_8x7b_fullwrite.csv",
+      "?? results/agentic-kv/endurance_mixtral_8x7b_fullwrite.json",
+      "?? results/agentic-kv/endurance_mixtral_8x7b_tiered.csv",
+      "?? results/agentic-kv/endurance_mixtral_8x7b_tiered.json",
+      "?? results/agentic-kv/endurance_qwen3_30b_a3b_fullwrite.csv",
+      "?? results/agentic-kv/endurance_qwen3_30b_a3b_fullwrite.json",
+      "?? results/agentic-kv/endurance_qwen3_30b_a3b_tiered.csv",
+      "?? results/agentic-kv/endurance_qwen3_30b_a3b_tiered.json",
+      "?? results/agentic-kv/endurance_qwen3_32b_fullwrite.csv",
+      "?? results/agentic-kv/endurance_qwen3_32b_fullwrite.json",
+      "?? results/agentic-kv/endurance_qwen3_32b_tiered.csv",
+      "?? results/agentic-kv/endurance_qwen3_32b_tiered.json",
+      "?? results/agentic-kv/legacy_h100_tp8_llama31_70b.csv",
+      "?? results/agentic-kv/legacy_h100_tp8_llama31_70b.json",
+      "?? results/agentic-kv/legacy_h100_tp8_llama31_8b.csv",
+      "?? results/agentic-kv/legacy_h100_tp8_llama31_8b.json",
+      "?? results/agentic-kv/legacy_h100_tp8_mixtral_8x7b.csv",
+      "?? results/agentic-kv/legacy_h100_tp8_mixtral_8x7b.json",
+      "?? results/agentic-kv/legacy_profile_inventory.json",
+      "?? results/agentic-kv/qwen3-1m-p4d4-h100-kernel-calibrated/",
+      "?? results/agentic-kv/swebench_tp8_8ssd.csv",
+      "?? results/agentic-kv/swebench_tp8_8ssd.json",
+      "?? results/agentic-kv/tracelab_context32k_tp8_8ssd.csv",
+      "?? results/agentic-kv/tracelab_context32k_tp8_8ssd.json",
+      "?? results/agentic-kv/tracelab_context32k_tp8_8ssd_blocking.csv",
+      "?? results/agentic-kv/tracelab_context32k_tp8_8ssd_blocking.json",
+      "?? results/agentic-kv/tracelab_context32k_tp8_8ssd_fullwrite.csv",
+      "?? results/agentic-kv/tracelab_context32k_tp8_8ssd_fullwrite.json",
+      "?? tests/test_kernel_calibration.py",
+      "?? tests/test_legacy_profile_adapter.py"
+    ],
+    "status_sha256": "0ae8b35c403328f885456498b7c921f69eca28e83798dd7dc187cd2c7875eca7"
+  },
+  "kind": "qwen3_1m_calibrated_shard_collection_index",
+  "ordering": {
+    "compute_endpoints": [
+      "central_full_attention",
+      "central_attention_one_third",
+      "fast_full_attention",
+      "slow_full_attention"
+    ],
+    "policies": [
+      "hbm_lru_recompute",
+      "hbm_ssd_direct",
+      "tiered"
+    ],
+    "reserves": [
+      "zero",
+      "half",
+      "full"
+    ]
+  },
+  "python": {
+    "implementation": "CPython",
+    "platform": "Linux-5.15.0-78-generic-x86_64-with-glibc2.31",
+    "version": "3.9.5"
+  },
+  "root": "/home/hnpark2/LLMServingSim-repo/results/agentic-kv/qwen3-1m-p4d4-h100-kernel-calibrated",
+  "schema_version": 1,
+  "shards": [
+    {
+      "manifest": "parts/zero-central_full_attention/manifest.json",
+      "manifest_bytes": 67071,
+      "manifest_schema_version": 3,
+      "manifest_sha256": "9b737e39f260e9552df141a2ab1f698acf7895856795fa0d223fdaffd777d3a9",
+      "name": "zero-central_full_attention",
+      "path": "parts/zero-central_full_attention",
+      "report_count": 3,
+      "summary_rows": 3
+    },
+    {
+      "manifest": "parts/zero-central_attention_one_third/manifest.json",
+      "manifest_bytes": 67662,
+      "manifest_schema_version": 3,
+      "manifest_sha256": "97e0674e5034b87ddeac572ef61ced3ea77b0944a227b72b1ae3fef28ce9e3f4",
+      "name": "zero-central_attention_one_third",
+      "path": "parts/zero-central_attention_one_third",
+      "report_count": 3,
+      "summary_rows": 3
+    },
+    {
+      "manifest": "parts/zero-fast_full_attention/manifest.json",
+      "manifest_bytes": 67052,
+      "manifest_schema_version": 3,
+      "manifest_sha256": "0ef172d89a7b3c2cfd9b7be9db5d0750d343349070bff73cdf079bbc028742d1",
+      "name": "zero-fast_full_attention",
+      "path": "parts/zero-fast_full_attention",
+      "report_count": 3,
+      "summary_rows": 3
+    },
+    {
+      "manifest": "parts/zero-slow_full_attention/manifest.json",
+      "manifest_bytes": 67052,
+      "manifest_schema_version": 3,
+      "manifest_sha256": "fbe0f2850bac478e5e8f2e276fc3d2b015cc3b550a711fc9c765516b991c4b5f",
+      "name": "zero-slow_full_attention",
+      "path": "parts/zero-slow_full_attention",
+      "report_count": 3,
+      "summary_rows": 3
+    },
+    {
+      "manifest": "parts/half-central_full_attention/manifest.json",
+      "manifest_bytes": 66982,
+      "manifest_schema_version": 3,
+      "manifest_sha256": "9e403a06505fb7cd892cb4feb7858754cee0f6ff0386df19d0044bc514363053",
+      "name": "half-central_full_attention",
+      "path": "parts/half-central_full_attention",
+      "report_count": 3,
+      "summary_rows": 3
+    },
+    {
+      "manifest": "parts/half-central_attention_one_third/manifest.json",
+      "manifest_bytes": 67573,
+      "manifest_schema_version": 3,
+      "manifest_sha256": "de19d3a3865abf73f9f57f37d2103fed283d0865c52b5b948a5a3f940f779010",
+      "name": "half-central_attention_one_third",
+      "path": "parts/half-central_attention_one_third",
+      "report_count": 3,
+      "summary_rows": 3
+    },
+    {
+      "manifest": "parts/half-fast_full_attention/manifest.json",
+      "manifest_bytes": 66963,
+      "manifest_schema_version": 3,
+      "manifest_sha256": "fe2173b254465b0ff71af022d864d692fa9e1fbc4517b25a4ccea0d32518ae3c",
+      "name": "half-fast_full_attention",
+      "path": "parts/half-fast_full_attention",
+      "report_count": 3,
+      "summary_rows": 3
+    },
+    {
+      "manifest": "parts/half-slow_full_attention/manifest.json",
+      "manifest_bytes": 66963,
+      "manifest_schema_version": 3,
+      "manifest_sha256": "f9716b37bdbefa0b768ababacb3b9d26957910a48ced2e43cac87193c2d23b23",
+      "name": "half-slow_full_attention",
+      "path": "parts/half-slow_full_attention",
+      "report_count": 3,
+      "summary_rows": 3
+    },
+    {
+      "manifest": "parts/full-central_full_attention/manifest.json",
+      "manifest_bytes": 66984,
+      "manifest_schema_version": 3,
+      "manifest_sha256": "fce43e996cafffe41592ae4e6853e391f9ba42fd7b627aa4c12129bdbe5b97c8",
+      "name": "full-central_full_attention",
+      "path": "parts/full-central_full_attention",
+      "report_count": 3,
+      "summary_rows": 3
+    },
+    {
+      "manifest": "parts/full-central_attention_one_third/manifest.json",
+      "manifest_bytes": 67575,
+      "manifest_schema_version": 3,
+      "manifest_sha256": "d88b536f636c2a6ec57549c1ceb2c99696f7ed088b69cbf2f1ae4a7a2e6fce7d",
+      "name": "full-central_attention_one_third",
+      "path": "parts/full-central_attention_one_third",
+      "report_count": 3,
+      "summary_rows": 3
+    },
+    {
+      "manifest": "parts/full-fast_full_attention/manifest.json",
+      "manifest_bytes": 66965,
+      "manifest_schema_version": 3,
+      "manifest_sha256": "36a228693d2742a27ac3f9051c780bb2917f1bd0b0e1ffbe79d009d2a40f29a1",
+      "name": "full-fast_full_attention",
+      "path": "parts/full-fast_full_attention",
+      "report_count": 3,
+      "summary_rows": 3
+    },
+    {
+      "manifest": "parts/full-slow_full_attention/manifest.json",
+      "manifest_bytes": 66965,
+      "manifest_schema_version": 3,
+      "manifest_sha256": "f3d09d41fca6e5eab32829096fe5d63aeae6672d078fa9275ae10e61d1167197",
+      "name": "full-slow_full_attention",
+      "path": "parts/full-slow_full_attention",
+      "report_count": 3,
+      "summary_rows": 3
+    }
+  ],
+  "working_directory": "/home/hnpark2/LLMServingSim-repo"
+}

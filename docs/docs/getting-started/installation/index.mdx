@@ -1,0 +1,37 @@
+---
+title: Installation
+slug: /getting-started/installation
+---
+
+import IconCardGrid from '@site/src/components/IconCardGrid';
+import {ListChecks, Server, Wand2} from 'lucide-react';
+
+# Installation
+
+From a clean machine to a working LLMServingSim install. Three short
+pages, the first two cover everything most users need, the third is
+optional.
+
+<IconCardGrid columns={3} cards={[
+  {
+    Icon: ListChecks,
+    title: 'Prerequisites',
+    description: 'Quick check before you dive in: OS, Docker, NVIDIA Container Toolkit, optional Hugging Face token.',
+    to: '/docs/getting-started/installation/prerequisites',
+  },
+  {
+    Icon: Server,
+    title: 'Simulator setup',
+    description: 'The path everyone needs. Clone the repo, launch the simulator container, build ASTRA-Sim, verify with a smoke test.',
+    to: '/docs/getting-started/installation/simulator',
+  },
+  {
+    Icon: Wand2,
+    title: 'vLLM setup (optional)',
+    description: 'Only needed if you want to profile new hardware, run vLLM benchmarks, or validate the simulator. Docker or bare-metal.',
+    to: '/docs/getting-started/installation/vllm',
+  },
+]} />
+
+If you only plan to run pre-profiled simulations on the bundled
+RTXPRO6000 hardware, you can skip vLLM setup entirely.

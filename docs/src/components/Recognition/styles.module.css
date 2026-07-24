@@ -1,0 +1,291 @@
+.recognition {
+  padding: 5rem 0 6rem;
+  width: 100%;
+  border-top: 1px solid var(--ifm-color-emphasis-200);
+}
+
+.eyebrow {
+  text-align: center;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ifm-color-emphasis-600);
+  margin: 0 0 0.7rem;
+}
+
+.title {
+  text-align: center;
+  font-size: clamp(1.5rem, 3vw, 2rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--ifm-color-emphasis-900);
+  margin: 0 0 3rem;
+}
+
+/* Stats row */
+
+.stats {
+  display: flex;
+  justify-content: center;
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 3.5rem;
+}
+
+.stat {
+  flex: 1 1 220px;
+  max-width: 280px;
+  text-align: center;
+  padding: 1.75rem 1.5rem 1.5rem;
+  border-radius: 14px;
+  border: 1px solid transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.stat::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.statIcon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 0.85rem;
+}
+
+.count {
+  font-size: clamp(3rem, 6vw, 4rem);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  font-feature-settings: 'tnum' 1;
+}
+
+.label {
+  margin-top: 0.65rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* Variant: Publications (indigo) */
+.stat_pub {
+  background: linear-gradient(180deg, rgba(99, 102, 241, 0.04), rgba(99, 102, 241, 0.08));
+  border-color: rgba(99, 102, 241, 0.18);
+}
+.stat_pub .statIcon {
+  background: rgba(99, 102, 241, 0.14);
+  color: var(--ifm-color-primary);
+}
+.stat_pub .count {
+  color: var(--ifm-color-primary);
+}
+.stat_pub .label {
+  color: var(--ifm-color-emphasis-700);
+}
+
+[data-theme='dark'] .stat_pub {
+  background: linear-gradient(180deg, rgba(129, 140, 248, 0.05), rgba(129, 140, 248, 0.1));
+  border-color: rgba(129, 140, 248, 0.22);
+}
+[data-theme='dark'] .stat_pub .statIcon {
+  background: rgba(129, 140, 248, 0.2);
+  color: var(--ifm-color-primary-lighter);
+}
+[data-theme='dark'] .stat_pub .count {
+  color: var(--ifm-color-primary-lighter);
+}
+
+/* Variant: Best Paper (amber) */
+.stat_best {
+  background: linear-gradient(180deg, rgba(251, 191, 36, 0.06), rgba(245, 158, 11, 0.12));
+  border-color: rgba(245, 158, 11, 0.32);
+  box-shadow: 0 6px 24px -12px rgba(245, 158, 11, 0.35);
+}
+.stat_best .statIcon {
+  background: rgba(245, 158, 11, 0.18);
+  color: #d97706;
+}
+.stat_best .count {
+  color: #b45309;
+}
+.stat_best .label {
+  color: #92400e;
+}
+
+[data-theme='dark'] .stat_best {
+  background: linear-gradient(180deg, rgba(251, 191, 36, 0.05), rgba(245, 158, 11, 0.12));
+  border-color: rgba(251, 191, 36, 0.3);
+  box-shadow: 0 6px 24px -12px rgba(245, 158, 11, 0.4);
+}
+[data-theme='dark'] .stat_best .statIcon {
+  background: rgba(251, 191, 36, 0.2);
+  color: #fbbf24;
+}
+[data-theme='dark'] .stat_best .count {
+  color: #fcd34d;
+}
+[data-theme='dark'] .stat_best .label {
+  color: #fbbf24;
+}
+
+/* Variant: Distinguished Artifact (violet) */
+.stat_artifact {
+  background: linear-gradient(180deg, rgba(167, 139, 250, 0.06), rgba(139, 92, 246, 0.12));
+  border-color: rgba(139, 92, 246, 0.32);
+  box-shadow: 0 6px 24px -12px rgba(139, 92, 246, 0.35);
+}
+.stat_artifact .statIcon {
+  background: rgba(139, 92, 246, 0.18);
+  color: #7c3aed;
+}
+.stat_artifact .count {
+  color: #6d28d9;
+}
+.stat_artifact .label {
+  color: #5b21b6;
+}
+
+[data-theme='dark'] .stat_artifact {
+  background: linear-gradient(180deg, rgba(167, 139, 250, 0.05), rgba(139, 92, 246, 0.12));
+  border-color: rgba(167, 139, 250, 0.3);
+  box-shadow: 0 6px 24px -12px rgba(139, 92, 246, 0.4);
+}
+[data-theme='dark'] .stat_artifact .statIcon {
+  background: rgba(167, 139, 250, 0.2);
+  color: #c4b5fd;
+}
+[data-theme='dark'] .stat_artifact .count {
+  color: #ddd6fe;
+}
+[data-theme='dark'] .stat_artifact .label {
+  color: #c4b5fd;
+}
+
+/* Award attribution rows */
+
+.awards {
+  list-style: none;
+  margin: 0 auto;
+  padding: 0;
+  max-width: 640px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.awardRow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.venue {
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--ifm-color-emphasis-900);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.venue:hover {
+  color: var(--ifm-color-primary);
+}
+
+[data-theme='dark'] .venue:hover {
+  color: var(--ifm-color-primary-lighter);
+}
+
+.badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.5rem 1rem;
+  border-radius: 999px;
+  font-size: 0.88rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.badge svg {
+  flex-shrink: 0;
+}
+
+/* Best Paper - warm gold/amber */
+.best {
+  background: linear-gradient(135deg, rgba(251, 191, 36, 0.22), rgba(245, 158, 11, 0.3));
+  color: #b45309;
+  border-color: rgba(245, 158, 11, 0.55);
+  box-shadow: 0 2px 6px rgba(245, 158, 11, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+.best svg {
+  color: #d97706;
+}
+
+[data-theme='dark'] .best {
+  background: linear-gradient(135deg, rgba(251, 191, 36, 0.2), rgba(245, 158, 11, 0.28));
+  color: #fcd34d;
+  border-color: rgba(251, 191, 36, 0.55);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+[data-theme='dark'] .best svg {
+  color: #fbbf24;
+}
+
+/* Distinguished Artifact - deep violet */
+.artifact {
+  background: linear-gradient(135deg, rgba(167, 139, 250, 0.22), rgba(139, 92, 246, 0.32));
+  color: #6d28d9;
+  border-color: rgba(139, 92, 246, 0.55);
+  box-shadow: 0 2px 6px rgba(139, 92, 246, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+.artifact svg {
+  color: #7c3aed;
+}
+
+[data-theme='dark'] .artifact {
+  background: linear-gradient(135deg, rgba(167, 139, 250, 0.22), rgba(139, 92, 246, 0.3));
+  color: #ddd6fe;
+  border-color: rgba(167, 139, 250, 0.55);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+[data-theme='dark'] .artifact svg {
+  color: #c4b5fd;
+}
+
+@media screen and (max-width: 640px) {
+  .stat {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+}

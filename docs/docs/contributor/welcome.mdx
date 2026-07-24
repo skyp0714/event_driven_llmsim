@@ -1,0 +1,140 @@
+---
+sidebar_position: 1
+title: Welcome
+---
+
+import IconCardGrid from '@site/src/components/IconCardGrid';
+import {
+  Cpu, BookOpen, BarChart3, FileText, Wrench, Sparkles,
+  Award, GraduationCap, Users, Heart,
+} from 'lucide-react';
+
+# Welcome, future contributor
+
+LLMServingSim is a research-grade simulator for **heterogeneous and
+disaggregated LLM serving infrastructure**. We use it to ask
+"what if?" questions you can't ask on real hardware:
+
+> *What if I could run this workload on a 256-GPU cluster I don't
+> have? On a TPU? On an unreleased accelerator? Across 50 disaggregated
+> instances? With CXL or PIM in the mix?*
+
+It's an open-source project from
+**[Prof. Jongse Park](https://jongse-park.github.io/)'s research
+group** at **[KAIST CASYS Lab](https://casys.kaist.ac.kr/)**,
+peer-reviewed at three venues over the last two years, and validated
+end-to-end against real vLLM with sub-3% error on TTFT, TPOT, and
+throughput.
+
+**We're actively looking for contributors.** Not "PRs welcome"
+boilerplate, actual collaborators who shape where this project
+goes.
+
+If anything below resonates, we want to work with you.
+
+## The project at a glance
+
+<IconCardGrid columns={2} cards={[
+  {
+    Icon: GraduationCap,
+    title: 'Active research',
+    description: 'Three published papers (IISWC 2024, CAL 2025, ISPASS 2026), more on the way. The simulator is the lab\'s daily driver for serving-systems research, every contribution lands in something measurable.',
+  },
+  {
+    Icon: Sparkles,
+    title: 'Production-validated',
+    description: 'Sub-3% end-to-end error against real vLLM on Llama-3.1-8B, Qwen3-32B dense, and Qwen3-30B-A3B MoE. Numbers you predict are numbers production actually delivers.',
+  },
+  {
+    Icon: Users,
+    title: 'Small but engaged',
+    description: 'A handful of researchers, all reading every issue and PR. Expect human responses within days, not bot triage. We genuinely care about getting your contribution merged.',
+  },
+  {
+    Icon: Heart,
+    title: 'Apache 2.0, real OSS',
+    description: 'Fully open. No CLA. Your contributions stay yours. The code is the same code we run experiments on, no hidden fork, no "internal version".',
+  },
+]} />
+
+## How you can help
+
+There's room to contribute at every level, code, models, hardware,
+docs, examples, and ideas. Here's what's most needed right now.
+
+<IconCardGrid columns={2} cards={[
+  {
+    Icon: Cpu,
+    title: 'New hardware backends',
+    description: 'Add support for TPUs, Intel Gaudi, AMD MI series, or your favorite custom NPU. Either via the vLLM-based profiler (for vLLM-supported targets) or by synthesizing the CSV bundle from a vendor model. Big impact for a relatively contained scope.',
+  },
+  {
+    Icon: BookOpen,
+    title: 'New model architectures',
+    description: 'DeepSeek V3 (MLA), Gemma, GPT-OSS, sliding-window attention, future Qwen / Llama variants. Most are a small YAML; some need lightweight simulator extensions. Highly visible work, researchers cite the model coverage.',
+  },
+  {
+    Icon: BarChart3,
+    title: 'Visualization & analysis',
+    description: 'Tools that turn the per-request CSVs and throughput logs into useful plots, dashboards, or interactive notebooks. Open territory, pick a UX you wish existed and build it.',
+  },
+  {
+    Icon: Wrench,
+    title: 'Simulator features',
+    description: 'KV-compression, speculative decoding, advanced batching policies, network-backend improvements (ns3 path is WIP), better PIM models. If you have a research idea, this is where it lives.',
+  },
+  {
+    Icon: FileText,
+    title: 'Documentation & examples',
+    description: 'These docs you\'re reading were just bootstrapped. Filling in stubs, adding worked examples for new scenarios, or writing tutorials for specific research workflows is hugely valuable, and a great way to learn the codebase.',
+  },
+  {
+    Icon: Award,
+    title: 'Bug reports & validation',
+    description: 'Run your own workloads, compare against vLLM, find the cases where we drift. Filing a reproducible bug is a real contribution. The bench/ suite is the reference for what "good" looks like.',
+  },
+]} />
+
+## What contributing looks like
+
+- **Your code ships.** Every merged PR goes straight into the
+  codebase we run experiments on, no internal fork, no "cleaned-up
+  version later".
+- **You get credited.** External contributors are listed in the
+  README next to what they shipped (`@waneon`, `@HyunsuYEE`,
+  `@junwha`, `@gleb-kun`, …). Your line lands there too.
+- **A human reviews your PR.** Real feedback, within a few days. No
+  bot triage, no "thanks for your interest" boilerplate.
+
+## New here? You're welcome.
+
+You don't need to be a serving-systems expert to get started.
+Past external contributors include undergrads, master's students,
+hobbyists, and industry engineers, all of whom landed their first
+PR through a starter issue or a "hey, can I help with X?" email.
+
+If you don't know where to start:
+
+1. Read [the project README](https://github.com/casys-kaist/LLMServingSim)
+   and skim the simulator docs (you already are).
+2. Pick a small thing, a typo, a stub page, a missing example
+   config, a piece of code you don't understand and want to document.
+3. Open an issue saying "I'd like to work on X, is that useful?"
+   We'll respond within a couple of days with either "yes please" or
+   redirect you to something more impactful.
+
+## Ready to get started?
+
+- **Set up your dev environment**: head to
+  **[Onboarding](./intro)**.
+- **Open a discussion**: [GitHub Discussions](https://github.com/casys-kaist/LLMServingSim/discussions).
+- **File an issue**: [GitHub Issues](https://github.com/casys-kaist/LLMServingSim/issues)
+  with `[contributor]` in the title.
+- **Email the main contributors directly**:
+  [jhcho@casys.kaist.ac.kr](mailto:jhcho@casys.kaist.ac.kr?cc=hmchoi@casys.kaist.ac.kr)
+  and [hmchoi@casys.kaist.ac.kr](mailto:hmchoi@casys.kaist.ac.kr?cc=jhcho@casys.kaist.ac.kr)
+  (please CC both whenever possible so neither of us misses your message).
+
+We'll see you there.
+
+*The LLMServingSim team*

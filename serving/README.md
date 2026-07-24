@@ -1,0 +1,199 @@
+# serving
+
+LLMServingSim simulator core. Run as `python -m serving --cluster-config <...> [...]`.
+
+## Layout
+
+```
+serving/                        Python package
+├── __init__.py                 module map
+├── __main__.py                 simulation entry point + main loop
+├── core/                       internals (every .py module documented below)
+│   ├── scheduler.py            vLLM-style continuous batching scheduler
+│   ├── trace_generator.py      builds execution traces from profiled latencies
+│   ├── memory_model.py         memory tracking, KV cache, tensor sizes
+│   ├── graph_generator.py      Chakra protobuf graph generation
+│   ├── controller.py           IPC with ASTRA-Sim subprocess
+│   ├── router.py               request routing across instances
+│   ├── gate_function.py        MoE expert token routing
+│   ├── config_builder.py       cluster config -> ASTRA-Sim input files
+│   ├── power_model.py          power / energy estimation
+│   ├── pim_model.py            PIM device model
+│   ├── request.py              Request / Batch data classes
+│   ├── radix_tree.py           prefix-cache radix tree (from SGLang)
+│   ├── logger.py               Rich-based logger + stdio capture
+│   └── utils.py                model config loading, formatting helpers
+└── run.sh                      example invocations across cluster configs
+```
+
+## Architecture
+
+The simulation loop in `serving/__main__.py` orchestrates these modules per iteration:
+
+1. **Router** dispatches incoming requests to instances
+2. **Scheduler** forms batches under memory and token budget constraints
+3. **Trace generator** looks up profiled latencies and emits execution traces
+4. **Graph generator** converts traces to Chakra protobuf graphs
+5. **Controller** feeds graphs to ASTRA-Sim and reads back timing results
+6. **Memory model** tracks KV cache allocation, eviction, and prefix cache hits
+
+### Trace generation pipeline
+
+The trace generator constructs per-iteration execution traces by walking the
+ordered ``sequence:`` section of the architecture yaml (
+`profiler/models/<model_type>.yaml`). For a standard decoder-only model:
+
+```
+prologue (embedding)
+  → [pre_attn (layernorm → qkv_proj → [qk_norm] → rotary_emb → attention)
+     → post_attn (o_proj[ALLREDUCE] → layernorm)
+     → mlp_dense (gate_up_proj → act_fn → down_proj[ALLREDUCE])
+        or mlp_moe (moe[ALLTOALL])
+    ] × N_layers
+  → head (final_layernorm → lm_head → sampler)
+```
+
+Latencies come from the profiler's per-category CSVs under
+`profiler/perf/<hardware>/<model>/<variant>/tp<N>/` — `dense.csv` (keyed on
+`tokens`), `per_sequence.csv` (`sequences`), `attention.csv` (4D grid on
+`prefill_chunk, kv_prefill, n_decode, kv_decode`), and `moe.csv`
+(`tokens, activated_experts`). The simulator resolves the `<variant>` folder
+name from `--dtype` + `--kv-cache-dtype` (or the model config's `torch_dtype`
+when `--dtype` is omitted) so it matches the folder the profiler wrote.
+
+`meta.yaml` next to each variant records the engine flags the profiler swept
+(notably `max_num_batched_tokens` and `max_num_seqs`); the simulator warns at
+startup when the runtime values exceed them, signalling that lookups will
+extrapolate.
+
+### Head dimension
+
+Some models (e.g., Qwen3) have `head_dim != hidden_size // num_attention_heads`. The
+codebase always uses the explicit `head_dim` from model config:
+
+```python
+head_dim = config.get('head_dim', n_embd // n_head)
+q_dim = n_head * head_dim        # NOT n_embd
+kv_dim = kv_head * head_dim      # NOT n_embd // group
+```
+
+### Working directory
+
+`serving/__main__.py` changes cwd to `astra-sim/` early in execution. All relative paths in the
+simulator resolve from `astra-sim/`, not the repo root. Paths to `configs/`, `workloads/`,
+`profiler/` are prefixed with `../` in code.
+
+## Modules
+
+All modules below live under `serving/core/`. Imports inside the
+subpackage use relative form (`from .X import ...`); external callers
+use `from serving.core.X import ...`.
+
+### `request.py`
+Defines the `Request` and `Batch` data classes. Tracks per-request state and latency
+metrics (TTFT, TPOT, ITL).
+
+### `scheduler.py`
+Per-instance scheduler implementing vLLM-style continuous batching. Manages request queuing,
+memory-constrained batch formation, KV cache block eviction and swapping to CPU, and prefix
+cache lookup. Add custom scheduling policies here.
+
+### `router.py`
+Routes incoming requests across instances in real-time based on current system state.
+Default policy `LOAD` uses vLLM-style weighted least-loaded scoring (`waiting * 4 + running`).
+Requests are routed at their arrival time during the simulation loop, not upfront.
+Handles request transfer in Prefill/Decode disaggregation mode.
+
+### `gate_function.py`
+Routes tokens to MoE experts according to configurable policies (Copy, Round Robin, Random,
+Custom). `COPY` (default) enables block copy optimization. Provides EP-aware routing via
+`route_ep()` with even expert-to-rank partitioning for per-rank latency lookup.
+
+### `memory_model.py`
+Tracks NPU, CPU, and CXL memory usage. Manages KV cache block allocation and the RadixCache
+for prefix caching. Contains `calculate_sizes(parallel=)` and `get_weight` for per-layer
+tensor size computation. The `parallel` parameter is TP degree for dense layers and EP degree
+for MoE experts. MoE expert weights are sharded by `ep_size`. Modify these when adding a new
+model architecture.
+
+### `radix_tree.py`
+Radix tree data structure for token-level prefix matching, used by the prefix cache. Ported
+from SGLang.
+
+### `trace_generator.py`
+Core performance estimator. Loads the profiler's per-category CSVs under
+`profiler/perf/<hardware>/<model>/<variant>/tp<N>/` plus the architecture
+yaml (`profiler/models/<model_type>.yaml`) and walks the yaml's
+``sequence:`` section to emit each iteration's layers. Composable helpers:
+
+- `resolve_variant()` / `_load_perf_db()` / `_load_architecture()` — turn
+  `(hardware, model, dtype, kv_cache_dtype)` into a loaded DB with category
+  tables and sequence order.
+- `_lookup_dense()` / `_lookup_per_sequence()` / `_lookup_attention()` /
+  `_lookup_moe()` — category-specific lookups with 1D linear interpolation
+  (dense/per_sequence), 4D nearest-neighbour-on-(prefill_chunk,n_decode) plus
+  bilinear on (kv_prefill, kv_decode) for attention, and 2D for MoE.
+- `_lookup_attention_with_skew()` / `_skew_alpha()` — skew correction on
+  the attention kernel: two 4D lookups (at the batch's mean and max
+  decode kv) blended via a bucket-specific alpha resolved from
+  `meta.yaml::skew_fit`. Bucket axes (`n`, `skew_rate`, `kv_big`, `kp`;
+  `pc` used raw) are read from meta so the simulator automatically
+  picks up whatever resolution the profiler ended up with. When meta
+  predates the skew_fit block a pooled fallback constant is used —
+  the simulator stays usable against older profile runs.
+- `_hydrate_skew_fit_tables()` — on load, walks each TP's
+  `bucket_table:` pointer and reads `tp<N>/skew_fit.csv` into the
+  in-memory `alpha_by_bucket` map that `_skew_alpha` consults.
+- `TraceCtx` / `BatchCtx` / `PowerAccumulator` — data classes for context passing
+- `_emit_layer()` — single-layer emission that dispatches by catalog category
+- `_emit_sequence()` — walks a list of canonical names from the yaml; attaches
+  TP ALLREDUCE to `o_proj`/`down_proj` and swaps in PIM attention before
+  the NPU attention kernel when offloading is enabled. Emits a one-shot warning
+  when a sequence layer is missing from the profile CSVs.
+- `_emit_prologue()` / `_emit_pre_attn_layers()` / `_emit_post_attn_layers()` /
+  `_emit_final_layers()` — per-section wrappers over `_emit_sequence`.
+- `_synthesize_interleaved_trace()` — alternates two `BatchCtx` objects for
+  sub-batch interleaving.
+
+Handles tensor parallelism (ALLREDUCE placement), MoE expert routing with
+`involved_dim` dimension scoping for DP+EP, PIM attention offloading, and
+sub-batch interleaving. The `comm_type` field supports dimension scoping
+(e.g., `ALLTOALL:0,1`) for multi-dimensional ASTRA-Sim topologies. To add a
+new model architecture, add an `profiler/models/<model_type>.yaml` with a
+matching `sequence:` rather than editing this file.
+
+### `config_builder.py`
+Parses the user-provided cluster config JSON from `configs/cluster/` and generates the
+ASTRA-Sim input files under `astra-sim/inputs/runs/<run_id>/`: `network/network.yml`,
+`memory/memory_expansion.json`, and `system/system.json`.
+Per-iteration text traces are removed after Chakra conversion by default, and the
+generated run directory is removed after a successful simulation by default. Use
+`--no-cleanup-inputs` to preserve traces, Chakra workloads, and input configs for
+debugging.
+For DP groups, generates a 2D network topology `[tp_size, dp_group_size]` and sets
+`system.json` collective implementations to match the number of topology dimensions.
+Computes `tp_dim`/`ep_dim` per instance for `involved_dim` scoping.
+
+### `power_model.py`
+Estimates power and energy consumption per node, covering NPU, CPU, DRAM, interconnect, NIC,
+and storage.
+
+### `controller.py`
+Manages the IPC protocol with the ASTRA-Sim subprocess. Writes workload graph paths to
+ASTRA-Sim stdin and parses iteration timing from stdout.
+
+### `graph_generator.py`
+Invokes the Chakra converter to transform text-format execution traces into protobuf workload
+graphs consumed by ASTRA-Sim.
+
+### `pim_model.py`
+Parses PIM device INI configuration files from `configs/pim/`. Derives bandwidth, latency, and
+power parameters used by the trace generator for PIM-offloaded attention.
+
+### `utils.py`
+Helper functions for loading model configs, constructing workload paths, and formatting
+terminal output.
+
+### `logger.py`
+Configures the LLMServingSim logger. Log level is set via `--log-level` on the
+`python -m serving` CLI.

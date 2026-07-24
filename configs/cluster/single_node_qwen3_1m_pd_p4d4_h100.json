@@ -1,0 +1,68 @@
+{
+  "num_nodes": 1,
+  "link_bw": 450,
+  "link_bw_unit": "decimal_GBps",
+  "link_latency": 1000,
+  "nodes": [
+    {
+      "num_instances": 2,
+      "cpu_mem": {
+        "mem_size": 476.837158203125,
+        "mem_bw": 200,
+        "mem_latency": 0
+      },
+      "instances": [
+        {
+          "model_name": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+          "hardware": "H100",
+          "npu_mem": {
+            "mem_size": 74.50580596923828,
+            "mem_bw": 3350,
+            "mem_latency": 0,
+            "runtime_reserve_bytes": 19893012480
+          },
+          "num_npus": 4,
+          "tp_size": 4,
+          "pp_size": 1,
+          "ep_size": 4,
+          "pd_type": "prefill",
+          "latency_model": "h100-qwen3-tp4-kernel-calibrated",
+          "max_model_len": 1010000,
+          "max_num_seqs": 32,
+          "max_num_batched_tokens": 131072,
+          "long_prefill_token_threshold": 131072,
+          "enable_chunked_prefill": true,
+          "enable_prefix_caching": false,
+          "block_size": 16,
+          "dtype": "bfloat16",
+          "kv_cache_dtype": "auto"
+        },
+        {
+          "model_name": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+          "hardware": "H100",
+          "npu_mem": {
+            "mem_size": 74.50580596923828,
+            "mem_bw": 3350,
+            "mem_latency": 0,
+            "runtime_reserve_bytes": 19893012480
+          },
+          "num_npus": 4,
+          "tp_size": 4,
+          "pp_size": 1,
+          "ep_size": 4,
+          "pd_type": "decode",
+          "latency_model": "h100-qwen3-tp4-kernel-calibrated",
+          "max_model_len": 1010000,
+          "max_num_seqs": 128,
+          "max_num_batched_tokens": 131072,
+          "long_prefill_token_threshold": 131072,
+          "enable_chunked_prefill": true,
+          "enable_prefix_caching": false,
+          "block_size": 16,
+          "dtype": "bfloat16",
+          "kv_cache_dtype": "auto"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,145 @@
+---
+sidebar_position: 3
+title: vLLM setup (optional)
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+# vLLM setup
+
+This step is **optional**. You only need the vLLM environment if you
+plan to:
+
+- **Profile** a new GPU or model (`python -m profiler`)
+- **Benchmark** real vLLM end-to-end (`python -m bench run`)
+- **Validate** the simulator against vLLM (`python -m bench validate`)
+- **Generate** ShareGPT-style workload datasets
+  (`python -m workloads.generators`)
+
+If you only want to run pre-profiled simulations on the bundled
+hardware (RTXPRO6000), skip this page.
+
+## Choose an install method
+
+<Tabs groupId="install-method">
+  <TabItem value="docker" label="Docker (recommended)" default>
+
+The Docker path uses the official `vllm/vllm-openai:v0.19.0` image,
+which already contains vLLM, PyTorch, and all CUDA dependencies.
+
+### 1. (Optional) Set HF_TOKEN
+
+Some model configs (Llama 3.x, gated Qwen variants) need a Hugging
+Face token to auto-fetch:
+
+```bash
+export HF_TOKEN="hf_xxxxxxxxxxxxxxxxxxxxxxxxxx"
+```
+
+Skip this if you only profile open models or use locally-stored
+configs.
+
+### 2. Launch the vLLM container
+
+From the repo root:
+
+```bash
+./scripts/docker-vllm.sh
+```
+
+This:
+
+- Requests all GPUs via `--gpus all`
+- Forwards `HF_TOKEN` from your shell
+- Mounts the repo root to `/workspace` (so `python -m profiler`,
+  `python -m bench`, `python -m workloads.generators` all work)
+- Mounts `~/.cache/huggingface` to share the model cache with the
+  host
+- Sets `--shm-size=16g` (vLLM needs this for inter-process tensors)
+- Pre-installs `datasets` and `matplotlib` (extra deps the profiler
+  and bench plots need)
+- Drops you into `bash` at `/workspace`
+
+The container is named `vllm_docker`. Re-attach later with:
+
+```bash
+docker start -ai vllm_docker
+```
+
+### 3. Verify the install
+
+Inside the container:
+
+```bash
+python -c "import vllm; print(vllm.__version__)"
+nvidia-smi
+```
+
+You should see vLLM `0.19.0` and your GPU listed.
+
+  </TabItem>
+  <TabItem value="bare-metal" label="Bare metal (uv venv)">
+
+For environments without Docker, install vLLM into a local `uv` venv.
+
+### 1. Install `uv`
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+### 2. Run the installer
+
+From the repo root:
+
+```bash
+./scripts/install-vllm.sh
+```
+
+This:
+
+- Creates a local `uv` venv with Python 3.12
+- Installs `vllm==0.19.0` (with `VLLM_USE_PRECOMPILED=1` for the
+  prebuilt CUDA wheels)
+- Adds `datasets` and `matplotlib` for the workload generator and
+  bench plots
+
+Activate the venv before running profiler / bench:
+
+```bash
+source .venv/bin/activate
+```
+
+### 3. Verify the install
+
+```bash
+python -c "import vllm; print(vllm.__version__)"
+nvidia-smi
+```
+
+You should see vLLM `0.19.0` and your GPU.
+
+**Bare-metal caveats**
+
+**CUDA driver mismatch** is the most common failure mode. vLLM 0.19.0
+needs a CUDA 13.x-compatible driver. Verify with `nvidia-smi`.
+
+The `VLLM_USE_PRECOMPILED=1` flag tells `uv` to skip building vLLM
+from source. If your CUDA version doesn't match the prebuilt wheel,
+drop the flag and accept the longer build.
+
+Outside Docker you're responsible for `HF_TOKEN`,
+`~/.cache/huggingface`, and shm size yourself.
+
+  </TabItem>
+</Tabs>
+
+## What's next
+
+- **[Profiler guide](/docs/profiler/overview)**: capture per-layer
+  CUDA kernel timings into the per-category CSV bundle the simulator
+  consumes.
+- **[bench/](https://github.com/casys-kaist/LLMServingSim/tree/main/bench)**
+  on GitHub, run vLLM end-to-end and validate the simulator against
+  ground truth (TTFT / TPOT / throughput / running-waiting plots).

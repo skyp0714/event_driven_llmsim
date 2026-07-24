@@ -1,0 +1,119 @@
+---
+title: Prefill/decode disaggregation
+sidebar_position: 2
+---
+
+# Prefill/decode disaggregation (P/D split)
+
+> **What this demonstrates:** dedicating one instance to prefill and
+> another to decode, with KV-cache hand-off between them.
+
+Prefill is compute-bound and bursty. Decode is memory-bandwidth-bound
+and steady. Mixing them on one instance forces compromises (long
+prefills hold up decode iterations, decode batches under-utilize
+compute on small batches). Separating prefill and decode onto
+different instances lets each be tuned for its own bottleneck, a
+pattern popularized by DistServe and now standard in production
+serving.
+
+## Prerequisites
+
+- Simulator container set up
+- Bundled RTXPRO6000 profile for `meta-llama/Llama-3.1-8B`
+
+## Cluster config
+
+`configs/cluster/single_node_pd_instance.json`:
+
+```json title="configs/cluster/single_node_pd_instance.json"
+{
+  "num_nodes": 1,
+  "link_bw": 16,
+  "link_latency": 20000,
+  "nodes": [
+    {
+      "num_instances": 2,
+      "cpu_mem": {"mem_size": 512, "mem_bw": 256, "mem_latency": 0},
+      "instances": [
+        {
+          "model_name": "meta-llama/Llama-3.1-8B",
+          "hardware": "RTXPRO6000",
+          "npu_mem": {"mem_size": 96, "mem_bw": 1597, "mem_latency": 0},
+          "pd_type": "prefill",
+          "tp_size": 1
+        },
+        {
+          "model_name": "meta-llama/Llama-3.1-8B",
+          "hardware": "RTXPRO6000",
+          "npu_mem": {"mem_size": 96, "mem_bw": 1597, "mem_latency": 0},
+          "pd_type": "decode",
+          "tp_size": 1
+        }
+      ]
+    }
+  ]
+}
+```
+
+The single field that matters: **`pd_type`**.
+
+- `"prefill"`: the instance only runs prefill iterations. It receives
+  the request, computes the prompt's KV cache, hands the cache off,
+  and goes back to its prefill queue.
+- `"decode"`: the instance only does decode iterations on
+  already-prefilled requests.
+- `null` (other examples): combined prefill+decode (the default).
+
+The router automatically sends new requests to a `"prefill"` instance,
+then transfers the request to a `"decode"` instance after the first
+token. The KV-cache transfer cost is modeled through the inter-link.
+
+## Run
+
+```bash
+python -m serving \
+  --cluster-config 'configs/cluster/single_node_pd_instance.json' \
+  --dtype float16 --block-size 16 \
+  --dataset 'workloads/example_trace.jsonl' \
+  --output 'outputs/pd_split_run.csv' \
+  --log-interval 1.0
+```
+
+## Expected output
+
+```text
+[INFO] step=15 P=8 D=12 prompt_t=3.1k tok/s decode_t=620 tok/s
+       npu_mem=[55.4 GB, 71.2 GB]
+[INFO] step=16 P=10 D=12 prompt_t=3.6k tok/s decode_t=640 tok/s
+       npu_mem=[55.4 GB, 71.4 GB]
+```
+
+The `P=` and `D=` counts are per-role batch sizes. The decode
+instance's KV cache grows over time as requests transfer in; the
+prefill instance's KV cache stays bounded by the requests currently
+being prefilled.
+
+## What's interesting
+
+- **TTFT is dominated by the prefill instance** alone, no decode
+  workload competes for it. Easy to tune by scaling out prefill
+  replicas independently.
+- **TPOT is dominated by the decode instance.** The cache transfer
+  shows up as a one-time cost between prefill end and first decode
+  step (modeled via `link_bw`).
+- **Memory utilization differs sharply.** Prefill instance's KV cache
+  is "in flight" only; decode instance accumulates KV blocks for
+  every active request. With a long-running workload the decode
+  instance is usually the memory bottleneck.
+- **Production parallel.** This pattern is what
+  [DistServe](https://arxiv.org/abs/2401.09670) and Mooncake
+  popularized. Tuning the prefill:decode replica ratio is the main
+  knob, try `num_instances: 3` with two prefills and one decode for
+  bursty long-context workloads.
+
+## Related examples
+
+- **[Multi-instance LOAD routing](./multi-instance)**: the
+  equal-role version. Useful baseline to compare TTFT/TPOT against.
+- **[Cluster config explained](../cluster-config-explained#3-per-instance-level)** -
+  the field-level reference for `pd_type`.

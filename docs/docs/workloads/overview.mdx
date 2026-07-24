@@ -1,0 +1,92 @@
+---
+sidebar_position: 1
+title: Overview
+---
+
+import IconCardGrid from '@site/src/components/IconCardGrid';
+import {Activity, MessagesSquare, FilePlus2, FileText} from 'lucide-react';
+
+# Workloads
+
+A **workload** is a JSONL file that drives the simulator's request
+queue. Each line is either one independent request (flat format) or
+one session with chained sub-requests (agentic format). Both
+`python -m serving --dataset` and `python -m bench run --dataset`
+consume the same file.
+
+Workload files live under `workloads/` at the repo root. The
+simulator reads them once at startup and the router schedules each
+request as its `arrival_time_ns` is reached on the simulated clock.
+
+## Pick your path
+
+<IconCardGrid columns={3} cards={[
+  {
+    Icon: Activity,
+    title: 'Real-world traffic',
+    description: 'Generate JSONL from ShareGPT (or any HF text dataset). Realistic prompt/output length distributions, configurable arrival rate.',
+    to: '/docs/workloads/sharegpt-generators',
+  },
+  {
+    Icon: MessagesSquare,
+    title: 'Agentic / closed-loop',
+    description: 'Multi-step LLM calls with tool waits in between (SWE-bench, ReAct, browser agents). Dependency chains modeled by the simulator.',
+    to: '/docs/workloads/agentic-sessions',
+  },
+  {
+    Icon: FilePlus2,
+    title: 'Synthetic / custom',
+    description: 'Hand-craft your own JSONL, fixed-length stress tests, replay your own production logs, or anything in between.',
+    to: '/docs/workloads/jsonl-format',
+  },
+]} />
+
+## Bundled workload files
+
+The repo ships a few ready-to-run workload files for the supported
+hardware × model combinations. Drop them straight into
+`--dataset workloads/<file>.jsonl`:
+
+| File | Format | Model assumption | What it's for |
+| --- | --- | --- | --- |
+| `example_trace.jsonl` | flat | any | Tiny smoke-test workload for the quickstart |
+| `sharegpt-llama-3.1-8b-300-sps10.jsonl` | flat | `meta-llama/Llama-3.1-8B` | ShareGPT, 300 requests at 10 sessions/s |
+| `sharegpt-qwen3-32b-300-sps10.jsonl` | flat | `Qwen/Qwen3-32B` | ShareGPT, dense Qwen3 |
+| `sharegpt-qwen3-30b-a3b-300-sps10.jsonl` | flat | `Qwen/Qwen3-30B-A3B-Instruct-2507` | ShareGPT, MoE Qwen3 |
+| `swe-bench-qwen3-30b-a3b-50-sps0.2.jsonl` | agentic | `Qwen/Qwen3-30B-A3B-Instruct-2507` | 50 SWE-bench sessions, low arrival rate |
+
+Token IDs in these files are pre-tokenized with the matching model's
+tokenizer, so prefix caching works correctly out of the box. Using a
+ShareGPT JSONL with a *different* model in the simulator is fine for
+length/arrival behavior, but prefix-cache hit rates won't match
+reality.
+
+## How workloads connect to the simulator
+
+```
+workloads/foo.jsonl
+        │
+        ▼
+   Router.load_requests()
+        │
+        ▼
+   _pending_requests (sorted by arrival_time_ns)
+        │  (clock advances, arrivals fire)
+        ▼
+   route_arrived_requests() → Scheduler queue
+        │
+        ▼
+   scheduler.schedule() → Batch → trace → ASTRA-Sim
+```
+
+For the full request journey, see
+**[Simulator → Request lifecycle](/docs/simulator/request-lifecycle)**.
+
+## What's next
+
+- **[JSONL format](./jsonl-format)**: schema reference for both
+  formats, field-by-field.
+- **[ShareGPT generator](./sharegpt-generators)**: produce realistic
+  workloads from ShareGPT or any HF dataset.
+- **[Agentic sessions](./agentic-sessions)**: closed-loop session
+  format and the SWE-bench example.

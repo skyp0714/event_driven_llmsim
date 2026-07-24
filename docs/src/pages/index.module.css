@@ -1,0 +1,67 @@
+/**
+ * CSS files with the .module.css suffix will be treated as CSS modules
+ * and scoped locally.
+ */
+
+.heroBanner {
+  padding: 6rem 0 5rem;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(1200px 500px at 50% -10%, rgba(99, 102, 241, 0.18), transparent 60%),
+    linear-gradient(180deg, var(--ifm-background-color) 0%, var(--ifm-background-color) 100%);
+}
+
+[data-theme='dark'] .heroBanner {
+  background:
+    radial-gradient(1200px 500px at 50% -10%, rgba(99, 102, 241, 0.28), transparent 60%),
+    linear-gradient(180deg, var(--ifm-background-color) 0%, var(--ifm-background-color) 100%);
+}
+
+.heroWordmark {
+  display: block;
+  width: min(100%, 720px);
+  height: auto;
+  margin: 0 auto 1.5rem;
+}
+
+/* Dark-mode trick for two-tone (indigo + black) logo:
+   invert + hue-rotate flips brightness while preserving hue -
+   indigo stays indigo, black becomes white. */
+[data-theme='dark'] .heroWordmark {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+.heroSubtitle {
+  font-size: clamp(1.2rem, 2vw, 1.6rem);
+  max-width: 1200px;
+  margin: 0 auto 2.5rem;
+  color: var(--ifm-color-emphasis-700);
+  line-height: 1.5;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+}
+
+@media screen and (max-width: 1200px) {
+  .heroSubtitle {
+    white-space: normal;
+    font-size: 1.15rem;
+    max-width: 760px;
+  }
+}
+
+@media screen and (max-width: 996px) {
+  .heroBanner {
+    padding: 3rem 1.5rem;
+  }
+}
+
+.buttons {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}

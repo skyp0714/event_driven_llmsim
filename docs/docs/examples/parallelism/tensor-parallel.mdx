@@ -1,0 +1,110 @@
+---
+title: Tensor parallel (TP)
+sidebar_position: 1
+---
+
+# Tensor parallel (TP)
+
+> **What this demonstrates:** sharding a single instance's dense
+> weights across multiple GPUs and adding TP-ALLREDUCE collectives.
+
+The simplest non-trivial parallelism. One serving instance, but the
+weights are sliced across N GPUs along the head dimension. Each
+attention `o_proj` and MLP `down_proj` ends with an ALLREDUCE.
+
+## Prerequisites
+
+- Simulator container set up
+  ([Simulator setup](/docs/getting-started/installation/simulator))
+- Bundled RTXPRO6000 profile, no profiling needed for `Qwen3-32B` at
+  TP=2.
+
+## Cluster config
+
+`configs/cluster/single_node_single_instance.json` (lightly edited
+from the bundled config to use `Qwen/Qwen3-32B` at `tp_size=2`):
+
+```json title="configs/cluster/single_node_single_instance.json"
+{
+  "num_nodes": 1,
+  "link_bw": 16,
+  "link_latency": 20000,
+  "nodes": [
+    {
+      "num_instances": 1,
+      "cpu_mem": {"mem_size": 512, "mem_bw": 256, "mem_latency": 0},
+      "instances": [
+        {
+          "model_name": "Qwen/Qwen3-32B",
+          "hardware": "RTXPRO6000",
+          "npu_mem": {"mem_size": 96, "mem_bw": 1597, "mem_latency": 0},
+          "num_npus": 2,
+          "tp_size": 2,
+          "pd_type": null
+        }
+      ]
+    }
+  ]
+}
+```
+
+The two fields that make this TP=2 instead of TP=1:
+
+- `num_npus: 2`: two GPUs assigned to this instance.
+- `tp_size: 2`: both GPUs participate in tensor-parallel ALLREDUCE.
+
+(With `pp_size` defaulted to `1`, `num_npus = tp_size * pp_size = 2`
+holds.)
+
+## Run
+
+```bash
+python -m serving \
+  --cluster-config 'configs/cluster/single_node_single_instance.json' \
+  --dtype bfloat16 --block-size 16 \
+  --dataset 'workloads/example_trace.jsonl' \
+  --output 'outputs/tp2_run.csv' \
+  --log-interval 1.0
+```
+
+`--dtype bfloat16` matches the profiled variant for `Qwen3-32B`.
+
+## Expected output
+
+Throughput logs land roughly once per second:
+
+```text
+[INFO] step=42 batch=8 prompt_t=1.2k tok/s decode_t=420 tok/s npu_mem=88.4 GB
+[INFO] step=43 batch=8 prompt_t=1.1k tok/s decode_t=440 tok/s npu_mem=88.4 GB
+```
+
+`outputs/tp2_run.csv` has one row per finished request. The
+canonical schema (12 columns, all times in ns) is documented under
+**[Simulator → Reading the output](/docs/simulator/reading-output)**:
+
+```csv
+instance id,request id,model,input,output,arrival,end_time,latency,queuing_delay,TTFT,TPOT,ITL
+0,0,Qwen/Qwen3-32B,1472,133,4059740,178654321,174594581,3739551,4063716,1306794,"[1306794, ...]"
+```
+
+## What's interesting
+
+- **GPU memory drops in half** vs. TP=1 because each GPU only holds
+  half the weights. Watch `npu_mem` in the throughput log, at TP=2
+  on Qwen3-32B you should see roughly `~32 GB` of weight load instead
+  of `~64 GB`.
+- **TTFT goes up slightly** vs. TP=1 (when both fit), because each
+  attention/MLP pair pays one ALLREDUCE round-trip. `link_bw=16 GB/s`
+  in the config is the relevant knob, bumping it shrinks the TP
+  collective cost.
+- **TPOT can go down** when the model is memory-bound at TP=1: more
+  bandwidth per token outweighs the collective overhead.
+
+## Related examples
+
+- **[Pipeline parallel](./pipeline-parallel)**: split layers across
+  GPUs instead of weights within a layer.
+- **[Expert parallel](./expert-parallel)**: TP's MoE counterpart;
+  shards experts across GPUs.
+- **[Multi-instance LOAD routing](../disaggregated/multi-instance)** -
+  scale out by replicating *whole* TP groups instead of growing one.

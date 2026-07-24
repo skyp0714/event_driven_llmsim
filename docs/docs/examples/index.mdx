@@ -1,0 +1,84 @@
+---
+title: Examples
+slug: /examples
+---
+
+import IconCardGrid from '@site/src/components/IconCardGrid';
+import {
+  FileJson,
+  LayoutGrid,
+  Split,
+  HardDrive,
+  Wrench,
+} from 'lucide-react';
+
+# Examples
+
+Worked end-to-end scenarios. Each one ships with a ready cluster
+config, a run command you can copy, and a short explanation of what's
+interesting about it. Use them as starting points, most real
+experiments are 80% one of these and 20% your own tweak.
+
+## Start here
+
+<IconCardGrid columns={1} cards={[
+  {
+    Icon: FileJson,
+    title: 'Cluster config explained',
+    description: 'The single file that drives every simulation. What each field means, how the parallelism math works, and how to read the configs that the rest of these examples are built on.',
+    to: '/docs/examples/cluster-config-explained',
+  },
+]} />
+
+## Browse by topic
+
+<IconCardGrid columns={2} cards={[
+  {
+    Icon: LayoutGrid,
+    title: 'Parallelism',
+    description: 'TP, PP, EP, and DP+EP, what each looks like in a config, when to reach for which, and how they compose for MoE.',
+    to: '/docs/examples/parallelism/tensor-parallel',
+  },
+  {
+    Icon: Split,
+    title: 'Disaggregated serving',
+    description: 'Multi-instance with router, prefill/decode disaggregation, and PIM attention offload. Model real production layouts and compute disaggregation.',
+    to: '/docs/examples/disaggregated/multi-instance',
+  },
+  {
+    Icon: HardDrive,
+    title: 'Memory tiers',
+    description: 'Prefix caching, CXL extended memory, FP8 KV cache. The extended-memory features.',
+    to: '/docs/examples/memory-tiers/prefix-caching',
+  },
+  {
+    Icon: Wrench,
+    title: 'Advanced',
+    description: 'Power modeling and sub-batch interleaving, niche features that pay off in specific scenarios.',
+    to: '/docs/examples/advanced/power-modeling',
+  },
+]} />
+
+> **Looking for workloads?** Building or generating the JSONL files
+> that drive these examples lives in its own section:
+> **[Workloads](/docs/workloads/jsonl-format)**: flat ShareGPT
+> traces, agentic sessions, and the generators that produce them.
+
+## How each example is laid out
+
+Every example page follows the same template:
+
+1. **What it demonstrates**: one-sentence summary.
+2. **Prerequisites**: which install path you need (most just need
+   the simulator container).
+3. **Cluster config**: the JSON file, annotated.
+4. **Run command**: copy-able, exact CLI invocation.
+5. **Expected output**: what the throughput logs and CSV look like.
+6. **What's interesting**: the takeaway.
+7. **Related**: pointers to similar or follow-on examples.
+
+Quick onboarding flow if you're new: start with **[Cluster config
+explained](/docs/examples/cluster-config-explained)** → then
+**[Tensor parallel](/docs/examples/parallelism/tensor-parallel)** for
+the simplest non-trivial example → then whichever topic matches your
+research question.

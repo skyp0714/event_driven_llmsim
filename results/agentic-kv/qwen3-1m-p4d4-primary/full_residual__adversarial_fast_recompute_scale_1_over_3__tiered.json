@@ -1,0 +1,1727 @@
+{
+  "admission_queues": {
+    "decode_restore_hbm": {
+      "aggregate_admission_wait_seconds": 14553118.710768474,
+      "aggregate_capacity_block_seconds": 14553118.710768474,
+      "aggregate_capacity_block_seconds_semantics": "Deprecated compatibility alias for aggregate admission wait; includes FCFS, source-transit, and admission time, not only physical capacity shortage.",
+      "capacity_retry_count": 204413,
+      "discipline": "FCFS with completion-safe zero-growth resident-HBM backfill exception",
+      "enqueue_count": 319698,
+      "fcfs_bypass_deferral_count": 115058,
+      "independent_from_prefill_hbm_queue": true,
+      "max_depth": 454,
+      "max_foreground_source_pins": 2,
+      "resource_scope": "decode_hbm final-footprint reservation plus optional lower-tier prefix restore",
+      "source_ttl_deferral_count": 0,
+      "wakeup_count": 319698,
+      "wakeup_event_count": 427808
+    },
+    "pd_branch_admission_safety": {
+      "discipline": "branch-local logical-ready FCFS with completion-safe HBM backfill",
+      "final_decode_footprint_pre_reserved": true,
+      "purpose": "Avoid cross-pool hold-and-wait without globally blocking independent younger P work.",
+      "resident_hbm_backfill": "zero D growth and immediately admissible P branch",
+      "source_pin_epoch": "decode-admission head",
+      "speculative_prefill_wasted_seconds": 0.0
+    }
+  },
+  "background_event_horizon_seconds": 6114081.981553297,
+  "capacity": {
+    "capacity_invariant_checked": true,
+    "cpu_kv_budget_bytes": 2000000000000,
+    "decode_hbm_kv_budget_bytes_per_rank": 44821760000,
+    "decode_hbm_static_reserve_bytes_per_rank": 19893012480,
+    "effective_role_hbm_reserves_differ": false,
+    "hbm_static_reserve_bytes_per_rank": 19893012480,
+    "hbm_total_bytes_per_rank": 80000000000,
+    "model_weight_bytes_per_rank_estimate": 15285227520,
+    "peak_fraction": {
+      "cpu": 0.99999940608,
+      "decode_hbm": 0.9999944712568181,
+      "prefill_hbm": 0.9927919353456892,
+      "ssd": 0.2099237888
+    },
+    "peak_occupancy": {
+      "cpu_bytes": 1999998812160,
+      "decode_hbm_active_plus_idle_bytes_per_rank": 44821512192,
+      "decode_hbm_reserved_bytes_per_rank": 44814041088,
+      "prefill_hbm_active_bytes_per_rank": 44498681856,
+      "ssd_bytes": 6448858791936
+    },
+    "prefill_hbm_kv_budget_bytes_per_rank": 44821760000,
+    "prefill_hbm_static_reserve_bytes_per_rank": 19893012480,
+    "role_specific_hbm_reserve_overrides_present": false,
+    "ssd_kv_budget_bytes": 30720000000000,
+    "units": "exact bytes; GiB displays use 2^30 bytes",
+    "weight_dtype_bytes": 2
+  },
+  "context_infeasible_calls": 0,
+  "execution_scope": {
+    "active_request_kv_reserved": true,
+    "analytical_prompt_compute": true,
+    "canonical_restore_execution_mode": "async-pre-admission",
+    "decode_active_kv_time_modeled": false,
+    "decode_compute_modeled": false,
+    "global_arrival_clock": true,
+    "interpretation": "Capacity/transfer-queue sensitivity. Calls overlap and use a prompt-only roofline; this is not cycle-level serving.",
+    "llm_compute_queue_or_batching_modeled": false,
+    "pd_branch_admission": "Final-footprint D-HBM admission reserves capacity before lower-tier load. In async-pre-admission mode, P-HBM admission waits until lower->D completes; D->P starts after both the restored prefix and P capacity are ready.",
+    "pd_deadlock_prevention": "Both branches use the same admission sequence; only the D-head pins a movable source. A zero-growth resident-HBM call may backfill only when its P branch fits immediately. The complete final D footprint is pre-reserved before prompt completion.",
+    "pd_disaggregated": true,
+    "pd_hbm_pool_count": 2,
+    "prompt_compute_model": "full-causal aggregate roofline multiplied by the declared sensitivity scale",
+    "prompt_compute_scale": 0.3333333333333333,
+    "prompt_compute_scale_provenance": "Adversarial sensitivity that divides the entire analytical prompt roofline, including fresh-token and recomputation time, by three. The factor is motivated only by the Qwen model card's statement of up to 3x speedup near 1M for DCA plus MInference; it is not a measured DCA/H100 calibration.",
+    "restore_barrier_scope": "returning_request_compute_admission_only",
+    "restore_execution_mode": "async-pre-admission",
+    "restore_prefill_overlap_model": "no same-request analytical compute before complete KV restore; unrelated calls remain runnable",
+    "session_dependency_chains": true,
+    "swap_out_blocks_other_calls": false
+  },
+  "experiment": {
+    "classification": "Capacity/communication sensitivity; not a measured Qwen3 DCA/MInference H100 profile.",
+    "compute_endpoint": {
+      "name": "adversarial_fast_recompute_scale_1_over_3",
+      "provenance": "Adversarial sensitivity that divides the entire analytical prompt roofline, including fresh-token and recomputation time, by three. The factor is motivated only by the Qwen model card's statement of up to 3x speedup near 1M for DCA plus MInference; it is not a measured DCA/H100 calibration.",
+      "scale": 0.3333333333333333
+    },
+    "driver": "serving.agentic_kv_qwen3_1m_p4d4",
+    "paired_infinite_hbm_oracle": true,
+    "reserve_case": {
+      "common_bytes_per_rank": 19893012480,
+      "decode_bytes_per_rank": null,
+      "name": "full_residual",
+      "prefill_bytes_per_rank": null,
+      "provenance": "Sensitivity derived from the official model card's approximate 240 GB whole-engine statement. The target non-KV bytes/rank equal exact checkpoint bytes/rank plus 1 times the inferred residual. The core reserve is adjusted because the replay subtracts its architecture-derived weight estimate.",
+      "target_residual_fraction": 1.0
+    },
+    "run_id": "full_residual__adversarial_fast_recompute_scale_1_over_3__tiered"
+  },
+  "hardware": "H100",
+  "hardware_sensitivity": {
+    "cpu_capacity_matches_reference_contract": true,
+    "cpu_dram_queue_semantics": "One node-shared half-duplex cpu_dram queue resource. SSD staging writes, CPU-cache reads, and CPU<->GPU/SSD paths serialize against the configured aggregate DRAM bandwidth instead of assuming independent full-rate read and write channels.",
+    "cpu_system_memory_bytes": 2000000000000,
+    "cpu_system_memory_reference_contract": "DGX H100 marketed 2 TB SI = 2,000,000,000,000 bytes",
+    "pcie_effective_gbps_per_gpu": 50.0,
+    "pd_link_contract_provenance": "The DGX H100 guide publishes 900 GB/s GPU-to-GPU bandwidth. The default uses 450 GB/s per direction as a one-way nominal sensitivity; replace it with a measured peer-copy curve for headline latency.",
+    "pd_link_gbps_per_gpu_one_way": 450.0,
+    "pd_link_matches_half_bidirectional_reference": true,
+    "pd_link_reference_gbps_per_gpu_bidirectional": 900.0,
+    "ssd_bandwidths_match_manufacturer_upper_bound": true,
+    "ssd_configured_read_gbps_aggregate": 55.2,
+    "ssd_configured_write_gbps_aggregate": 33.6,
+    "ssd_contract_provenance": "The NVIDIA DGX H100 user guide specifies an 8 x 3.84-TB U.2 RAID 0 data-cache pool, and the firmware-guide example enumerates eight KIOXIA KCM6DRUL3T84 devices. KIOXIA rates that 3.84-TB PCIe 4.0 x4 model at up to 6.9/4.2 GB/s sequential read/write. Assuming an all-CM6 pool, 55.2/33.6 GB/s is the inferred eight-drive manufacturer upper bound, not measured end-to-end RAID 0 throughput. Replace it with fio measurements on the target system.",
+    "ssd_reference_device_count": 8,
+    "ssd_reference_ideal_read_gbps_aggregate": 55.2,
+    "ssd_reference_ideal_write_gbps_aggregate": 33.6,
+    "ssd_reference_interface": "PCIe 4.0 x4",
+    "ssd_reference_model": "KCM6DRUL3T84",
+    "ssd_reference_platform": "DGX H100 KIOXIA CM6 example",
+    "ssd_reference_read_gbps_per_device": 6.9,
+    "ssd_reference_sources": [
+      "https://docs.nvidia.com/dgx/dgxh100-user-guide/introduction-to-dgxh100.html",
+      "https://docs.nvidia.com/dgx/dgxh100-fw-update-guide/nvme-fw-update.html",
+      "https://americas.kioxia.com/content/dam/kioxia/shared/business/ssd/enterprise-ssd/asset/productbrief/eSSD-CM6-R-product-brief.pdf"
+    ],
+    "ssd_reference_write_gbps_per_device": 4.2
+  },
+  "hardware_spec": {
+    "bf16_dense_tflops": 989.5,
+    "calibration_provenance": "No measured Qwen3 1M DCA/MInference H100 profile is applied. Compute is a nominal-spec H100 analytical roofline sensitivity.",
+    "compute_efficiency": 0.55,
+    "cpu": {
+      "dram_read_gbps_aggregate": 400.0,
+      "dram_write_gbps_aggregate": 400.0,
+      "fixed_latency_us": 5.0,
+      "gpu_to_host_gbps_per_rank": 50.0,
+      "host_to_gpu_gbps_per_rank": 50.0,
+      "provenance": "Unmeasured experiment input: 50 GB/s effective per-rank PCIe and one shared 400 GB/s CPU-DRAM queue."
+    },
+    "hbm_bandwidth_tbps": 3.35,
+    "launch_overhead_us_per_layer": 2.0,
+    "memory_efficiency": 0.75,
+    "name": "H100",
+    "nominal_provenance": "NVIDIA H100 SXM public specifications; BF16 dense peak inferred as half of the 1,979 TFLOP/s with-sparsity figure; HBM 3.35 TB/s. https://www.nvidia.com/en-us/data-center/h100/",
+    "ssd": {
+      "fixed_latency_us": 20.0,
+      "provenance": "Manufacturer upper-bound sensitivity: eight KIOXIA CM6 drives at 6.9/4.2 GB/s each, CPU staged; not measured fio.",
+      "read_gbps_aggregate": 55.2,
+      "staged_through_cpu": true,
+      "write_gbps_aggregate": 33.6
+    }
+  },
+  "infinite_hbm_oracle_comparison": {
+    "all_calls": {
+      "call_count": 357161,
+      "delta_request_summed_ready_to_complete_seconds": 14608562.793718817,
+      "equal_call_count": 192743,
+      "finite_faster_call_count": 8440,
+      "finite_mean_ready_to_complete_ms": 40955.283937069406,
+      "finite_request_summed_ready_to_complete_seconds": 14627630.166247644,
+      "finite_slower_call_count": 155978,
+      "oracle_mean_ready_to_complete_ms": 53.38593107541977,
+      "oracle_request_summed_ready_to_complete_seconds": 19067.372528828,
+      "paired_absolute_completion_delta_ms": {
+        "p50": 3066693.456424,
+        "p90": 49471833.406841,
+        "p95": 52493284.049632,
+        "p99": 55803340.595
+      },
+      "paired_service_delta_ms": {
+        "p50": 0.0,
+        "p90": 219933.339333,
+        "p95": 247622.506416,
+        "p99": 265095.1449276
+      },
+      "paired_service_slowdown_fraction": {
+        "p50": 0.0,
+        "p90": 13892.036449884903,
+        "p95": 24241.848807649592,
+        "p99": 43495.3269064122
+      },
+      "positive_oracle_service_call_count": 357161,
+      "slowdown_fraction_of_oracle_request_summed_service": 766.1549996797986
+    },
+    "by_finite_source": {
+      "cpu": {
+        "call_count": 63813,
+        "delta_request_summed_ready_to_complete_seconds": 337348.85941737,
+        "equal_call_count": 0,
+        "finite_faster_call_count": 14,
+        "finite_mean_ready_to_complete_ms": 5314.997705341968,
+        "finite_request_summed_ready_to_complete_seconds": 339165.948570987,
+        "finite_slower_call_count": 63799,
+        "oracle_mean_ready_to_complete_ms": 28.475219055944713,
+        "oracle_request_summed_ready_to_complete_seconds": 1817.089153617,
+        "paired_absolute_completion_delta_ms": {
+          "p50": 140760.891759,
+          "p90": 51627120.685106,
+          "p95": 53559996.628719,
+          "p99": 57655320.56959195
+        },
+        "paired_service_delta_ms": {
+          "p50": 1656.969454,
+          "p90": 13997.312890800004,
+          "p95": 19017.459305599983,
+          "p99": 45656.78692479998
+        },
+        "paired_service_slowdown_fraction": {
+          "p50": 64.5882889460182,
+          "p90": 1451.8447809474567,
+          "p95": 2349.6250752673795,
+          "p99": 5308.436474736901
+        },
+        "positive_oracle_service_call_count": 63813,
+        "slowdown_fraction_of_oracle_request_summed_service": 185.6534439963287
+      },
+      "decode_hbm": {
+        "call_count": 213910,
+        "delta_request_summed_ready_to_complete_seconds": 2044.10506527,
+        "equal_call_count": 185792,
+        "finite_faster_call_count": 8261,
+        "finite_mean_ready_to_complete_ms": 40.34150105168996,
+        "finite_request_summed_ready_to_complete_seconds": 8629.450489967,
+        "finite_slower_call_count": 19857,
+        "oracle_mean_ready_to_complete_ms": 30.785589381969054,
+        "oracle_request_summed_ready_to_complete_seconds": 6585.345424697,
+        "paired_absolute_completion_delta_ms": {
+          "p50": 76589.7967895,
+          "p90": 50762246.260490604,
+          "p95": 53341538.603935,
+          "p99": 55803685.636069
+        },
+        "paired_service_delta_ms": {
+          "p50": 0.0,
+          "p90": 0.0,
+          "p95": 12.863391449999947,
+          "p99": 233.40304312000038
+        },
+        "paired_service_slowdown_fraction": {
+          "p50": 0.0,
+          "p90": 0.0,
+          "p95": 0.8583367030393336,
+          "p99": 19.519252304632214
+        },
+        "positive_oracle_service_call_count": 213910,
+        "slowdown_fraction_of_oracle_request_summed_service": 0.31040210246284117
+      },
+      "no_reuse": {
+        "call_count": 12148,
+        "delta_request_summed_ready_to_complete_seconds": 300006.357224742,
+        "equal_call_count": 6951,
+        "finite_faster_call_count": 165,
+        "finite_mean_ready_to_complete_ms": 25416.201539226044,
+        "finite_request_summed_ready_to_complete_seconds": 308756.016298518,
+        "finite_slower_call_count": 5032,
+        "oracle_mean_ready_to_complete_ms": 720.2551097938756,
+        "oracle_request_summed_ready_to_complete_seconds": 8749.659073776,
+        "paired_absolute_completion_delta_ms": {
+          "p50": 12501.658485,
+          "p90": 32842499.8087018,
+          "p95": 49233135.248974,
+          "p99": 55747227.65989795
+        },
+        "paired_service_delta_ms": {
+          "p50": 0.0,
+          "p90": 148601.6336155,
+          "p95": 221685.08021455,
+          "p99": 260622.85097071002
+        },
+        "paired_service_slowdown_fraction": {
+          "p50": 0.0,
+          "p90": 303.3540301332656,
+          "p95": 800.4971805972621,
+          "p99": 5346.424415685997
+        },
+        "positive_oracle_service_call_count": 12148,
+        "slowdown_fraction_of_oracle_request_summed_service": 34.287776780229606
+      },
+      "ssd": {
+        "call_count": 67290,
+        "delta_request_summed_ready_to_complete_seconds": 13969163.472011436,
+        "equal_call_count": 0,
+        "finite_faster_call_count": 0,
+        "finite_mean_ready_to_complete_ms": 207624.88855533025,
+        "finite_request_summed_ready_to_complete_seconds": 13971078.750888173,
+        "finite_slower_call_count": 67290,
+        "oracle_mean_ready_to_complete_ms": 28.463053599910833,
+        "oracle_request_summed_ready_to_complete_seconds": 1915.278876738,
+        "paired_absolute_completion_delta_ms": {
+          "p50": 14320217.72451,
+          "p90": 40275309.9057284,
+          "p95": 45120001.65712999,
+          "p99": 50682057.174729325
+        },
+        "paired_service_delta_ms": {
+          "p50": 221400.693381,
+          "p90": 260661.86500770002,
+          "p95": 265268.3088912,
+          "p99": 272455.66096361
+        },
+        "paired_service_slowdown_fraction": {
+          "p50": 14814.262033329374,
+          "p90": 36441.43610348434,
+          "p95": 44177.67561342093,
+          "p99": 62987.88944997613
+        },
+        "positive_oracle_service_call_count": 67290,
+        "slowdown_fraction_of_oracle_request_summed_service": 7293.540194941722
+      }
+    },
+    "by_return_gap_type": {
+      "human": {
+        "call_count": 31997,
+        "delta_request_summed_ready_to_complete_seconds": 1365681.463268701,
+        "equal_call_count": 10747,
+        "finite_faster_call_count": 134,
+        "finite_mean_ready_to_complete_ms": 42921.720918778636,
+        "finite_request_summed_ready_to_complete_seconds": 1373366.30423816,
+        "finite_slower_call_count": 21116,
+        "oracle_mean_ready_to_complete_ms": 240.17379658902396,
+        "oracle_request_summed_ready_to_complete_seconds": 7684.840969459,
+        "paired_absolute_completion_delta_ms": {
+          "p50": 5771216.931688,
+          "p90": 34129429.8445862,
+          "p95": 46635393.9604088,
+          "p99": 53802661.11269596
+        },
+        "paired_service_delta_ms": {
+          "p50": 100.696891,
+          "p90": 223499.46001720006,
+          "p95": 250106.9776156,
+          "p99": 265766.70448936004
+        },
+        "paired_service_slowdown_fraction": {
+          "p50": 4.5677940321035715,
+          "p90": 7258.74838183627,
+          "p95": 17418.423864748234,
+          "p99": 42840.41230738544
+        },
+        "positive_oracle_service_call_count": 31997,
+        "slowdown_fraction_of_oracle_request_summed_service": 177.71108975399432
+      },
+      "mixed": {
+        "call_count": 3097,
+        "delta_request_summed_ready_to_complete_seconds": 99817.934531402,
+        "equal_call_count": 1152,
+        "finite_faster_call_count": 41,
+        "finite_mean_ready_to_complete_ms": 32425.303702145946,
+        "finite_request_summed_ready_to_complete_seconds": 100421.165565546,
+        "finite_slower_call_count": 1904,
+        "oracle_mean_ready_to_complete_ms": 194.77915212915724,
+        "oracle_request_summed_ready_to_complete_seconds": 603.231034144,
+        "paired_absolute_completion_delta_ms": {
+          "p50": 32934.580327,
+          "p90": 34891694.139487,
+          "p95": 38931040.3986186,
+          "p99": 51951219.88396303
+        },
+        "paired_service_delta_ms": {
+          "p50": 56.242753,
+          "p90": 196719.68538560002,
+          "p95": 242026.53915579995,
+          "p99": 262692.60155475995
+        },
+        "paired_service_slowdown_fraction": {
+          "p50": 2.4520019827930497,
+          "p90": 2706.964260519452,
+          "p95": 11670.03081626744,
+          "p99": 27199.511407899936
+        },
+        "positive_oracle_service_call_count": 3097,
+        "slowdown_fraction_of_oracle_request_summed_service": 165.4721472893817
+      },
+      "session_start": {
+        "call_count": 4281,
+        "delta_request_summed_ready_to_complete_seconds": 34246.208453931,
+        "equal_call_count": 2507,
+        "finite_faster_call_count": 91,
+        "finite_mean_ready_to_complete_ms": 8105.295908661294,
+        "finite_request_summed_ready_to_complete_seconds": 34698.771784979,
+        "finite_slower_call_count": 1683,
+        "oracle_mean_ready_to_complete_ms": 105.71439641392199,
+        "oracle_request_summed_ready_to_complete_seconds": 452.563331048,
+        "paired_absolute_completion_delta_ms": {
+          "p50": 0.0,
+          "p90": 9858.481087,
+          "p95": 23490.67117,
+          "p99": 178407.8746008
+        },
+        "paired_service_delta_ms": {
+          "p50": 0.0,
+          "p90": 9858.481087,
+          "p95": 23490.67117,
+          "p99": 178407.8746008
+        },
+        "paired_service_slowdown_fraction": {
+          "p50": 0.0,
+          "p90": 338.3256429892998,
+          "p95": 850.2288800022345,
+          "p99": 6962.361913382679
+        },
+        "positive_oracle_service_call_count": 4281,
+        "slowdown_fraction_of_oracle_request_summed_service": 75.67163776752996
+      },
+      "tool": {
+        "call_count": 313179,
+        "delta_request_summed_ready_to_complete_seconds": 12890595.79213342,
+        "equal_call_count": 175387,
+        "finite_faster_call_count": 8067,
+        "finite_mean_ready_to_complete_ms": 41191.82451740224,
+        "finite_request_summed_ready_to_complete_seconds": 12900414.410535516,
+        "finite_slower_call_count": 129725,
+        "oracle_mean_ready_to_complete_ms": 31.351458437807132,
+        "oracle_request_summed_ready_to_complete_seconds": 9818.618402094,
+        "paired_absolute_completion_delta_ms": {
+          "p50": 3615800.016022,
+          "p90": 50265225.2511046,
+          "p95": 53227622.803166,
+          "p99": 55804147.149702
+        },
+        "paired_service_delta_ms": {
+          "p50": 0.0,
+          "p90": 220014.33728560005,
+          "p95": 247603.19579899995,
+          "p99": 265067.90894389997
+        },
+        "paired_service_slowdown_fraction": {
+          "p50": 0.0,
+          "p90": 14688.537363019605,
+          "p95": 24823.68441295287,
+          "p99": 43352.18118937666
+        },
+        "positive_oracle_service_call_count": 313179,
+        "slowdown_fraction_of_oracle_request_summed_service": 1312.872673550921
+      },
+      "unknown": {
+        "call_count": 4607,
+        "delta_request_summed_ready_to_complete_seconds": 218221.395331362,
+        "equal_call_count": 2950,
+        "finite_faster_call_count": 107,
+        "finite_mean_ready_to_complete_ms": 47477.645783252665,
+        "finite_request_summed_ready_to_complete_seconds": 218729.514123445,
+        "finite_slower_call_count": 1550,
+        "oracle_mean_ready_to_complete_ms": 110.29277015042328,
+        "oracle_request_summed_ready_to_complete_seconds": 508.118792083,
+        "paired_absolute_completion_delta_ms": {
+          "p50": 40472.027021,
+          "p90": 26003060.369833842,
+          "p95": 38600419.215945795,
+          "p99": 46169765.60078572
+        },
+        "paired_service_delta_ms": {
+          "p50": 0.0,
+          "p90": 229261.541346,
+          "p95": 250835.53769219999,
+          "p99": 266744.02808275993
+        },
+        "paired_service_slowdown_fraction": {
+          "p50": 0.0,
+          "p90": 22182.346527885355,
+          "p95": 37563.44583751699,
+          "p99": 67857.15519760986
+        },
+        "positive_oracle_service_call_count": 4607,
+        "slowdown_fraction_of_oracle_request_summed_service": 429.4692476079807
+      }
+    },
+    "by_return_gap_type_and_finite_source": {
+      "human": {
+        "cpu": {
+          "call_count": 11890,
+          "delta_request_summed_ready_to_complete_seconds": 11236.927725336,
+          "equal_call_count": 0,
+          "finite_faster_call_count": 4,
+          "finite_mean_ready_to_complete_ms": 991.1344679199327,
+          "finite_request_summed_ready_to_complete_seconds": 11784.588823568,
+          "finite_slower_call_count": 11886,
+          "oracle_mean_ready_to_complete_ms": 46.06064745433137,
+          "oracle_request_summed_ready_to_complete_seconds": 547.661098232,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 21473.959341,
+            "p90": 37036926.740589604,
+            "p95": 50176578.91364094,
+            "p99": 53979318.921213634
+          },
+          "paired_service_delta_ms": {
+            "p50": 166.908821,
+            "p90": 1135.1042934000002,
+            "p95": 6453.674221399988,
+            "p99": 14382.332713210011
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 8.22324947113056,
+            "p90": 61.323099440727795,
+            "p95": 545.9317749960308,
+            "p99": 2148.6523473063107
+          },
+          "positive_oracle_service_call_count": 11890,
+          "slowdown_fraction_of_oracle_request_summed_service": 20.51803161044646
+        },
+        "decode_hbm": {
+          "call_count": 8409,
+          "delta_request_summed_ready_to_complete_seconds": 14.914841157,
+          "equal_call_count": 8111,
+          "finite_faster_call_count": 96,
+          "finite_mean_ready_to_complete_ms": 58.10610583612796,
+          "finite_request_summed_ready_to_complete_seconds": 488.614243976,
+          "finite_slower_call_count": 202,
+          "oracle_mean_ready_to_complete_ms": 56.33242987501487,
+          "oracle_request_summed_ready_to_complete_seconds": 473.699402819,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 20471707.996986,
+            "p90": 31544515.851218,
+            "p95": 38931031.09167,
+            "p99": 50292258.01437068
+          },
+          "paired_service_delta_ms": {
+            "p50": 0.0,
+            "p90": 0.0,
+            "p95": 0.0,
+            "p99": 23.15826816000001
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 0.0,
+            "p90": 0.0,
+            "p95": 0.0,
+            "p99": 1.2118047763089934
+          },
+          "positive_oracle_service_call_count": 8409,
+          "slowdown_fraction_of_oracle_request_summed_service": 0.03148587705249639
+        },
+        "no_reuse": {
+          "call_count": 5022,
+          "delta_request_summed_ready_to_complete_seconds": 149420.7768405,
+          "equal_call_count": 2636,
+          "finite_faster_call_count": 34,
+          "finite_mean_ready_to_complete_ms": 31014.35735496416,
+          "finite_request_summed_ready_to_complete_seconds": 155754.10263663,
+          "finite_slower_call_count": 2352,
+          "oracle_mean_ready_to_complete_ms": 1261.1162477359617,
+          "oracle_request_summed_ready_to_complete_seconds": 6333.32579613,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 3066693.456424,
+            "p90": 34447211.603041485,
+            "p95": 49234608.883538,
+            "p99": 55803333.880566
+          },
+          "paired_service_delta_ms": {
+            "p50": 0.0,
+            "p90": 187628.57283280054,
+            "p95": 238583.34745305,
+            "p99": 263697.37756798
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 0.0,
+            "p90": 160.75765809413465,
+            "p95": 460.53510660783087,
+            "p99": 2195.140510906716
+          },
+          "positive_oracle_service_call_count": 5022,
+          "slowdown_fraction_of_oracle_request_summed_service": 23.59278231538382
+        },
+        "ssd": {
+          "call_count": 6676,
+          "delta_request_summed_ready_to_complete_seconds": 1205008.843861708,
+          "equal_call_count": 0,
+          "finite_faster_call_count": 0,
+          "finite_mean_ready_to_complete_ms": 180548.0824646474,
+          "finite_request_summed_ready_to_complete_seconds": 1205338.998533986,
+          "finite_slower_call_count": 6676,
+          "oracle_mean_ready_to_complete_ms": 49.45396529029359,
+          "oracle_request_summed_ready_to_complete_seconds": 330.154672278,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 10100692.566279,
+            "p90": 33471259.4285145,
+            "p95": 40517280.51472225,
+            "p99": 50661001.1246315
+          },
+          "paired_service_delta_ms": {
+            "p50": 217097.5851605,
+            "p90": 259817.71777,
+            "p95": 265018.0910225,
+            "p99": 272400.0237215
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 6534.54907465245,
+            "p90": 30503.972887409058,
+            "p95": 41729.54698732887,
+            "p99": 87840.65872829178
+          },
+          "positive_oracle_service_call_count": 6676,
+          "slowdown_fraction_of_oracle_request_summed_service": 3649.83126104923
+        }
+      },
+      "mixed": {
+        "cpu": {
+          "call_count": 1156,
+          "delta_request_summed_ready_to_complete_seconds": 1782.400343044,
+          "equal_call_count": 0,
+          "finite_faster_call_count": 0,
+          "finite_mean_ready_to_complete_ms": 1581.9571545622837,
+          "finite_request_summed_ready_to_complete_seconds": 1828.742470674,
+          "finite_slower_call_count": 1156,
+          "oracle_mean_ready_to_complete_ms": 40.088345700692045,
+          "oracle_request_summed_ready_to_complete_seconds": 46.34212763,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 6578.548699,
+            "p90": 30130981.453749,
+            "p95": 42741528.81685,
+            "p99": 53254152.1574252
+          },
+          "paired_service_delta_ms": {
+            "p50": 155.321234,
+            "p90": 5867.800989,
+            "p95": 9107.847577,
+            "p99": 19012.963567050043
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 8.224903424750087,
+            "p90": 243.80613941626234,
+            "p95": 917.6570624842086,
+            "p99": 2613.828596399415
+          },
+          "positive_oracle_service_call_count": 1156,
+          "slowdown_fraction_of_oracle_request_summed_service": 38.46177191679363
+        },
+        "decode_hbm": {
+          "call_count": 978,
+          "delta_request_summed_ready_to_complete_seconds": 10.45542843,
+          "equal_call_count": 852,
+          "finite_faster_call_count": 30,
+          "finite_mean_ready_to_complete_ms": 67.5990666574642,
+          "finite_request_summed_ready_to_complete_seconds": 66.111887191,
+          "finite_slower_call_count": 96,
+          "oracle_mean_ready_to_complete_ms": 56.9084445408998,
+          "oracle_request_summed_ready_to_complete_seconds": 55.656458761,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 21932.815023,
+            "p90": 35837575.538912706,
+            "p95": 38931031.09167,
+            "p99": 49231322.6757188
+          },
+          "paired_service_delta_ms": {
+            "p50": 0.0,
+            "p90": 0.0,
+            "p95": 36.77936444999993,
+            "p99": 242.17355756000003
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 0.0,
+            "p90": 0.0,
+            "p95": 0.7926792868947798,
+            "p99": 9.52325563767968
+          },
+          "positive_oracle_service_call_count": 978,
+          "slowdown_fraction_of_oracle_request_summed_service": 0.1878565158968828
+        },
+        "no_reuse": {
+          "call_count": 513,
+          "delta_request_summed_ready_to_complete_seconds": 14318.734345394,
+          "equal_call_count": 300,
+          "finite_faster_call_count": 11,
+          "finite_mean_ready_to_complete_ms": 28830.624346617937,
+          "finite_request_summed_ready_to_complete_seconds": 14790.110289815,
+          "finite_slower_call_count": 202,
+          "oracle_mean_ready_to_complete_ms": 918.8614900994152,
+          "oracle_request_summed_ready_to_complete_seconds": 471.375944421,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 782223.601003,
+            "p90": 37039148.785950206,
+            "p95": 47710807.378047,
+            "p99": 53780901.13402716
+          },
+          "paired_service_delta_ms": {
+            "p50": 0.0,
+            "p90": 155993.53012820001,
+            "p95": 224009.32429,
+            "p99": 258109.51284719998
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 0.0,
+            "p90": 157.71148800221195,
+            "p95": 684.2820404098072,
+            "p99": 2576.9530059354884
+          },
+          "positive_oracle_service_call_count": 513,
+          "slowdown_fraction_of_oracle_request_summed_service": 30.37646387106574
+        },
+        "ssd": {
+          "call_count": 450,
+          "delta_request_summed_ready_to_complete_seconds": 83706.344414534,
+          "equal_call_count": 0,
+          "finite_faster_call_count": 0,
+          "finite_mean_ready_to_complete_ms": 186080.44648414667,
+          "finite_request_summed_ready_to_complete_seconds": 83736.200917866,
+          "finite_slower_call_count": 450,
+          "oracle_mean_ready_to_complete_ms": 66.34778518222222,
+          "oracle_request_summed_ready_to_complete_seconds": 29.856503332,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 10070838.2581185,
+            "p90": 32698574.4727063,
+            "p95": 37081864.09089069,
+            "p99": 45450709.77017411
+          },
+          "paired_service_delta_ms": {
+            "p50": 218394.3131195,
+            "p90": 260362.41971440002,
+            "p95": 265145.60946335,
+            "p99": 272921.560016
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 6307.321448912693,
+            "p90": 23933.228051228198,
+            "p95": 30665.68455123088,
+            "p99": 45760.363547984285
+          },
+          "positive_oracle_service_call_count": 450,
+          "slowdown_fraction_of_oracle_request_summed_service": 2803.621826833891
+        }
+      },
+      "session_start": {
+        "no_reuse": {
+          "call_count": 4281,
+          "delta_request_summed_ready_to_complete_seconds": 34246.208453931,
+          "equal_call_count": 2507,
+          "finite_faster_call_count": 91,
+          "finite_mean_ready_to_complete_ms": 8105.295908661294,
+          "finite_request_summed_ready_to_complete_seconds": 34698.771784979,
+          "finite_slower_call_count": 1683,
+          "oracle_mean_ready_to_complete_ms": 105.71439641392199,
+          "oracle_request_summed_ready_to_complete_seconds": 452.563331048,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 0.0,
+            "p90": 9858.481087,
+            "p95": 23490.67117,
+            "p99": 178407.8746008
+          },
+          "paired_service_delta_ms": {
+            "p50": 0.0,
+            "p90": 9858.481087,
+            "p95": 23490.67117,
+            "p99": 178407.8746008
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 0.0,
+            "p90": 338.3256429892998,
+            "p95": 850.2288800022345,
+            "p99": 6962.361913382679
+          },
+          "positive_oracle_service_call_count": 4281,
+          "slowdown_fraction_of_oracle_request_summed_service": 75.67163776752996
+        }
+      },
+      "tool": {
+        "cpu": {
+          "call_count": 50503,
+          "delta_request_summed_ready_to_complete_seconds": 321522.16228816,
+          "equal_call_count": 0,
+          "finite_faster_call_count": 10,
+          "finite_mean_ready_to_complete_ms": 6390.472450940736,
+          "finite_request_summed_ready_to_complete_seconds": 322738.03018986,
+          "finite_slower_call_count": 50493,
+          "oracle_mean_ready_to_complete_ms": 24.075161905233355,
+          "oracle_request_summed_ready_to_complete_seconds": 1215.8679017,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 179347.503609,
+            "p90": 52022326.6239738,
+            "p95": 53890620.35870919,
+            "p99": 57881820.51455617
+          },
+          "paired_service_delta_ms": {
+            "p50": 4081.47398,
+            "p90": 15785.062265200006,
+            "p95": 20241.519721099976,
+            "p99": 48302.983480899835
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 196.56199017525083,
+            "p90": 1672.6492387989158,
+            "p95": 2645.9619282275917,
+            "p99": 5735.567045814666
+          },
+          "positive_oracle_service_call_count": 50503,
+          "slowdown_fraction_of_oracle_request_summed_service": 264.4383997954175
+        },
+        "decode_hbm": {
+          "call_count": 201519,
+          "delta_request_summed_ready_to_complete_seconds": 1980.57711516,
+          "equal_call_count": 174160,
+          "finite_faster_call_count": 8035,
+          "finite_mean_ready_to_complete_ms": 39.65618621836651,
+          "finite_request_summed_ready_to_complete_seconds": 7991.474990539,
+          "finite_slower_call_count": 19324,
+          "oracle_mean_ready_to_complete_ms": 29.827946126067516,
+          "oracle_request_summed_ready_to_complete_seconds": 6010.897875379,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 63750.925416,
+            "p90": 51600318.513326,
+            "p95": 53343751.638604,
+            "p99": 55804147.149702
+          },
+          "paired_service_delta_ms": {
+            "p50": 0.0,
+            "p90": 0.0,
+            "p95": 14.822518699999964,
+            "p99": 238.3855221600011
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 0.0,
+            "p90": 0.0,
+            "p95": 0.9412050264469662,
+            "p99": 20.15848768569216
+          },
+          "positive_oracle_service_call_count": 201519,
+          "slowdown_fraction_of_oracle_request_summed_service": 0.32949771502067327
+        },
+        "no_reuse": {
+          "call_count": 1836,
+          "delta_request_summed_ready_to_complete_seconds": 70644.146653983,
+          "equal_call_count": 1227,
+          "finite_faster_call_count": 22,
+          "finite_mean_ready_to_complete_ms": 39049.21491127451,
+          "finite_request_summed_ready_to_complete_seconds": 71694.3585771,
+          "finite_slower_call_count": 587,
+          "oracle_mean_ready_to_complete_ms": 572.010851370915,
+          "oracle_request_summed_ready_to_complete_seconds": 1050.211923117,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 10902829.801023,
+            "p90": 52160419.6928385,
+            "p95": 53969589.014653,
+            "p99": 55803685.636069
+          },
+          "paired_service_delta_ms": {
+            "p50": 0.0,
+            "p90": 212357.5267445,
+            "p95": 245033.969643,
+            "p99": 262314.4546104501
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 0.0,
+            "p90": 716.7176072737216,
+            "p95": 1809.6452234244966,
+            "p99": 7712.8817672342075
+          },
+          "positive_oracle_service_call_count": 1836,
+          "slowdown_fraction_of_oracle_request_summed_service": 67.26656315642764
+        },
+        "ssd": {
+          "call_count": 59321,
+          "delta_request_summed_ready_to_complete_seconds": 12496448.906076118,
+          "equal_call_count": 0,
+          "finite_faster_call_count": 0,
+          "finite_mean_ready_to_complete_ms": 210684.08399686476,
+          "finite_request_summed_ready_to_complete_seconds": 12497990.546778016,
+          "finite_slower_call_count": 59321,
+          "oracle_mean_ready_to_complete_ms": 25.988110481920398,
+          "oracle_request_summed_ready_to_complete_seconds": 1541.640701898,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 14904120.25031,
+            "p90": 40868867.479217,
+            "p95": 45511970.261873,
+            "p99": 50714481.22504042
+          },
+          "paired_service_delta_ms": {
+            "p50": 221742.037032,
+            "p90": 260724.01066,
+            "p95": 265289.22074,
+            "p99": 272455.5165128
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 15520.285379212428,
+            "p90": 36572.32819752347,
+            "p95": 43897.29395225414,
+            "p99": 60450.407401198245
+          },
+          "positive_oracle_service_call_count": 59321,
+          "slowdown_fraction_of_oracle_request_summed_service": 8105.941216193269
+        }
+      },
+      "unknown": {
+        "cpu": {
+          "call_count": 264,
+          "delta_request_summed_ready_to_complete_seconds": 2807.36906083,
+          "equal_call_count": 0,
+          "finite_faster_call_count": 0,
+          "finite_mean_ready_to_complete_ms": 10661.314723049241,
+          "finite_request_summed_ready_to_complete_seconds": 2814.587086885,
+          "finite_slower_call_count": 264,
+          "oracle_mean_ready_to_complete_ms": 27.34100778409091,
+          "oracle_request_summed_ready_to_complete_seconds": 7.218026055,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 341200.599481,
+            "p90": 24036615.613264,
+            "p95": 40122388.95459785,
+            "p99": 46153180.67509581
+          },
+          "paired_service_delta_ms": {
+            "p50": 7062.7611455,
+            "p90": 18826.768478100003,
+            "p95": 26215.434195649985,
+            "p99": 80689.48950487003
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 641.6193816624495,
+            "p90": 3086.9670793259033,
+            "p95": 5482.689191182941,
+            "p99": 7672.562219668451
+          },
+          "positive_oracle_service_call_count": 264,
+          "slowdown_fraction_of_oracle_request_summed_service": 388.9386155492341
+        },
+        "decode_hbm": {
+          "call_count": 3004,
+          "delta_request_summed_ready_to_complete_seconds": 38.157680523,
+          "equal_call_count": 2669,
+          "finite_faster_call_count": 100,
+          "finite_mean_ready_to_complete_ms": 27.7128389683755,
+          "finite_request_summed_ready_to_complete_seconds": 83.249368261,
+          "finite_slower_call_count": 235,
+          "oracle_mean_ready_to_complete_ms": 15.010548514647137,
+          "oracle_request_summed_ready_to_complete_seconds": 45.091687738,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 3358.136928,
+            "p90": 23645733.593961,
+            "p95": 32903854.393622,
+            "p99": 46170754.80446
+          },
+          "paired_service_delta_ms": {
+            "p50": 0.0,
+            "p90": 0.0,
+            "p95": 7.7026975499999875,
+            "p99": 309.74093117999973
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 0.0,
+            "p90": 0.0,
+            "p95": 0.7464557079630488,
+            "p99": 36.674929555618796
+          },
+          "positive_oracle_service_call_count": 3004,
+          "slowdown_fraction_of_oracle_request_summed_service": 0.8462242696416855
+        },
+        "no_reuse": {
+          "call_count": 496,
+          "delta_request_summed_ready_to_complete_seconds": 31376.490930934,
+          "equal_call_count": 281,
+          "finite_faster_call_count": 7,
+          "finite_mean_ready_to_complete_ms": 64150.550423375,
+          "finite_request_summed_ready_to_complete_seconds": 31818.673009994,
+          "finite_slower_call_count": 208,
+          "oracle_mean_ready_to_complete_ms": 891.4961271370968,
+          "oracle_request_summed_ready_to_complete_seconds": 442.18207906,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 130280.244914,
+            "p90": 31073620.292851,
+            "p95": 38634510.473548,
+            "p99": 43360663.64170165
+          },
+          "paired_service_delta_ms": {
+            "p50": 0.0,
+            "p90": 242962.983873,
+            "p95": 255311.28752175,
+            "p99": 267359.5898827
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 0.0,
+            "p90": 582.1409883539154,
+            "p95": 1192.6482326523342,
+            "p99": 3880.9135582042895
+          },
+          "positive_oracle_service_call_count": 496,
+          "slowdown_fraction_of_oracle_request_summed_service": 70.95830522493088
+        },
+        "ssd": {
+          "call_count": 843,
+          "delta_request_summed_ready_to_complete_seconds": 183999.377659075,
+          "equal_call_count": 0,
+          "finite_faster_call_count": 0,
+          "finite_mean_ready_to_complete_ms": 218283.51679514232,
+          "finite_request_summed_ready_to_complete_seconds": 184013.004658305,
+          "finite_slower_call_count": 843,
+          "oracle_mean_ready_to_complete_ms": 16.164886393831555,
+          "oracle_request_summed_ready_to_complete_seconds": 13.62699923,
+          "paired_absolute_completion_delta_ms": {
+            "p50": 14157759.585068,
+            "p90": 34216119.3396414,
+            "p95": 38430511.0733921,
+            "p99": 44148169.612425
+          },
+          "paired_service_delta_ms": {
+            "p50": 225363.666725,
+            "p90": 261452.09781060004,
+            "p95": 266210.2071454,
+            "p99": 273134.86130116
+          },
+          "paired_service_slowdown_fraction": {
+            "p50": 24610.90014510535,
+            "p90": 56761.25945570282,
+            "p95": 72436.35372672866,
+            "p99": 90806.32746115729
+          },
+          "positive_oracle_service_call_count": 843,
+          "slowdown_fraction_of_oracle_request_summed_service": 13502.560215458014
+        }
+      }
+    },
+    "closed_loop_delay_conservation_checked": true,
+    "compute_queue_or_batching_modeled": false,
+    "finite_report_scope": {
+      "active_request_kv_reserved": true,
+      "analytical_prompt_compute": true,
+      "canonical_restore_execution_mode": "async-pre-admission",
+      "decode_active_kv_time_modeled": false,
+      "decode_compute_modeled": false,
+      "global_arrival_clock": true,
+      "interpretation": "Capacity/transfer-queue sensitivity. Calls overlap and use a prompt-only roofline; this is not cycle-level serving.",
+      "llm_compute_queue_or_batching_modeled": false,
+      "pd_branch_admission": "Final-footprint D-HBM admission reserves capacity before lower-tier load. In async-pre-admission mode, P-HBM admission waits until lower->D completes; D->P starts after both the restored prefix and P capacity are ready.",
+      "pd_deadlock_prevention": "Both branches use the same admission sequence; only the D-head pins a movable source. A zero-growth resident-HBM call may backfill only when its P branch fits immediately. The complete final D footprint is pre-reserved before prompt completion.",
+      "pd_disaggregated": true,
+      "pd_hbm_pool_count": 2,
+      "prompt_compute_model": "full-causal aggregate roofline multiplied by the declared sensitivity scale",
+      "prompt_compute_scale": 0.3333333333333333,
+      "prompt_compute_scale_provenance": "Adversarial sensitivity that divides the entire analytical prompt roofline, including fresh-token and recomputation time, by three. The factor is motivated only by the Qwen model card's statement of up to 3x speedup near 1M for DCA plus MInference; it is not a measured DCA/H100 calibration.",
+      "restore_barrier_scope": "returning_request_compute_admission_only",
+      "restore_execution_mode": "async-pre-admission",
+      "restore_prefill_overlap_model": "no same-request analytical compute before complete KV restore; unrelated calls remain runnable",
+      "session_dependency_chains": true,
+      "swap_out_blocks_other_calls": false
+    },
+    "interpretation": "Primary service slowdown compares each call's first logical-ready epoch with its completion and therefore includes restore, HBM admission, P/D transfer, recomputation, and their closed-loop propagation without diluting them by fixed human/tool gaps. The trace-makespan and session-E2E views intentionally include those gaps. A finite call can beat the residency reference because the reference may send more D->P hit traffic and alter shared-fabric ordering; it is not a strict per-call lower bound.",
+    "later_call_ready_times_are_endogenous": true,
+    "mixed_batch_restore_barrier_modeled": false,
+    "oracle_capacity_construction": {
+      "colocated_kv_bound_bytes_per_rank": 10494905942016,
+      "construction": "sum_of_per_session_maxima_for_independent_prefill_and_decode_pools",
+      "decode_hbm_static_reserve_bytes_per_rank": 19893012480,
+      "decode_kv_bound_bytes_per_rank": 10494905942016,
+      "decode_total_hbm_capacity_bytes_per_rank": 10530084182016,
+      "hbm_static_reserve_bytes_per_rank": 19893012480,
+      "model_weight_bytes_per_rank_estimate": 15285227520,
+      "physical_bytes_per_token_per_rank": 24576,
+      "prefill_hbm_static_reserve_bytes_per_rank": 19893012480,
+      "prefill_kv_bound_bytes_per_rank": 10359715135488,
+      "prefill_total_hbm_capacity_bytes_per_rank": 10394893375488,
+      "selected_kv_budget_bytes_per_rank": 10494905942016,
+      "total_hbm_capacity_bytes_per_rank": 10530084182016
+    },
+    "oracle_validation": {
+      "aggregate_hbm_capacity_block_seconds": 0.0,
+      "capacity_action_count": 0,
+      "capacity_invariant_checked": true,
+      "eligible_source_counts": {
+        "cpu": 0,
+        "decode_hbm": 338394,
+        "recompute": 0,
+        "ssd": 0
+      }
+    },
+    "reference": "paired_infinite_hbm_residency",
+    "reference_is_strict_per_call_lower_bound": false,
+    "restore_execution_mode": "async-pre-admission",
+    "same_final_decode_footprint_prereservation": true,
+    "same_gap_durations": true,
+    "same_independent_pd_branch_admission": true,
+    "same_pd_topology_and_mandatory_transfers": true,
+    "same_restore_execution_mode": true,
+    "same_roofline_compute_model": true,
+    "same_workload_and_first_call_arrivals": true,
+    "session_end_to_end": {
+      "delta_seconds": 14608562.793718817,
+      "finite_request_summed_arrival_to_final_completion_seconds": 129103620.59424765,
+      "oracle_request_summed_arrival_to_final_completion_seconds": 114495057.80052884,
+      "session_count": 4281,
+      "slowdown_fraction_of_oracle": 0.12759120851460315
+    },
+    "trace_makespan": {
+      "delta_seconds": 10902.829801023,
+      "finite_seconds": 6114081.981553297,
+      "oracle_seconds": 6103179.151752274,
+      "slowdown_fraction_of_oracle": 0.0017864181158588899
+    }
+  },
+  "kv_dtype_bytes": 2,
+  "kv_layout": {
+    "dtype_bytes": 2,
+    "kv_heads_per_rank": 1.0,
+    "logical_bytes_per_token": 98304,
+    "mode": "replicated",
+    "physical_bytes_per_token_cluster": 98304,
+    "physical_bytes_per_token_per_rank": 24576,
+    "replication_factor": 1.0,
+    "tp_size": 4,
+    "warning": ""
+  },
+  "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+  "offered_load_call_activity": {
+    "interpretation": "Union/complement of analytical call ready-to-complete intervals under the trace's open-loop first-session arrivals and closed-loop inter-turn gaps. Because calls overlap without a shared compute queue or batching, this is offered call activity, not GPU/server utilization.",
+    "is_server_utilization": false,
+    "no_active_call_fraction": 0.9871366598114204,
+    "wall_clock_with_at_least_one_active_call_seconds": 78647.516469585,
+    "wall_clock_with_no_active_call_seconds": 6035434.465083712,
+    "window_end_seconds": 6114081.981553297,
+    "window_seconds": 6114081.981553297,
+    "window_start_seconds": 0.0
+  },
+  "pd_transfer": {
+    "decode_to_prefill_bytes": 5259798672900096,
+    "decode_to_prefill_raw_elapsed_seconds": 2985.926106612,
+    "decode_to_prefill_stall_seconds": 2985.926106612,
+    "decode_to_prefill_stall_semantics": "Deprecated compatibility alias for raw stage elapsed; consult resume.restore_timing for exposed delay.",
+    "enabled": true,
+    "fixed_latency_us": 3.0,
+    "handoff_scope": "Successful reuse keeps a decode-owned prefix and sends only the exact suffix P->D; recompute sends the full prompt.",
+    "link_gbps_per_rank": 450.0,
+    "prefill_to_decode_bytes": 136929770569728,
+    "prefill_to_decode_handoff_seconds": 132.166576687,
+    "prefill_to_decode_queue_wait_seconds": 55.022817941
+  },
+  "policy": {
+    "actions_by_reason": {
+      "cpu_capacity": 68088,
+      "hbm_capacity": 135183
+    },
+    "cascade": "HBM -> CPU DRAM -> SSD -> recompute",
+    "cpu_cache_enabled": true,
+    "cpu_ttl_ns": 30000000000,
+    "demotion_mode": "capacity-only",
+    "hbm_ttl_ns": 50000000,
+    "migration_commit": "atomic source-retained background copy with destination reservation",
+    "name": "tiered",
+    "replacement": "LRU within each idle tier",
+    "resume_during_migration": "wait_for_nonpreemptive_commit",
+    "ssd_direct": false,
+    "ssd_direct_semantics": null,
+    "ssd_ttl_ns": 3600000000000,
+    "swap_out_contention": "Background copies still occupy modeled DMA/media/DRAM queue resources and retain source capacity until commit.",
+    "swap_out_execution": "asynchronous background transfer; never registers a model-engine or global execution barrier"
+  },
+  "recompute": {
+    "analytical_prompt_compute_seconds_executed": 15928.985593010428,
+    "analytical_seconds": 0.0,
+    "analytical_time_fraction_of_executed_prompt_compute": 0.0,
+    "event_count": 0,
+    "event_fraction_of_all_selected_positive_transitions": 0.0,
+    "event_fraction_of_reuse_eligible_transitions": 0.0,
+    "full_prompt_reference_seconds": 976634.1381969225,
+    "reasons": {},
+    "time_denominator_scope": "All analytical prompt compute actually executed by context-eligible calls, including recomputed prefix; decode and kernel/collective calibration are excluded.",
+    "token_fraction_of_reusable_tokens_requested": 0.0,
+    "tokens": 0,
+    "total_reusable_tokens_requested": 52756595438
+  },
+  "replay_config": {
+    "block_size": 16,
+    "cancel_migration_on_resume": false,
+    "cpu_capacity_bytes": 2000000000000,
+    "cpu_ttl_ns": 30000000000,
+    "decode_hbm_static_reserve_bytes_per_rank": null,
+    "demotion_mode": "capacity-only",
+    "enable_transfer_queueing": true,
+    "hbm_capacity_bytes_per_rank": 80000000000,
+    "hbm_static_reserve_bytes_per_rank": 19893012480,
+    "hbm_ttl_ns": 50000000,
+    "pd_disaggregated": true,
+    "pd_fixed_latency_us": 3.0,
+    "pd_link_gbps_per_rank": 450.0,
+    "policy": "tiered",
+    "prefill_chunk_size": 131072,
+    "prefill_hbm_static_reserve_bytes_per_rank": null,
+    "prompt_compute_scale": 0.3333333333333333,
+    "prompt_compute_scale_provenance": "Adversarial sensitivity that divides the entire analytical prompt roofline, including fresh-token and recomputation time, by three. The factor is motivated only by the Qwen model card's statement of up to 3x speedup near 1M for DCA plus MInference; it is not a measured DCA/H100 calibration.",
+    "restore_execution_mode": "async-pre-admission",
+    "ssd_capacity_bytes": 30720000000000,
+    "ssd_ttl_ns": 3600000000000,
+    "weight_dtype_bytes": 2
+  },
+  "request_makespan_seconds": 6114081.981553297,
+  "resume": {
+    "aggregate_hbm_capacity_block_seconds": 14553118.710768474,
+    "aggregate_inflight_demotion_wait_seconds": 19.258000629,
+    "aggregate_migration_stall_seconds": 58469.561131451,
+    "aggregate_migration_stall_semantics": "Deprecated compatibility sum of raw transfer-stage time and same-object in-flight demotion wait; not causal stall.",
+    "aggregate_restore_queue_wait_seconds": 28484.751430992,
+    "aggregate_restore_stall_seconds": 58450.303130822,
+    "aggregate_restore_stall_semantics": "Deprecated compatibility field: request-summed raw transfer-stage elapsed time, including queue wait. It is fully exposed by the default pre-admission gate but may be partly hidden in async-decode-join sensitivity. Use restore_timing.request_summed_exposed_compute_admission_gate_seconds.",
+    "all_foreground_kv_transfer_exposure_fraction_of_request_makespan": 0.005119822532915628,
+    "all_foreground_kv_transfer_exposure_union_seconds": 31303.01469725,
+    "all_request_count": 357161,
+    "all_request_denominator_scope": "Every LLM invocation in workload sub_requests[], including first calls, zero-gap or no-reuse calls, and calls excluded by the target-model context limit.",
+    "all_selected_positive_transition_count": 345710,
+    "by_return_gap_type": {
+      "human": {
+        "all_request_count": 31997,
+        "not_reuse_eligible_or_not_selected_count": 5045,
+        "reuse_eligible_transition_count": 26952,
+        "selected_positive_transition_count": 31960,
+        "source_counts": {
+          "cpu": 11890,
+          "decode_hbm": 8386,
+          "recompute": 0,
+          "ssd": 6676
+        },
+        "source_fractions_of_all_requests_in_return_class": {
+          "cpu": 0.3715973372503672,
+          "decode_hbm": 0.2620870706628746,
+          "recompute": 0.0,
+          "ssd": 0.2086445604275401
+        },
+        "source_fractions_of_reuse_eligible_in_return_class": {
+          "cpu": 0.4411546452953399,
+          "decode_hbm": 0.31114574057583855,
+          "recompute": 0.0,
+          "ssd": 0.2476996141288216
+        },
+        "source_reusable_tokens": {
+          "cpu": 2477642241,
+          "decode_hbm": 2973404446,
+          "recompute": 0,
+          "ssd": 1092278256
+        }
+      },
+      "mixed": {
+        "all_request_count": 3097,
+        "not_reuse_eligible_or_not_selected_count": 540,
+        "reuse_eligible_transition_count": 2557,
+        "selected_positive_transition_count": 3057,
+        "source_counts": {
+          "cpu": 1156,
+          "decode_hbm": 951,
+          "recompute": 0,
+          "ssd": 450
+        },
+        "source_fractions_of_all_requests_in_return_class": {
+          "cpu": 0.37326444946722637,
+          "decode_hbm": 0.3070713593800452,
+          "recompute": 0.0,
+          "ssd": 0.14530190506942203
+        },
+        "source_fractions_of_reuse_eligible_in_return_class": {
+          "cpu": 0.45209229565897535,
+          "decode_hbm": 0.3719202190066484,
+          "recompute": 0.0,
+          "ssd": 0.17598748533437622
+        },
+        "source_reusable_tokens": {
+          "cpu": 172831536,
+          "decode_hbm": 180617985,
+          "recompute": 0,
+          "ssd": 83118613
+        }
+      },
+      "session_start": {
+        "all_request_count": 4281,
+        "not_reuse_eligible_or_not_selected_count": 4281,
+        "reuse_eligible_transition_count": 0,
+        "selected_positive_transition_count": 0,
+        "source_counts": {
+          "cpu": 0,
+          "decode_hbm": 0,
+          "recompute": 0,
+          "ssd": 0
+        },
+        "source_fractions_of_all_requests_in_return_class": {
+          "cpu": 0.0,
+          "decode_hbm": 0.0,
+          "recompute": 0.0,
+          "ssd": 0.0
+        },
+        "source_fractions_of_reuse_eligible_in_return_class": {
+          "cpu": 0.0,
+          "decode_hbm": 0.0,
+          "recompute": 0.0,
+          "ssd": 0.0
+        },
+        "source_reusable_tokens": {
+          "cpu": 0,
+          "decode_hbm": 0,
+          "recompute": 0,
+          "ssd": 0
+        }
+      },
+      "tool": {
+        "all_request_count": 313179,
+        "not_reuse_eligible_or_not_selected_count": 4294,
+        "reuse_eligible_transition_count": 308885,
+        "selected_positive_transition_count": 310693,
+        "source_counts": {
+          "cpu": 50494,
+          "decode_hbm": 199073,
+          "recompute": 0,
+          "ssd": 59318
+        },
+        "source_fractions_of_all_requests_in_return_class": {
+          "cpu": 0.16123047841649663,
+          "decode_hbm": 0.6356524543471944,
+          "recompute": 0.0,
+          "ssd": 0.18940605851605632
+        },
+        "source_fractions_of_reuse_eligible_in_return_class": {
+          "cpu": 0.1634718422713955,
+          "decode_hbm": 0.6444890493225635,
+          "recompute": 0.0,
+          "ssd": 0.19203910840604108
+        },
+        "source_reusable_tokens": {
+          "cpu": 6757141379,
+          "decode_hbm": 30422215814,
+          "recompute": 0,
+          "ssd": 8597345168
+        }
+      },
+      "unknown": {
+        "all_request_count": 4607,
+        "not_reuse_eligible_or_not_selected_count": 4607,
+        "reuse_eligible_transition_count": 0,
+        "selected_positive_transition_count": 0,
+        "source_counts": {
+          "cpu": 0,
+          "decode_hbm": 0,
+          "recompute": 0,
+          "ssd": 0
+        },
+        "source_fractions_of_all_requests_in_return_class": {
+          "cpu": 0.0,
+          "decode_hbm": 0.0,
+          "recompute": 0.0,
+          "ssd": 0.0
+        },
+        "source_fractions_of_reuse_eligible_in_return_class": {
+          "cpu": 0.0,
+          "decode_hbm": 0.0,
+          "recompute": 0.0,
+          "ssd": 0.0
+        },
+        "source_reusable_tokens": {
+          "cpu": 0,
+          "decode_hbm": 0,
+          "recompute": 0,
+          "ssd": 0
+        }
+      }
+    },
+    "cpu_or_ssd_resume_count": 129984,
+    "cpu_or_ssd_resume_fraction_of_all_requests": 0.36393671201502964,
+    "exposure_note": "Compatibility unions cover raw foreground transfer-chain intervals, not necessarily blocked time. Use the exposed decode-barrier union under restore_timing for causal request-local waiting. Request sums are never divided directly by wall-clock makespan.",
+    "foreground_migration_exposure_fraction_of_request_makespan": 0.005109469007909422,
+    "foreground_migration_exposure_union_seconds": 31239.712396564,
+    "migration_stall_fraction_of_request_summed_prompt_active_time": 0.7858965491355069,
+    "migration_stall_fraction_semantics": "Deprecated compatibility fraction formed from raw transfer-stage elapsed plus same-object demotion wait; it is not an exposed-delay fraction.",
+    "no_reuse_inflight_demotion_wait_seconds": 0.0,
+    "no_reuse_transition_count": 7316,
+    "pd_decode_to_prefill_stall_seconds": 2985.926106612,
+    "pd_decode_to_prefill_stall_semantics": "Deprecated raw D->P stage elapsed, not necessarily causal because it may overlap analytical prefill.",
+    "restore_timing": {
+      "by_return_gap_type": {
+        "human": {
+          "event_count": 26975,
+          "hidden_fraction_of_raw_elapsed": 0.0,
+          "request_summed_exposed_compute_admission_gate_seconds": 1216624.400289677,
+          "request_summed_exposed_decode_barrier_seconds": 1216624.400289677,
+          "request_summed_hidden_by_prefill_seconds": 0.0,
+          "request_summed_other_concurrent_or_admission_seconds": 0.0,
+          "request_summed_raw_elapsed_seconds": 1216624.400289677,
+          "wall_clock_exposed_decode_barrier_union_seconds": 62092.398335178,
+          "wall_clock_raw_elapsed_union_seconds": 62092.398335178
+        },
+        "mixed": {
+          "event_count": 2584,
+          "hidden_fraction_of_raw_elapsed": 0.0,
+          "request_summed_exposed_compute_admission_gate_seconds": 85523.717359071,
+          "request_summed_exposed_decode_barrier_seconds": 85523.717359071,
+          "request_summed_hidden_by_prefill_seconds": 0.0,
+          "request_summed_other_concurrent_or_admission_seconds": 0.0,
+          "request_summed_raw_elapsed_seconds": 85523.717359071,
+          "wall_clock_exposed_decode_barrier_union_seconds": 43817.310255043,
+          "wall_clock_raw_elapsed_union_seconds": 43817.310255043
+        },
+        "tool": {
+          "event_count": 311343,
+          "hidden_fraction_of_raw_elapsed": 0.0,
+          "request_summed_exposed_compute_admission_gate_seconds": 12822548.896463212,
+          "request_summed_exposed_decode_barrier_seconds": 12822548.896463212,
+          "request_summed_hidden_by_prefill_seconds": 0.0,
+          "request_summed_other_concurrent_or_admission_seconds": 0.0,
+          "request_summed_raw_elapsed_seconds": 12822548.896463212,
+          "wall_clock_exposed_decode_barrier_union_seconds": 65287.443306054,
+          "wall_clock_raw_elapsed_union_seconds": 65287.443306054
+        },
+        "unknown": {
+          "event_count": 4111,
+          "hidden_fraction_of_raw_elapsed": 0.0,
+          "request_summed_exposed_compute_admission_gate_seconds": 186865.741958008,
+          "request_summed_exposed_decode_barrier_seconds": 186865.741958008,
+          "request_summed_hidden_by_prefill_seconds": 0.0,
+          "request_summed_other_concurrent_or_admission_seconds": 0.0,
+          "request_summed_raw_elapsed_seconds": 186865.741958008,
+          "wall_clock_exposed_decode_barrier_union_seconds": 54349.530228415,
+          "wall_clock_raw_elapsed_union_seconds": 54349.530228415
+        }
+      },
+      "by_return_gap_type_and_source": {
+        "human": {
+          "cpu": {
+            "event_count": 11890,
+            "hidden_fraction_of_raw_elapsed": 0.0,
+            "request_summed_exposed_compute_admission_gate_seconds": 11374.932523037,
+            "request_summed_exposed_decode_barrier_seconds": 11374.932523037,
+            "request_summed_hidden_by_prefill_seconds": 0.0,
+            "request_summed_other_concurrent_or_admission_seconds": 0.0,
+            "request_summed_raw_elapsed_seconds": 11374.932523037
+          },
+          "decode_hbm": {
+            "event_count": 8409,
+            "hidden_fraction_of_raw_elapsed": 0.0,
+            "request_summed_exposed_compute_admission_gate_seconds": 177.676254046,
+            "request_summed_exposed_decode_barrier_seconds": 177.676254046,
+            "request_summed_hidden_by_prefill_seconds": 0.0,
+            "request_summed_other_concurrent_or_admission_seconds": 0.0,
+            "request_summed_raw_elapsed_seconds": 177.676254046
+          },
+          "ssd": {
+            "event_count": 6676,
+            "hidden_fraction_of_raw_elapsed": 0.0,
+            "request_summed_exposed_compute_admission_gate_seconds": 1205071.791512594,
+            "request_summed_exposed_decode_barrier_seconds": 1205071.791512594,
+            "request_summed_hidden_by_prefill_seconds": 0.0,
+            "request_summed_other_concurrent_or_admission_seconds": 0.0,
+            "request_summed_raw_elapsed_seconds": 1205071.791512594
+          }
+        },
+        "mixed": {
+          "cpu": {
+            "event_count": 1156,
+            "hidden_fraction_of_raw_elapsed": 0.0,
+            "request_summed_exposed_compute_admission_gate_seconds": 1792.044372279,
+            "request_summed_exposed_decode_barrier_seconds": 1792.044372279,
+            "request_summed_hidden_by_prefill_seconds": 0.0,
+            "request_summed_other_concurrent_or_admission_seconds": 0.0,
+            "request_summed_raw_elapsed_seconds": 1792.044372279
+          },
+          "decode_hbm": {
+            "event_count": 978,
+            "hidden_fraction_of_raw_elapsed": 0.0,
+            "request_summed_exposed_compute_admission_gate_seconds": 20.527524727,
+            "request_summed_exposed_decode_barrier_seconds": 20.527524727,
+            "request_summed_hidden_by_prefill_seconds": 0.0,
+            "request_summed_other_concurrent_or_admission_seconds": 0.0,
+            "request_summed_raw_elapsed_seconds": 20.527524727
+          },
+          "ssd": {
+            "event_count": 450,
+            "hidden_fraction_of_raw_elapsed": 0.0,
+            "request_summed_exposed_compute_admission_gate_seconds": 83711.145462065,
+            "request_summed_exposed_decode_barrier_seconds": 83711.145462065,
+            "request_summed_hidden_by_prefill_seconds": 0.0,
+            "request_summed_other_concurrent_or_admission_seconds": 0.0,
+            "request_summed_raw_elapsed_seconds": 83711.145462065
+          }
+        },
+        "tool": {
+          "cpu": {
+            "event_count": 50503,
+            "hidden_fraction_of_raw_elapsed": 0.0,
+            "request_summed_exposed_compute_admission_gate_seconds": 321924.888631785,
+            "request_summed_exposed_decode_barrier_seconds": 321924.888631785,
+            "request_summed_hidden_by_prefill_seconds": 0.0,
+            "request_summed_other_concurrent_or_admission_seconds": 0.0,
+            "request_summed_raw_elapsed_seconds": 321924.888631785
+          },
+          "decode_hbm": {
+            "event_count": 201519,
+            "hidden_fraction_of_raw_elapsed": 0.0,
+            "request_summed_exposed_compute_admission_gate_seconds": 3666.931376113,
+            "request_summed_exposed_decode_barrier_seconds": 3666.931376113,
+            "request_summed_hidden_by_prefill_seconds": 0.0,
+            "request_summed_other_concurrent_or_admission_seconds": 0.0,
+            "request_summed_raw_elapsed_seconds": 3666.931376113
+          },
+          "ssd": {
+            "event_count": 59321,
+            "hidden_fraction_of_raw_elapsed": 0.0,
+            "request_summed_exposed_compute_admission_gate_seconds": 12496957.076455314,
+            "request_summed_exposed_decode_barrier_seconds": 12496957.076455314,
+            "request_summed_hidden_by_prefill_seconds": 0.0,
+            "request_summed_other_concurrent_or_admission_seconds": 0.0,
+            "request_summed_raw_elapsed_seconds": 12496957.076455314
+          }
+        },
+        "unknown": {
+          "cpu": {
+            "event_count": 264,
+            "hidden_fraction_of_raw_elapsed": 0.0,
+            "request_summed_exposed_compute_admission_gate_seconds": 2808.932186493,
+            "request_summed_exposed_decode_barrier_seconds": 2808.932186493,
+            "request_summed_hidden_by_prefill_seconds": 0.0,
+            "request_summed_other_concurrent_or_admission_seconds": 0.0,
+            "request_summed_raw_elapsed_seconds": 2808.932186493
+          },
+          "decode_hbm": {
+            "event_count": 3004,
+            "hidden_fraction_of_raw_elapsed": 0.0,
+            "request_summed_exposed_compute_admission_gate_seconds": 52.544730927,
+            "request_summed_exposed_decode_barrier_seconds": 52.544730927,
+            "request_summed_hidden_by_prefill_seconds": 0.0,
+            "request_summed_other_concurrent_or_admission_seconds": 0.0,
+            "request_summed_raw_elapsed_seconds": 52.544730927
+          },
+          "ssd": {
+            "event_count": 843,
+            "hidden_fraction_of_raw_elapsed": 0.0,
+            "request_summed_exposed_compute_admission_gate_seconds": 184004.265040588,
+            "request_summed_exposed_decode_barrier_seconds": 184004.265040588,
+            "request_summed_hidden_by_prefill_seconds": 0.0,
+            "request_summed_other_concurrent_or_admission_seconds": 0.0,
+            "request_summed_raw_elapsed_seconds": 184004.265040588
+          }
+        }
+      },
+      "by_source": {
+        "cpu": {
+          "event_count": 63813,
+          "hidden_fraction_of_raw_elapsed": 0.0,
+          "request_summed_exposed_compute_admission_gate_seconds": 337900.797713594,
+          "request_summed_exposed_decode_barrier_seconds": 337900.797713594,
+          "request_summed_hidden_by_prefill_seconds": 0.0,
+          "request_summed_other_concurrent_or_admission_seconds": 0.0,
+          "request_summed_raw_elapsed_seconds": 337900.797713594
+        },
+        "decode_hbm": {
+          "event_count": 213910,
+          "hidden_fraction_of_raw_elapsed": 0.0,
+          "request_summed_exposed_compute_admission_gate_seconds": 3917.679885813,
+          "request_summed_exposed_decode_barrier_seconds": 3917.679885813,
+          "request_summed_hidden_by_prefill_seconds": 0.0,
+          "request_summed_other_concurrent_or_admission_seconds": 0.0,
+          "request_summed_raw_elapsed_seconds": 3917.679885813
+        },
+        "ssd": {
+          "event_count": 67290,
+          "hidden_fraction_of_raw_elapsed": 0.0,
+          "request_summed_exposed_compute_admission_gate_seconds": 13969744.27847056,
+          "request_summed_exposed_decode_barrier_seconds": 13969744.27847056,
+          "request_summed_hidden_by_prefill_seconds": 0.0,
+          "request_summed_other_concurrent_or_admission_seconds": 0.0,
+          "request_summed_raw_elapsed_seconds": 13969744.27847056
+        }
+      },
+      "canonical_execution_mode": "async-pre-admission",
+      "execution_mode": "async-pre-admission",
+      "hidden_fraction_of_raw_elapsed": 0.0,
+      "issue_epoch": "The current call's logical request-ready epoch. For TraceLab this is tool_result for tool returns and user_message arrival for human returns; mixed returns remain a separate conservative class. Raw elapsed includes later source/HBM admission; DMA begins only when those resources are available.",
+      "join_semantics": "Destination HBM is reserved before load, but the returning request cannot enter analytical prompt compute until its complete KV restore chain is ready. This is a request-local gate: other calls and continuous batches are not gated.",
+      "prefill_cutoff_semantics": "No fresh prompt token from a cold returning request executes before the complete restore chain. raw_newly_append_toks remains provenance only.",
+      "raw_decomposition": "raw_elapsed = prefill_execution_overlap + exposed owner gate + other_concurrent_or_admission. In async-pre-admission mode the request-local owner gate covers the full logical-ready-to-KV-ready interval; in async-decode-join it starts at the prefill cutoff.",
+      "request_summed_exposed_compute_admission_gate_seconds": 14311562.756069968,
+      "request_summed_exposed_decode_barrier_seconds": 14311562.756069968,
+      "request_summed_hidden_by_prefill_seconds": 0.0,
+      "request_summed_other_concurrent_or_admission_seconds": 0.0,
+      "request_summed_raw_elapsed_seconds": 14311562.756069968,
+      "wall_clock_exposed_decode_barrier_union_seconds": 67814.090085994,
+      "wall_clock_raw_elapsed_union_seconds": 67814.090085994
+    },
+    "return_gap_semantics": "The current call inherits return_gap_type/source/ns from the preceding sub-request's outgoing inter-turn gap. session_start marks first calls; mixed and unknown remain separate. Source cells include reuse-eligible selected transitions only, and the residual keeps the all-request denominator explicit.",
+    "reuse_eligible_transition_count": 338394,
+    "source_counts": {
+      "cpu": 63540,
+      "decode_hbm": 208410,
+      "recompute": 0,
+      "ssd": 66444
+    },
+    "source_fractions_of_all_requests": {
+      "cpu": 0.1779029625295035,
+      "decode_hbm": 0.5835183572674508,
+      "recompute": 0.0,
+      "ssd": 0.18603374948552615
+    },
+    "source_fractions_of_all_selected_positive_transitions": {
+      "cpu": 0.1837956668884325,
+      "decode_hbm": 0.6028463162766481,
+      "recompute": 0.0,
+      "ssd": 0.19219577102195481
+    },
+    "source_fractions_of_reuse_eligible": {
+      "cpu": 0.1877692866894803,
+      "decode_hbm": 0.6158797141793294,
+      "recompute": 0.0,
+      "ssd": 0.19635099913119028
+    },
+    "source_reusable_tokens": {
+      "cpu": 9407615156,
+      "decode_hbm": 33576238245,
+      "recompute": 0,
+      "ssd": 9772742037
+    },
+    "source_token_fractions": {
+      "cpu": 0.17832111943341586,
+      "decode_hbm": 0.6364367898694123,
+      "recompute": 0.0,
+      "ssd": 0.18524209069717187
+    },
+    "ssd_source_reasons": {
+      "cpu_capacity": 66444
+    }
+  },
+  "schema_version": 12,
+  "ssd_io": {
+    "completed_full_object_write_bytes": 979519055855616,
+    "issued_full_object_write_bytes": 979519055855616,
+    "issued_read_bytes": 969133095124992,
+    "read_semantics": "Every SSD restore is two serial queue jobs. The first lands the full block-rounded object in transient CPU DRAM; the second reads that staging buffer and traverses the per-GPU CPU-to-GPU PCIe links. Destination HBM is reserved before the first stage.",
+    "restore_path": "SSD -> transient CPU DRAM -> destination GPU HBM; P/D then performs decode-HBM -> prefill-HBM",
+    "restore_stage_kinds": {
+      "cpu_to_gpu": [
+        "cpu_stage_to_hbm",
+        "cpu_stage_to_decode"
+      ],
+      "ssd_to_cpu": [
+        "ssd_to_cpu_stage_for_hbm",
+        "ssd_to_cpu_stage_for_decode"
+      ]
+    },
+    "restore_stage_metrics_location": "transfer_queue.queue_wait_seconds_by_kind, transfer_queue.service_seconds_by_kind, and transfer_queue.bytes_by_kind",
+    "transient_cpu_stage_counts_as_cpu_cache_occupancy": false,
+    "write_semantics": "Every default noncancellable CPU->SSD or oversize HBM->SSD job writes a full block-rounded object. Cancellable sensitivity does not attribute partial media progress."
+  },
+  "tp_size": 4,
+  "trace_end_seconds": 6114081.981553297,
+  "transfer_queue": {
+    "aggregate_queue_wait_seconds": 114639.406497145,
+    "aggregate_service_seconds": 68962.607496369,
+    "bytes_by_kind": {
+      "cpu_stage_to_decode": 969133095124992,
+      "cpu_to_decode": 927596051693568,
+      "cpu_to_ssd": 979519055855616,
+      "decode_hbm_to_prefill": 5259798672900096,
+      "hbm_to_cpu": 1953104282517504,
+      "prefill_to_decode": 136929770569728,
+      "ssd_to_cpu_stage_for_decode": 969133095124992
+    },
+    "discipline": "nonpreemptive_gang_fcfs",
+    "enabled": true,
+    "jobs": 1103838,
+    "jobs_by_kind": {
+      "cpu_stage_to_decode": 67290,
+      "cpu_to_decode": 63813,
+      "cpu_to_ssd": 68088,
+      "decode_hbm_to_prefill": 345013,
+      "hbm_to_cpu": 135183,
+      "prefill_to_decode": 357161,
+      "ssd_to_cpu_stage_for_decode": 67290
+    },
+    "queue_wait_seconds_by_kind": {
+      "cpu_stage_to_decode": 0.0,
+      "cpu_to_decode": 15282.393424748,
+      "cpu_to_ssd": 42390.872562991,
+      "decode_hbm_to_prefill": 62.780522519,
+      "hbm_to_cpu": 43708.759685221,
+      "prefill_to_decode": 55.022817941,
+      "ssd_to_cpu_stage_for_decode": 13139.577483725
+    },
+    "resources": [
+      "cpu_dram",
+      "decode_copy",
+      "pcie_in",
+      "pcie_out",
+      "pd_fabric",
+      "prefill_copy",
+      "ssd_read",
+      "ssd_write"
+    ],
+    "service_seconds_by_kind": {
+      "cpu_stage_to_decode": 4846.001958611,
+      "cpu_to_decode": 4638.29935465,
+      "cpu_to_ssd": 29153.714643993,
+      "decode_hbm_to_prefill": 2923.145584093,
+      "hbm_to_cpu": 9766.1973938,
+      "prefill_to_decode": 77.143758746,
+      "ssd_to_cpu_stage_for_decode": 17558.104802476
+    }
+  },
+  "warnings": [
+    "Reuse provenance is reported in workload.reuse_source_counts; only token_ids_exact is a target-tokenizer-exact LCP, while explicit_estimated and explicit_reported retain their declared semantics.",
+    "A call is over context when input_toks + output_toks exceeds max_context_tokens. Such calls advance their tool gaps and clear cache lineage, but their target-model execution time is unavailable and set to zero.",
+    "Model weights are architecture-derived estimates; replace them with measured per-rank engine residency for headline results.",
+    "All SSD restores use explicit serial SSD->CPU-DRAM and CPU-DRAM->GPU-PCIe queue stages. hbm_ssd_direct means no persistent CPU cache tier, not a GDS-style read path.",
+    "Cache-hit compute uses an analytical suffix-prefill roofline with causal attention delta and retained weight/launch costs; it is not a measured kernel replay.",
+    "Prompt compute is multiplied by a non-identity sensitivity scale. It is not a measured DCA kernel profile or a statistical confidence bound.",
+    "Background swap-out never creates a global engine barrier, but a resume of that same source-retained object waits for its nonpreemptive demotion unless cancellation is enabled.",
+    "The conservative noncancellable baseline waits for an in-flight old-object demotion even when the next call reports zero reusable prefix; this wait is reported separately."
+  ],
+  "workload": {
+    "block_size": 16,
+    "calls": 357161,
+    "context_eligibility_semantics": "input_toks + output_toks <= max_context_tokens; the model context window includes both prompt and generated tokens",
+    "declared_zero_append_calls": 12,
+    "eligible_return_gap_type_counts": {
+      "human": 26952,
+      "mixed": 2557,
+      "tool": 308885
+    },
+    "fresh_prompt_token_semantics": "Execution fresh tokens are always max(0, input_toks - effective_reuse_toks). raw_newly_append_toks is preferred over newly_append_toks and preserved separately as declared_newly_append_tokens.",
+    "max_context_tokens": 1010000,
+    "path": "/tmp/tracelab-schema3-sps0.2-final.jsonl",
+    "return_gap_type_counts": {
+      "human": 31997,
+      "mixed": 3097,
+      "session_start": 4281,
+      "tool": 313179,
+      "unknown": 4607
+    },
+    "reuse_source_counts": {
+      "explicit_estimated": 345710
+    },
+    "selected_positive_transitions": 345710,
+    "selected_return_gap_type_counts": {
+      "human": 31960,
+      "mixed": 3057,
+      "tool": 310693
+    },
+    "selected_reuse_eligible_transitions": 338394,
+    "sessions": 4281,
+    "sha256": "b6188582aac9467cee8c73e4275f9a9606b359f8c2fa000d9f49a9ca3bde02f0",
+    "transitions_excluded_context": 0
+  }
+}
