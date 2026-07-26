@@ -425,7 +425,7 @@ class FullModelHBFServingPoolTests(unittest.TestCase):
             item.kind == "prefill" for item in mixed.items))
         pool.run_until_idle()
 
-    def test_mixed_batch_latency_guard_causally_caps_prefill_chunk(self):
+    def test_mixed_batch_latency_guard_feedback_caps_next_prefill_chunk(self):
         probe = self.make_pool(max_tokens=64, chunk=32)
         model = probe.models[0]
 
@@ -452,19 +452,35 @@ class FullModelHBFServingPoolTests(unittest.TestCase):
         first_done = pool.next_completion_ns()
         pool.advance(first_done, defer_schedule=True)
         newcomer = self.request(
-            2, arrival=first_done, input_tokens=120, hbf=100,
+            2, arrival=first_done, input_tokens=160, hbf=100,
             output_tokens=1)
         pool.submit(newcomer, now_ns=first_done)
 
-        mixed = pool.batch_history[-1]
-        prefill = [
-            item for item in mixed.items if item.kind == "prefill"]
-        self.assertEqual(len(prefill), 1)
-        self.assertGreater(prefill[0].query_tokens, 0)
-        self.assertLess(prefill[0].query_tokens, 32)
-        self.assertLessEqual(mixed.latency.total_ns, limit)
+        first_mixed = pool.batch_history[-1]
+        first_prefill = [
+            item for item in first_mixed.items
+            if item.kind == "prefill"]
+        self.assertEqual(
+            [item.query_tokens for item in first_prefill], [32])
+        self.assertGreater(first_mixed.latency.total_ns, limit)
+        cap_after_first = (
+            pool.workers[0].mixed_prefill_chunk_cap)
+        self.assertIsNotNone(cap_after_first)
+        self.assertGreater(cap_after_first, 0)
+        self.assertLess(cap_after_first, 32)
         self.assertEqual(
             pool.metrics.mixed_prefill_guard_considered, 1)
+        self.assertEqual(pool.metrics.mixed_prefill_guard_over_limit, 1)
+        self.assertEqual(pool.metrics.mixed_prefill_guard_cap_updates, 1)
+
+        pool.advance(pool.next_completion_ns())
+        second_mixed = pool.batch_history[-1]
+        second_prefill = [
+            item for item in second_mixed.items
+            if item.kind == "prefill"]
+        self.assertEqual(len(second_prefill), 1)
+        self.assertLessEqual(
+            second_prefill[0].query_tokens, cap_after_first)
         self.assertEqual(
             pool.metrics.mixed_prefill_guard_limited, 1)
         self.assertGreater(

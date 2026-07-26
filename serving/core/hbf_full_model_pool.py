@@ -224,6 +224,7 @@ class HBFWorker:
     inflight: Optional[HBFServingBatch] = None
     pending_launch_ns: Optional[int] = None
     completed_batches: int = 0
+    mixed_prefill_chunk_cap: Optional[int] = None
 
 
 @dataclass
@@ -238,6 +239,9 @@ class HBFPoolMetrics:
     mixed_prefill_guard_limited: int = 0
     mixed_prefill_guard_deferred: int = 0
     mixed_prefill_guard_tokens_removed: int = 0
+    mixed_prefill_guard_over_limit: int = 0
+    mixed_prefill_guard_under_limit: int = 0
+    mixed_prefill_guard_cap_updates: int = 0
     total_batch_items: int = 0
     prefill_query_tokens: int = 0
     decode_query_tokens: int = 0
@@ -512,7 +516,14 @@ class FullModelHBFServingPool:
         )
         self.models = (shared_model,) * layout.replicas
         self.workers = tuple(
-            HBFWorker(group_id=index)
+            HBFWorker(
+                group_id=index,
+                mixed_prefill_chunk_cap=(
+                    None
+                    if mixed_batch_latency_limit_ns is None
+                    else max_prefill_chunk_tokens
+                ),
+            )
             for index in range(layout.replicas)
         )
         self.requests: dict[int, HBFServingRequest] = {}
@@ -800,41 +811,16 @@ class FullModelHBFServingPool:
         token_budget = self.max_num_batched_tokens
         seq_budget = self.max_num_seqs
 
-        def batch_shape_with_prefill(
-                request: Optional[HBFServingRequest] = None,
-                chunk: int = 0) -> HBFModelBatchShape:
-            candidate = request is not None
+        def batch_shape() -> HBFModelBatchShape:
             return HBFModelBatchShape(
-                total_tokens=(
-                    sum(item.query_tokens for item in items)
-                    + (chunk if candidate else 0)
-                ),
-                prefill_q=(
-                    tuple(prefill_q)
-                    + ((chunk,) if candidate else ())
-                ),
-                prefill_hbf_k=(
-                    tuple(prefill_hbf_k)
-                    + (
-                        (request.hbf_prefix_tokens,)
-                        if candidate else ()
-                    )
-                ),
-                prefill_lpddr_k=(
-                    tuple(prefill_lpddr_k)
-                    + (
-                        (
-                            request.lpddr_prefix_tokens
-                            + request.prefill_processed_tokens,
-                        )
-                        if candidate else ()
-                    )
-                ),
+                total_tokens=sum(
+                    item.query_tokens for item in items),
+                prefill_q=tuple(prefill_q),
+                prefill_hbf_k=tuple(prefill_hbf_k),
+                prefill_lpddr_k=tuple(prefill_lpddr_k),
                 decode_hbf_k=tuple(decode_hbf_k),
                 decode_lpddr_k=tuple(decode_lpddr_k),
-                lm_head_sequences=(
-                    len(items) + (1 if candidate else 0)
-                ),
+                lm_head_sequences=len(items),
             )
 
         decode_count = len(worker.active_decode)
@@ -896,24 +882,11 @@ class FullModelHBFServingPool:
                 and self.mixed_batch_latency_limit_ns is not None
             ):
                 self.metrics.mixed_prefill_guard_considered += 1
-                lower = 0
-                upper = chunk
-                while lower < upper:
-                    candidate = (lower + upper + 1) // 2
-                    candidate_latency = self.models[
-                        worker.group_id
-                    ].batch_latency(
-                        batch_shape_with_prefill(
-                            request, candidate)
-                    ).total_ns
-                    if (
-                        candidate_latency
-                        <= self.mixed_batch_latency_limit_ns
-                    ):
-                        lower = candidate
-                    else:
-                        upper = candidate - 1
-                chunk = lower
+                cap = worker.mixed_prefill_chunk_cap
+                if cap is None:
+                    raise RuntimeError(
+                        "mixed-prefill guard lacks a worker cap")
+                chunk = min(chunk, cap)
                 if chunk == 0:
                     deferred_waiting.append(request_id)
                     self.metrics.mixed_prefill_guard_deferred += 1
@@ -945,7 +918,7 @@ class FullModelHBFServingPool:
 
         if not items:
             return None
-        shape = batch_shape_with_prefill()
+        shape = batch_shape()
         return tuple(items), shape
 
     def _should_prefill_drain(
@@ -1206,6 +1179,55 @@ class FullModelHBFServingPool:
         worker.pending_launch_ns = launch_ns
         heapq.heappush(self._launch_heap, (launch_ns, group_id))
 
+    def _update_mixed_prefill_guard(
+            self, worker: HBFWorker,
+            shape: HBFModelBatchShape,
+            latency: HBFModelBatchLatency) -> None:
+        """Update the next mixed-prefill cap from one observed model result.
+
+        The batch latency is already required for execution, so this
+        feedback path adds no extra latency-model queries.  Only information
+        available when the batch is launched is used.
+        """
+
+        limit_ns = self.mixed_batch_latency_limit_ns
+        if limit_ns is None or not shape.decode_hbf_k:
+            return
+        cap = worker.mixed_prefill_chunk_cap
+        if cap is None:
+            raise RuntimeError(
+                "mixed-prefill guard lacks a worker cap")
+        has_prefill = bool(shape.prefill_q)
+        new_cap = cap
+        if has_prefill and latency.total_ns > limit_ns:
+            self.metrics.mixed_prefill_guard_over_limit += 1
+            scaled = int(math.floor(
+                cap * limit_ns / latency.total_ns * 0.80))
+            if cap > 0:
+                scaled = min(scaled, cap - 1)
+            new_cap = max(0, scaled)
+        elif (
+            has_prefill
+            and latency.total_ns * 5 <= limit_ns * 4
+        ):
+            self.metrics.mixed_prefill_guard_under_limit += 1
+            new_cap = min(
+                self.max_prefill_chunk_tokens,
+                max(cap + 1, int(math.ceil(cap * 1.25))),
+            )
+        elif (
+            not has_prefill
+            and worker.waiting
+            and cap == 0
+            and latency.total_ns < limit_ns
+        ):
+            # Probe one prefill token after a decode-only recovery batch.
+            self.metrics.mixed_prefill_guard_under_limit += 1
+            new_cap = 1
+        if new_cap != cap:
+            worker.mixed_prefill_chunk_cap = new_cap
+            self.metrics.mixed_prefill_guard_cap_updates += 1
+
     def _try_schedule(self, group_id: int, now_ns: int) -> None:
         worker = self._worker(group_id)
         if worker.inflight is not None:
@@ -1225,6 +1247,8 @@ class FullModelHBFServingPool:
             return
         items, shape = selected
         latency = self.models[group_id].batch_latency(shape)
+        self._update_mixed_prefill_guard(
+            worker, shape, latency)
         batch_id = self._next_batch_id
         self._next_batch_id += 1
         ready_values = [
@@ -1980,6 +2004,19 @@ class FullModelHBFServingPool:
                         f"actual={headroom_actual}, "
                         f"expected={headroom_expected}")
         for group_id in range(len(self.workers)):
+            mixed_cap = self._worker(
+                group_id).mixed_prefill_chunk_cap
+            if self.mixed_batch_latency_limit_ns is None:
+                if mixed_cap is not None:
+                    raise AssertionError(
+                        "unguarded worker retains a mixed-prefill cap")
+            elif (
+                mixed_cap is None
+                or not 0 <= mixed_cap
+                <= self.max_prefill_chunk_tokens
+            ):
+                raise AssertionError(
+                    "guarded worker has an invalid mixed-prefill cap")
             used_bytes = dict(
                 self.lpddr_ledger.used_bytes_by_card(group_id))
             if any(
@@ -2027,6 +2064,10 @@ class FullModelHBFServingPool:
             "max_prefill_chunk_tokens": self.max_prefill_chunk_tokens,
             "mixed_batch_latency_limit_ns": (
                 self.mixed_batch_latency_limit_ns),
+            "mixed_prefill_chunk_cap_by_group": {
+                worker.group_id: worker.mixed_prefill_chunk_cap
+                for worker in self.workers
+            },
             "prefill_drain_tail_tokens": (
                 self.prefill_drain_tail_tokens),
             "prefill_drain_min_tokens": (

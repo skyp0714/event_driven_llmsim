@@ -105,10 +105,10 @@ from .hbf_comparison_sweep import (
 )
 
 
-SSD_HBF_SWEEP_SCHEMA_VERSION = 9
-SSD_HBF_CELL_SCHEMA_VERSION = 7
+SSD_HBF_SWEEP_SCHEMA_VERSION = 10
+SSD_HBF_CELL_SCHEMA_VERSION = 8
 SSD_HBF_CONTRACT_KEY = (
-    "two-gpu-local-ssd-vs-one-gpu-one-hbf-mixed-guard-v7")
+    "two-gpu-local-ssd-vs-one-gpu-one-hbf-feedback-guard-v8")
 REQUIRED_SESSION_RATE = 3.0
 PINNED_ENDURANCE_PROFILE = Path(
     "configs/storage/micron_9550_pro_3_84tb.json")
@@ -2378,9 +2378,10 @@ def _parser() -> argparse.ArgumentParser:
         nargs="+",
         default=[0],
         help=(
-            "causally cap mixed decode+prefill batches by modeled "
-            "latency; 0 preserves the unguarded scheduler, and multiple "
-            "values form a discovery axis"
+            "causal feedback target for mixed decode+prefill modeled "
+            "latency; each launched batch adjusts the next prefill cap, "
+            "0 preserves the unguarded scheduler, and multiple values "
+            "form a discovery axis"
         ),
     )
     parser.add_argument(
