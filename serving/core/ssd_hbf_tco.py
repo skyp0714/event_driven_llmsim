@@ -898,49 +898,83 @@ def _cost_basis_sensitivity_audit(
         anchors: HardwareAnchors,
         evaluation: EvaluationAssumptions,
 ) -> CostBasisSensitivityAudit:
-    central_credit = anchors.hbm_avoided_capex_usd_per_card
+    manufacturing_share_basis = (
+        "manufacturing_cost_fraction_applied_to_purchase_price")
+    central_anchors = replace(
+        anchors,
+        hbm_capex_accounting_basis=manufacturing_share_basis,
+    )
+    central_credit = central_anchors.hbm_stack_capex_usd_per_card
     independent_hbf_capex = (
         anchors.hbf_media_controller_capex_usd_per_card)
     case_specs = (
         (
             "purchase_credit_low_0p8x",
-            "absolute_avoided_purchase_credit",
-            central_credit * 0.8,
+            manufacturing_share_basis,
+            0.8,
+            anchors.hbm_avoided_capex_usd_per_card,
             independent_hbf_capex,
-            "Analyst HBM component-cost estimate reduced by 20%.",
+            (
+                "Analyst HBM manufacturing-cost share reduced by 20% "
+                "before applying it to the H100 purchase price."
+            ),
         ),
         (
             "purchase_credit_central",
-            "absolute_avoided_purchase_credit",
-            central_credit,
+            manufacturing_share_basis,
+            1.0,
+            anchors.hbm_avoided_capex_usd_per_card,
             independent_hbf_capex,
-            "Central analyst HBM estimate and independent HBF assumption.",
+            (
+                "Central analyst HBM manufacturing-cost share applied to "
+                "the H100 purchase price, with an independent HBF "
+                "assumption."
+            ),
         ),
         (
             "purchase_credit_high_1p2x",
-            "absolute_avoided_purchase_credit",
-            central_credit * 1.2,
+            manufacturing_share_basis,
+            1.2,
+            anchors.hbm_avoided_capex_usd_per_card,
             independent_hbf_capex,
-            "Analyst HBM component-cost estimate increased by 20%.",
+            (
+                "Analyst HBM manufacturing-cost share increased by 20% "
+                "before applying it to the H100 purchase price."
+            ),
         ),
         (
             "optimistic_hbf_price_equals_hbm_credit",
-            "absolute_avoided_purchase_credit",
-            central_credit,
+            manufacturing_share_basis,
+            1.0,
+            anchors.hbm_avoided_capex_usd_per_card,
             central_credit,
             (
-                "Optimistic counterfactual: one 16x-capacity HBF subsystem "
-                "costs the same as the removed HBM component."
+                "Parity counterfactual: one 16x-capacity HBF subsystem "
+                "costs the same as the manufacturing-share-derived HBM "
+                "purchase credit. The legacy case key is retained for "
+                "artifact compatibility."
+            ),
+        ),
+        (
+            "absolute_1350_purchase_credit",
+            "absolute_avoided_purchase_credit",
+            1.0,
+            anchors.hbm_avoided_capex_usd_per_card,
+            independent_hbf_capex,
+            (
+                "Sensitivity: the analyst HBM component-cost estimate is "
+                "used directly as the avoided purchase credit."
             ),
         ),
         (
             "legacy_30pct_purchase_price_credit",
             "legacy_fraction_of_purchase_price",
-            central_credit,
+            1.0,
+            anchors.hbm_avoided_capex_usd_per_card,
             independent_hbf_capex,
             (
-                "Aggressive legacy counterfactual: the manufacturing HBM "
-                "share is applied to the accelerator purchase price."
+                "Legacy counterfactual: a fixed 30% HBM share is applied "
+                "to the accelerator purchase price."
             ),
         ),
     )
@@ -948,6 +982,7 @@ def _cost_basis_sensitivity_audit(
     for (
         case_key,
         accounting_basis,
+        manufacturing_cost_multiplier,
         avoided_hbm_capex,
         hbf_capex,
         assumption,
@@ -955,6 +990,10 @@ def _cost_basis_sensitivity_audit(
         case_anchors = replace(
             anchors,
             hbm_capex_accounting_basis=accounting_basis,
+            hbm_manufacturing_cost_usd_per_card=(
+                anchors.hbm_manufacturing_cost_usd_per_card
+                * manufacturing_cost_multiplier
+            ),
             hbm_avoided_capex_usd_per_card=avoided_hbm_capex,
             hbf_media_controller_capex_usd_per_card=hbf_capex,
         )
@@ -997,11 +1036,6 @@ def _cost_basis_sensitivity_audit(
             assumption=assumption,
         ))
 
-    central_anchors = replace(
-        anchors,
-        hbm_capex_accounting_basis=(
-            "absolute_avoided_purchase_credit"),
-    )
     central_baseline = two_gpu_local_ssd_baseline_cost(
         anchors=central_anchors,
         evaluation=evaluation,
@@ -1043,10 +1077,13 @@ def _cost_basis_sensitivity_audit(
         hbf_capex_source_semantics=(
             "Explicit exploratory assumption; no HBF vendor quote."),
         semantics=(
-            "Baseline H100 cards remain at full purchase price. HBM credit "
-            "only changes the H100-class logic price assigned to an HBF card; "
-            "HBF media/controller CAPEX is an independent assumption. "
-            "Break-even holds all power and other BOM lines fixed."
+            "Baseline H100 cards remain at full purchase price. The central "
+            "HBM credit applies the HBM share of analyst manufacturing cost "
+            "to the whole-H100 purchase price and only changes the H100-class "
+            "logic price assigned to an HBF card. The absolute $1,350 credit "
+            "and fixed 30% share are sensitivity cases. HBF media/controller "
+            "CAPEX is independent. Break-even holds all power and other BOM "
+            "lines fixed."
         ),
     )
 

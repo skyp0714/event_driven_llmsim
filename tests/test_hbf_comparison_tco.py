@@ -157,16 +157,24 @@ class TopologyAndBOMTests(unittest.TestCase):
             anchors.h100_card_power_w,
         )
 
-    def test_hbm_credit_is_purchase_basis_not_legacy_30_percent(self):
+    def test_hbm_credit_uses_manufacturing_share_of_purchase_price(self):
         anchors = HardwareAnchors()
         self.assertEqual(
             anchors.hbm_capex_accounting_basis,
-            "absolute_avoided_purchase_credit",
+            "manufacturing_cost_fraction_applied_to_purchase_price",
         )
-        self.assertEqual(
-            anchors.hbm_stack_capex_usd_per_card, 1_350.0)
         self.assertAlmostEqual(
-            anchors.hbm_capex_share_of_h100_purchase_price, 0.045)
+            anchors.hbm_manufacturing_cost_fraction_of_h100_card,
+            1_350.0 / 3_320.0,
+        )
+        self.assertAlmostEqual(
+            anchors.hbm_stack_capex_usd_per_card,
+            30_000.0 * (1_350.0 / 3_320.0),
+        )
+        self.assertAlmostEqual(
+            anchors.hbm_capex_share_of_h100_purchase_price,
+            1_350.0 / 3_320.0,
+        )
         self.assertNotAlmostEqual(
             anchors.hbm_capex_share_of_h100_purchase_price,
             anchors.hbm_capex_fraction_of_h100_card,
@@ -177,6 +185,16 @@ class TopologyAndBOMTests(unittest.TestCase):
             anchors.h100_purchase_price_source_url.startswith("https://"))
         self.assertTrue(
             anchors.h100_tdp_source_url.startswith("https://"))
+
+        absolute = replace(
+            anchors,
+            hbm_capex_accounting_basis=(
+                "absolute_avoided_purchase_credit"),
+        )
+        self.assertEqual(
+            absolute.hbm_stack_capex_usd_per_card, 1_350.0)
+        self.assertAlmostEqual(
+            absolute.hbm_capex_share_of_h100_purchase_price, 0.045)
 
         legacy = replace(
             anchors,

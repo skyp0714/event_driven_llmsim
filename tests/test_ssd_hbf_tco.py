@@ -340,21 +340,36 @@ class SSDHBFEconomicsTests(unittest.TestCase):
         audit = report.cost_basis_sensitivity_audit
         cases = {case.case_key: case for case in audit.cases}
 
-        self.assertEqual(len(cases), 5)
+        self.assertEqual(len(cases), 6)
         central = cases["purchase_credit_central"]
         self.assertEqual(
             central.hbm_capex_accounting_basis,
-            "absolute_avoided_purchase_credit",
+            "manufacturing_cost_fraction_applied_to_purchase_price",
         )
-        self.assertEqual(
-            central.hbm_credit_usd_per_h100_card, 1_350.0)
         self.assertAlmostEqual(
-            central.hbm_credit_share_of_h100_purchase_price, 0.045)
+            central.hbm_credit_usd_per_h100_card,
+            30_000.0 * (1_350.0 / 3_320.0),
+        )
+        self.assertAlmostEqual(
+            central.hbm_credit_share_of_h100_purchase_price,
+            1_350.0 / 3_320.0,
+        )
         self.assertEqual(
             central.hbf_media_controller_capex_usd_per_card,
             4_500.0,
         )
-        self.assertFalse(central.proposed_is_cheaper)
+        self.assertTrue(central.proposed_is_cheaper)
+
+        absolute = cases["absolute_1350_purchase_credit"]
+        self.assertEqual(
+            absolute.hbm_capex_accounting_basis,
+            "absolute_avoided_purchase_credit",
+        )
+        self.assertEqual(
+            absolute.hbm_credit_usd_per_h100_card, 1_350.0)
+        self.assertAlmostEqual(
+            absolute.hbm_credit_share_of_h100_purchase_price, 0.045)
+        self.assertFalse(absolute.proposed_is_cheaper)
 
         legacy = cases["legacy_30pct_purchase_price_credit"]
         self.assertEqual(
@@ -370,9 +385,13 @@ class SSDHBFEconomicsTests(unittest.TestCase):
         optimistic = cases[
             "optimistic_hbf_price_equals_hbm_credit"]
         self.assertTrue(optimistic.proposed_is_cheaper)
-        self.assertGreater(
+        self.assertLess(
             audit.central_hbf_media_controller_capex_usd_per_card,
             audit.break_even_hbf_media_controller_capex_usd_per_card,
+        )
+        self.assertLess(
+            audit.central_hbf_price_margin_to_break_even_usd_per_card,
+            0.0,
         )
         self.assertAlmostEqual(
             audit.central_hbf_price_margin_to_break_even_usd_per_card,

@@ -100,8 +100,9 @@ GOODPUT_SEMANTICS = (
     "offered-load-normalized SLO-good output tokens per second"
 )
 PRICE_SOURCE_SEMANTICS = (
-    "H100 purchase price plus dated analyst component-cost estimates and "
-    "explicit HBF sensitivity assumptions; not a vendor HBF quote"
+    "H100 purchase price decomposed by the dated analyst manufacturing-cost "
+    "share of HBM, plus explicit HBF sensitivity assumptions; not a vendor "
+    "HBF quote"
 )
 HBF_CAPEX_SENSITIVITY_CENTRAL_AXIS_VALUE = 0.50
 HBF_POWER_SENSITIVITY_CENTRAL_AXIS_VALUE = 3.50
@@ -230,10 +231,10 @@ class HardwareAnchors(JSONSafeDataclass):
     """Per-component analytical price and power anchors.
 
     ``h100_card_*`` includes GPU logic plus the HBM stack.  Purchase-basis
-    CAPEX uses an explicit avoided-HBM dollar credit rather than applying a
-    manufacturing fraction to the accelerator selling price.  The legacy
-    30% field remains only for an aggressive sensitivity case.  Power keeps
-    a separate analytical split because no event-derived component split is
+    CAPEX applies the analyst HBM share of H100 manufacturing cost to the
+    whole-card purchase price.  The absolute component-cost estimate and the
+    legacy 30% field remain only for sensitivity cases.  Power keeps a
+    separate analytical split because no event-derived component split is
     available here.
     Host anchors exclude DRAM, NICs, fabric, SSDs, and accelerator cards so
     those components remain visible in the BOM.
@@ -242,7 +243,9 @@ class HardwareAnchors(JSONSafeDataclass):
     h100_card_capex_usd: float = 30_000.0
     h100_card_power_w: float = 700.0
     hbm_capex_accounting_basis: str = (
-        "absolute_avoided_purchase_credit")
+        "manufacturing_cost_fraction_applied_to_purchase_price")
+    h100_manufacturing_cost_usd: float = 3_320.0
+    hbm_manufacturing_cost_usd_per_card: float = 1_350.0
     hbm_avoided_capex_usd_per_card: float = 1_350.0
     hbm_capex_fraction_of_h100_card: float = 0.30
     hbm_power_fraction_of_h100_card: float = 0.20
@@ -291,6 +294,8 @@ class HardwareAnchors(JSONSafeDataclass):
         for name in (
             "h100_card_capex_usd",
             "h100_card_power_w",
+            "h100_manufacturing_cost_usd",
+            "hbm_manufacturing_cost_usd_per_card",
             "hbm_avoided_capex_usd_per_card",
             "hbf_media_controller_capex_usd_per_card",
             "hbf_media_controller_power_w_per_card",
@@ -324,6 +329,7 @@ class HardwareAnchors(JSONSafeDataclass):
             strictly_positive=True,
         )
         if self.hbm_capex_accounting_basis not in {
+            "manufacturing_cost_fraction_applied_to_purchase_price",
             "absolute_avoided_purchase_credit",
             "legacy_fraction_of_purchase_price",
         }:
@@ -344,6 +350,19 @@ class HardwareAnchors(JSONSafeDataclass):
             "hbm_power_fraction_of_h100_card",
             self.hbm_power_fraction_of_h100_card,
         )
+        if self.h100_manufacturing_cost_usd <= 0.0:
+            raise HBFComparisonTCOError(
+                "h100_manufacturing_cost_usd must be positive")
+        if self.hbm_manufacturing_cost_usd_per_card <= 0.0:
+            raise HBFComparisonTCOError(
+                "hbm_manufacturing_cost_usd_per_card must be positive")
+        if (
+            self.hbm_manufacturing_cost_usd_per_card
+            >= self.h100_manufacturing_cost_usd
+        ):
+            raise HBFComparisonTCOError(
+                "HBM manufacturing cost must be below total H100 "
+                "manufacturing cost")
         _require_positive_integer(
             "h100_hbm_capacity_bytes_per_card",
             self.h100_hbm_capacity_bytes_per_card,
@@ -363,11 +382,24 @@ class HardwareAnchors(JSONSafeDataclass):
     @property
     def hbm_stack_capex_usd_per_card(self) -> float:
         if self.hbm_capex_accounting_basis == (
+                "manufacturing_cost_fraction_applied_to_purchase_price"):
+            return (
+                self.h100_card_capex_usd
+                * self.hbm_manufacturing_cost_fraction_of_h100_card
+            )
+        if self.hbm_capex_accounting_basis == (
                 "absolute_avoided_purchase_credit"):
             return self.hbm_avoided_capex_usd_per_card
         return (
             self.h100_card_capex_usd
             * self.hbm_capex_fraction_of_h100_card)
+
+    @property
+    def hbm_manufacturing_cost_fraction_of_h100_card(self) -> float:
+        return (
+            self.hbm_manufacturing_cost_usd_per_card
+            / self.h100_manufacturing_cost_usd
+        )
 
     @property
     def hbm_capex_share_of_h100_purchase_price(self) -> float:
