@@ -94,7 +94,10 @@ class SSDHBFComponentCostTests(unittest.TestCase):
                 proposed_line = proposed_components[key]
                 expected_ratio = (
                     1.0
-                    if key == "network_fabric"
+                    if key in {
+                        "gpu_host_network_nic",
+                        "network_fabric",
+                    }
                     else 2.0
                 )
                 self.assertEqual(
@@ -124,7 +127,10 @@ class SSDHBFComponentCostTests(unittest.TestCase):
             8,
         )
         self.assertEqual(
-            proposed.component("hbf_host_rdma_nic").quantity, 1)
+            proposed.component("hbf_host_rdma_nic").quantity, 2)
+        self.assertEqual(
+            proposed.component("gpu_host_network_nic").quantity, 2)
+        self.assertEqual(proposed.counts.network_nics, 4)
 
         additions = tuple(
             line

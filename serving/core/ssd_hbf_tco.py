@@ -240,7 +240,7 @@ class TwoGPUOneHBFComparisonTopology:
                 h100_cards=H100_CARD_COUNT,
                 hbf_cards=HBF_CARD_COUNT,
                 local_ssd_devices=LOCAL_SSD_DEVICE_COUNT,
-                network_nics=2,
+                network_nics=4,
                 network_fabric_units=1,
                 gpu_intraserver_fabric_units=1,
                 hbf_intraserver_fabric_units=1,
@@ -440,6 +440,7 @@ def _gpu_ssd_bom(
         anchors: HardwareAnchors, *,
         gpu_host_count: int,
         baseline_network: bool,
+        network_nics_per_host: int,
 ) -> tuple[BOMLine, ...]:
     if (
         isinstance(gpu_host_count, bool)
@@ -448,6 +449,13 @@ def _gpu_ssd_bom(
     ):
         raise SSDHBFTCOError(
             "gpu_host_count must be a positive integer")
+    if (
+        isinstance(network_nics_per_host, bool)
+        or not isinstance(network_nics_per_host, int)
+        or network_nics_per_host <= 0
+    ):
+        raise SSDHBFTCOError(
+            "network_nics_per_host must be a positive integer")
     host_dram_gib = (
         P4D4_CPU_MEMORY_BYTES_PER_HOST / BYTES_PER_GIB)
     h100_card_count = gpu_host_count * H100_CARD_COUNT
@@ -534,13 +542,13 @@ def _gpu_ssd_bom(
             "gpu_host_network_nic",
             "GPU-host network NIC",
             "NIC",
-            gpu_host_count,
+            gpu_host_count * network_nics_per_host,
             nic_capex,
             nic_power,
             (
-                "Every GPU host receives one network NIC; the baseline "
-                "and proposed systems use their respective established "
-                "network-price anchors."
+                f"Every GPU host receives {network_nics_per_host} network "
+                "NIC(s); the proposed count supplies its configured "
+                "80 GB/s GPU-HBF path with 50 GB/s NIC anchors."
             ),
         ),
         _bom_line(
@@ -585,6 +593,7 @@ def two_gpu_local_ssd_baseline_cost(
             anchors,
             gpu_host_count=2,
             baseline_network=True,
+            network_nics_per_host=1,
         ),
         evaluation=evaluation,
     )
@@ -701,12 +710,12 @@ def one_gpu_one_hbf_cost(
             "hbf_host_rdma_nic",
             "HBF-host RDMA NIC",
             "NIC",
-            1,
+            2,
             anchors.rdma_nic_capex_usd,
             anchors.rdma_nic_power_w,
             (
-                "One HBF-side NIC is added to the GPU host's existing "
-                "NIC and shared fabric."
+                "Two 50 GB/s HBF-side NICs pair with two GPU-side NICs "
+                "to supply the configured 80 GB/s path."
             ),
         ),
     )
@@ -729,6 +738,7 @@ def one_gpu_one_hbf_cost(
                 anchors,
                 gpu_host_count=1,
                 baseline_network=False,
+                network_nics_per_host=2,
             )
             + hbf_bom
         ),

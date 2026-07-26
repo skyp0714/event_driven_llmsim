@@ -280,6 +280,7 @@ class HardwareAnchors(JSONSafeDataclass):
 
     rdma_nic_capex_usd: float = 1_500.0
     rdma_nic_power_w: float = 30.0
+    rdma_nic_bandwidth_gbps: float = 50.0
     rdma_fabric_capex_usd: float = 5_000.0
     rdma_fabric_power_w: float = 100.0
 
@@ -317,6 +318,11 @@ class HardwareAnchors(JSONSafeDataclass):
             "lpddr_power_w_per_gib",
         ):
             _require_finite(name, getattr(self, name), minimum=0.0)
+        _require_finite(
+            "rdma_nic_bandwidth_gbps",
+            self.rdma_nic_bandwidth_gbps,
+            strictly_positive=True,
+        )
         if self.hbm_capex_accounting_basis not in {
             "absolute_avoided_purchase_credit",
             "legacy_fraction_of_purchase_price",
@@ -402,7 +408,7 @@ class DeploymentTopology(JSONSafeDataclass):
     proposed_hbf_cpu_hosts: int = 1
     proposed_h100_cards_per_gpu_host: int = 8
     proposed_hbf_npu_cards_per_hbf_host: int = 8
-    proposed_nics_per_host: int = 1
+    proposed_nics_per_host: int = 2
     proposed_rdma_fabric_units: int = 1
     proposed_gpu_intraserver_fabric_units_per_host: int = 1
     proposed_hbf_intraserver_fabric_units_per_host: int = 1
@@ -1207,6 +1213,14 @@ def proposed_hbf_cost(
             abs_tol=1e-12):
         raise HBFComparisonTCOError(
             "HBF capacity ratio mismatches HBF and HBM capacities")
+    required_rdma_nics_per_host = math.ceil(
+        hbf_hardware_variant.rdma_bandwidth_gbps
+        / anchors.rdma_nic_bandwidth_gbps
+    )
+    if topology.proposed_nics_per_host < required_rdma_nics_per_host:
+        raise HBFComparisonTCOError(
+            "proposed RDMA NIC count cannot provide the configured "
+            "GPU-HBF bandwidth")
     hbf_gpu_logic_capex = (
         anchors.gpu_logic_capex_usd_per_card
         * point.npu_logic_capex_ratio_to_gpu_logic
@@ -1418,8 +1432,9 @@ def proposed_hbf_cost(
             rdma_nic_capex,
             rdma_nic_power,
             (
-                "The GPU and HBF hosts each have an explicitly priced RDMA "
-                "NIC. Effective link is "
+                "The GPU and HBF hosts each have enough explicitly priced "
+                f"{anchors.rdma_nic_bandwidth_gbps:g} GB/s RDMA NICs to "
+                "provide an effective link of "
                 f"{hbf_hardware_variant.rdma_bandwidth_gbps:g} GB/s at "
                 f"{hbf_hardware_variant.rdma_one_way_latency_us:g} us "
                 "one-way latency, with "

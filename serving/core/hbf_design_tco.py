@@ -38,6 +38,7 @@ DESIGN_PROPOSED_SYSTEM_KEY = "hbf_design_proposed"
 DESIGN_ORACLE_SYSTEM_KEY = "infinite_hbm_oracle"
 H100_CARDS_PER_GPU_HOST = 8
 HBF_CARDS_PER_HBF_HOST = 8
+RDMA_NICS_PER_HOST = 2
 DESIGN_REPORT_SCHEMA = "hbf-design-tco-v1"
 GOODPUT_SEMANTICS = (
     "matched-rate SLO-good output tokens per second"
@@ -188,7 +189,7 @@ class HBFDesignTopology:
 
     @property
     def rdma_nic_count(self) -> int:
-        return self.cpu_host_count
+        return self.cpu_host_count * RDMA_NICS_PER_HOST
 
 
 def _bom_line(

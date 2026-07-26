@@ -115,7 +115,7 @@ class HBFDesignCostTests(unittest.TestCase):
             24 * 32,
         )
         self.assertEqual(
-            three.component("rdma_network_nic").quantity, 4)
+            three.component("rdma_network_nic").quantity, 8)
         self.assertGreater(three.capex_usd, one.capex_usd)
         self.assertGreater(three.lifetime_tco_usd, one.lifetime_tco_usd)
 

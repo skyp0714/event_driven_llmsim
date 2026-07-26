@@ -264,7 +264,7 @@ class TopologyAndBOMTests(unittest.TestCase):
         self.assertGreater(cost.component("hbf_card_lpddr").capex_usd, 0)
         self.assertGreater(cost.component("hbf_card_lpddr").it_power_w, 0)
         self.assertEqual(cost.component("nvme_ssd_tier").quantity, 0)
-        self.assertEqual(cost.component("rdma_network_nic").quantity, 2)
+        self.assertEqual(cost.component("rdma_network_nic").quantity, 4)
         self.assertEqual(cost.component("rdma_network_fabric").quantity, 1)
 
     def test_both_deployments_use_the_same_two_host_anchor(self):
