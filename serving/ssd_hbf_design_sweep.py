@@ -1548,7 +1548,16 @@ def aggregate_cell_records(
                 baseline_goodput, values))
             paired_oracle = asdict(aggregate_paired_seed_values(
                 oracle_goodput, values))
-            if matched_eligibility["eligible"] and baseline_mean > 0.0:
+            if (
+                (
+                    matched_eligibility["eligible"]
+                    or (
+                        not require_eligibility
+                        and require_runtime_energy
+                    )
+                )
+                and baseline_mean > 0.0
+            ):
                 try:
                     tco = evaluate_ssd_hbf_tco(
                         hbf_layout=spec.tco_layout,
@@ -2100,6 +2109,7 @@ def run_design_space(
         resume_ttft_seconds: float = DEFAULT_RESUME_TTFT_SECONDS,
         tpot_milliseconds: float = DEFAULT_TPOT_MILLISECONDS,
         resume: bool = False,
+        require_eligibility: bool = True,
         require_runtime_energy: bool = True,
         progress: Optional[Callable[[Mapping[str, object]], None]] = None,
 ) -> tuple[dict[str, object], Path]:
@@ -2204,6 +2214,7 @@ def run_design_space(
     aggregate = aggregate_cell_records(
         records,
         designs,
+        require_eligibility=require_eligibility,
         require_runtime_energy=require_runtime_energy,
     )
     restore_mode_count = len({
@@ -2225,6 +2236,7 @@ def run_design_space(
                 design.to_json_dict() for design in designs],
         },
         "execution_inputs_sha256": expected_hash,
+        "reference_eligibility_required": require_eligibility,
         "runtime_energy_tco_required": require_runtime_energy,
     }
     aggregate_path = root / "aggregate.json"
@@ -2403,6 +2415,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         resume_ttft_seconds=args.resume_ttft_seconds,
         tpot_milliseconds=args.tpot_milliseconds,
         resume=args.resume,
+        require_eligibility=not args.smoke,
         progress=progress,
     )
     print(json.dumps({
