@@ -103,7 +103,7 @@ from .hbf_comparison_sweep import (
 )
 
 
-SSD_HBF_SWEEP_SCHEMA_VERSION = 7
+SSD_HBF_SWEEP_SCHEMA_VERSION = 8
 SSD_HBF_CELL_SCHEMA_VERSION = 5
 SSD_HBF_CONTRACT_KEY = "two-gpu-local-ssd-vs-one-gpu-one-hbf-staged-v5"
 REQUIRED_SESSION_RATE = 3.0
@@ -1018,12 +1018,17 @@ _AGGREGATE_METRICS = {
         "offered_load_normalized_output_token_goodput", "value"),
     "joint_slo_pass_fraction": (
         "slo", "all_slo_pass_fraction"),
+    "slo_request_goodput_per_second": (
+        "offered_load_normalized_request_goodput", "value"),
     "first_ttft_p95_ns": (
         "latency_distributions_ns", "first_ttft", "p95_ns"),
     "resume_ttft_p95_ns": (
         "latency_distributions_ns", "resume_ttft", "p95_ns"),
     "tpot_p95_ns": (
         "latency_distributions_ns", "tpot_eligible", "p95_ns"),
+    "observed_request_throughput_per_second": (
+        "observed_completion_span_throughput",
+        "requests_per_second"),
 }
 
 

@@ -99,6 +99,12 @@ def _summary(
         "offered_load_normalized_output_token_goodput": {
             "value": goodput,
         },
+        "offered_load_normalized_request_goodput": {
+            "value": goodput / 10.0,
+        },
+        "observed_completion_span_throughput": {
+            "requests_per_second": goodput / 20.0,
+        },
         "slo": {
             "all_slo_pass_fraction": joint,
         },
