@@ -1291,10 +1291,10 @@ class TieredPDKVLifecycle:
             source is not None
             and source.tier == Tier.D
             and source.copy_id == record.primary_copy_id
+            and source.pins == 0
         )
         full_d = bool(
-            needs_d
-            and (not reusable_d or source.demotion_pins > 0))
+            needs_d and not reusable_d)
         d_reserved = (
             0 if not needs_d
             else d_target if full_d

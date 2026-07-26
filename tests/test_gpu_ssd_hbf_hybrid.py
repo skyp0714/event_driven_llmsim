@@ -574,6 +574,190 @@ class SSDStagedGPUHBFTests(unittest.TestCase):
         self.assertEqual(
             system.node.metrics.hbf_imports_started, 0)
 
+    def test_composite_policy_fields_preserve_load_aware_admission(self):
+        composite = SSDPromotionPolicy.for_key("composite")
+        adaptive = SSDPromotionPolicy.for_key(
+            "composite_adaptive")
+
+        self.assertTrue(composite.direct_d_resume)
+        self.assertEqual(
+            composite.ssd_checkpoint_age_ns, 50_000_000)
+        self.assertTrue(composite.human_gap_broadcast)
+        self.assertFalse(composite.load_aware_admission)
+        self.assertTrue(adaptive.direct_d_resume)
+        self.assertEqual(
+            adaptive.ssd_checkpoint_age_ns, 50_000_000)
+        self.assertTrue(adaptive.human_gap_broadcast)
+        self.assertTrue(adaptive.load_aware_admission)
+        self.assertTrue(
+            SSDPromotionPolicy.for_key(
+                "load_aware").load_aware_admission)
+
+    def test_composite_ssd_age_and_human_due_are_publication_anchored(
+            self):
+        age_node = self.make_node(policy="composite")
+        age_node.set_gap_type(0, "tool")
+        age_call = self.runtime_call(
+            0, 0, 0,
+            input_tokens=64,
+            output_tokens=2,
+            has_successor=True,
+        )
+        age_node.submit(age_call, now_ns=0)
+        while (
+            age_node.hbf_lifecycle.sessions["session"].state
+            != PlacementState.SSD_READY
+        ):
+            age_node.advance(age_node.next_event_ns())
+        age_intent = age_node._intent_by_session["session"]
+        publication_ns = age_intent.ssd_publication_ns
+        self.assertIsNotNone(publication_ns)
+        self.assertGreater(
+            publication_ns, age_call.user_completion_ns)
+        self.assertEqual(
+            age_intent.due_ns, publication_ns + 50_000_000)
+        age_node.advance(age_intent.due_ns - 1)
+        self.assertEqual(age_node.metrics.ssd_exports_started, 0)
+        age_node.advance(age_intent.due_ns)
+        self.assertEqual(
+            age_node._export_by_session["session"].start_ns,
+            age_intent.due_ns,
+        )
+
+        human_node = self.make_node(policy="composite")
+        human_node.set_gap_type(10, "tool")
+        older = self.runtime_call(
+            10, 0, 0,
+            input_tokens=64,
+            output_tokens=2,
+            has_successor=True,
+            session_id="older",
+        )
+        human_node.submit(older, now_ns=0)
+        while (
+            human_node.hbf_lifecycle.sessions["older"].state
+            != PlacementState.SSD_READY
+        ):
+            human_node.advance(human_node.next_event_ns())
+        original_due_ns = human_node._intent_by_session[
+            "older"].due_ns
+        human_node.set_gap_type(11, "human")
+        current = self.runtime_call(
+            11, 0, human_node.current_ns,
+            input_tokens=8,
+            output_tokens=1,
+            has_successor=True,
+            session_id="current",
+        )
+        human_node.submit(current, now_ns=human_node.current_ns)
+        while current.user_completion_ns is None:
+            human_node.advance(human_node.next_event_ns())
+        self.assertLess(current.user_completion_ns, original_due_ns)
+        self.assertEqual(
+            human_node._export_by_session["older"].start_ns,
+            current.user_completion_ns,
+        )
+        while (
+            human_node.hbf_lifecycle.sessions["current"].state
+            != PlacementState.SSD_READY
+        ):
+            human_node.advance(human_node.next_event_ns())
+        current_intent = human_node._intent_by_session["current"]
+        self.assertTrue(current_intent.human_due_now)
+        self.assertEqual(
+            current_intent.due_ns,
+            current_intent.ssd_publication_ns,
+        )
+        self.assertIn("current", human_node._export_by_session)
+        self.assertEqual(
+            human_node.metrics.human_gap_broadcast_intents, 2)
+
+    def test_composite_stable_d_resume_commits_directly_to_hbf(self):
+        system = self.make_system(policy="composite")
+        system.run((
+            make_schedule(
+                0,
+                (
+                    (64, 2, 0, 0, "tool"),
+                    (67, 2, 1_000_000_000, 65, "tool"),
+                    (70, 1, 0, 68, None),
+                ),
+            ),
+        ))
+
+        node = system.node
+        self.assertEqual(
+            node._tier_call_by_request[1].prepare_source, Tier.D)
+        self.assertEqual(
+            node.calls[2].execution, HybridExecution.HBF_READY)
+        self.assertEqual(node.metrics.direct_migrations_started, 1)
+        self.assertEqual(node.metrics.direct_migrations_committed, 1)
+        self.assertEqual(node.metrics.direct_migrations_stale, 0)
+        self.assertEqual(node.metrics.ssd_checkpoints_published, 0)
+        self.assertTrue(any(
+            reservation.kind == "migration"
+            and reservation.resource == "rdma-network"
+            for reservation in node.calendar.reservations
+        ))
+        self.assert_gpu_tiers_empty(node)
+
+    def test_composite_direct_inflight_resume_is_cow_and_stale_safe(
+            self):
+        node = self.make_node(policy="composite")
+        node.set_gap_type(0, "tool")
+        first = self.runtime_call(
+            0, 0, 0,
+            input_tokens=64,
+            output_tokens=2,
+            has_successor=True,
+        )
+        node.submit(first, now_ns=0)
+        while first.user_completion_ns is None:
+            node.advance(node.next_event_ns())
+        node.set_gap_type(1, "tool")
+        second = self.runtime_call(
+            1, 1, first.user_completion_ns,
+            input_tokens=67,
+            output_tokens=2,
+            prefix_reuse_tokens=65,
+            has_successor=True,
+        )
+        node.submit(second, now_ns=first.user_completion_ns)
+        while not node._direct_migrations:
+            node.advance(node.next_event_ns())
+        direct = next(iter(node._direct_migrations.values()))
+        resume_ns = (
+            max(node.current_ns, direct.job.start_ns)
+            + direct.job.completion_ns
+        ) // 2
+        node.set_gap_type(2, "tool")
+        third = self.runtime_call(
+            2, 2, resume_ns,
+            input_tokens=70,
+            output_tokens=2,
+            prefix_reuse_tokens=68,
+            has_successor=True,
+        )
+        node.submit(third, now_ns=resume_ns)
+
+        tier_third = node._tier_call_by_request[2]
+        prepare = node.gpu_lifecycle.prepares[
+            tier_third.prepare_id]
+        self.assertEqual(
+            third.execution,
+            HybridExecution.GPU_MIGRATION_INFLIGHT,
+        )
+        self.assertEqual(tier_third.prepare_source, Tier.D)
+        self.assertTrue(prepare.full_d_reservation)
+        self.assertIsNotNone(prepare.d_owner)
+        node.run_until_idle()
+        self.assertEqual(node.metrics.direct_migrations_started, 2)
+        self.assertEqual(node.metrics.direct_migrations_stale, 1)
+        self.assertEqual(node.metrics.direct_migrations_committed, 1)
+        self.assertNotIn(
+            direct.source_copy_id, node.gpu_lifecycle.copies)
+        self.assert_gpu_tiers_empty(node)
+
     def test_policy_grid_includes_long_delays_and_load_aware(self):
         for key, delay_ns in (
             ("delay_1s", 1_000_000_000),

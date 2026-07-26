@@ -413,7 +413,7 @@ class FiniteHBMTieredP4D4Node:
             source is not None
             and source.tier == Tier.D
             and source.copy_id == record.primary_copy_id
-            and source.demotion_pins == 0
+            and source.pins == 0
         )
         stable_d_source = bool(
             hit_tokens

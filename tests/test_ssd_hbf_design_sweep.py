@@ -243,10 +243,19 @@ class SSDHBFDesignSweepTests(unittest.TestCase):
         self.assertEqual(
             set(SUPPORTED_MIGRATION_POLICIES)
             - set(CANONICAL_MIGRATION_POLICIES),
-            {"delay_1s"},
+            {
+                "delay_1s",
+                "composite",
+                "composite_adaptive",
+            },
         )
         self.assertIn("delay_1000ms", CANONICAL_MIGRATION_POLICIES)
         self.assertNotIn("delay_1s", CANONICAL_MIGRATION_POLICIES)
+        self.assertIn("composite", SUPPORTED_MIGRATION_POLICIES)
+        self.assertIn(
+            "composite_adaptive", SUPPORTED_MIGRATION_POLICIES)
+        self.assertNotIn(
+            "composite", DEFAULT_MIGRATION_POLICIES)
 
     def test_ineligible_reference_audit_is_explicit_opt_in(self):
         default = _parser().parse_args(["--output", "/tmp/out"])

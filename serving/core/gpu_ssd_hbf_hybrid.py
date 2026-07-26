@@ -4,16 +4,16 @@ This module models the concrete two-server design:
 
 * one P4D4 GPU server is the sole owner of model execution, P/D HBM, host
   DRAM, and local SSD before promotion;
-* every non-terminal GPU turn is proactively checkpointed D -> CPU -> SSD;
-* an independently selected, causal idle policy may later promote the
-  durable SSD checkpoint through CPU/NIC/RDMA into one eight-card HBF
-  server; and
+* non-terminal GPU turns normally checkpoint D -> CPU -> SSD, after which a
+  causal policy may promote the durable copy through CPU/NIC/RDMA;
+* composite policies instead send a resumed stable D-HBM turn directly
+  through GPU/NIC/RDMA at that turn's internal completion; and
 * a resume always invalidates a not-yet-published promotion and restores
   through the GPU tiered node unless the HBF copy has already committed.
 
 All compute and transfer components share one :class:`ResourceCalendar`.
 The implementation is analytical-only and intentionally has no multi-HBF
-or direct GPU-HBM-to-HBF path.
+path.
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ from .gpu_pd_tier_lifecycle import (
     RESTORE_EXECUTION_BULK,
     SSDExportStatus,
     SSDExportTicket,
+    Tier,
     TierSessionState,
 )
 from .gpu_pd_tiered_node import (
@@ -79,6 +80,7 @@ SUPPORTED_SSD_STAGED_HBF_LAYOUTS = frozenset({
     "tp8_context",
 })
 SUPPORTED_SSD_PROMOTION_MODES = frozenset({
+    "composite",
     "eager",
     "idle_delay",
     "load_aware",
@@ -101,6 +103,10 @@ class SSDPromotionPolicy:
     allowed_gap_types: tuple[str, ...] = ()
     retry_ns: int = 1_000_000
     load_hysteresis: float = 0.10
+    direct_d_resume: bool = False
+    ssd_checkpoint_age_ns: Optional[int] = None
+    human_gap_broadcast: bool = False
+    load_aware_admission: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.key, str) or not self.key:
@@ -124,6 +130,33 @@ class SSDPromotionPolicy:
         if self.mode == "idle_delay" and self.idle_delay_ns <= 0:
             raise ValueError(
                 "idle-delay promotion requires a positive delay")
+        if (
+            self.ssd_checkpoint_age_ns is not None
+            and (
+                isinstance(self.ssd_checkpoint_age_ns, bool)
+                or not isinstance(self.ssd_checkpoint_age_ns, int)
+                or self.ssd_checkpoint_age_ns < 0
+            )
+        ):
+            raise ValueError(
+                "ssd_checkpoint_age_ns must be non-negative or None")
+        for name in (
+            "direct_d_resume",
+            "human_gap_broadcast",
+            "load_aware_admission",
+        ):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be a boolean")
+        if self.mode == "load_aware":
+            object.__setattr__(self, "load_aware_admission", True)
+        if self.mode == "never" and (
+            self.direct_d_resume
+            or self.ssd_checkpoint_age_ns is not None
+            or self.human_gap_broadcast
+            or self.load_aware_admission
+        ):
+            raise ValueError(
+                "never promotion cannot enable composite triggers")
         if (
             isinstance(self.load_hysteresis, bool)
             or not isinstance(self.load_hysteresis, (int, float))
@@ -196,6 +229,21 @@ class SSDPromotionPolicy:
                 mode="load_aware",
                 retry_ns=50_000_000,
             )
+        if key in {"composite", "composite_adaptive"}:
+            return cls(
+                key=key,
+                mode="composite",
+                retry_ns=(
+                    50_000_000
+                    if key == "composite_adaptive"
+                    else 1_000_000
+                ),
+                direct_d_resume=True,
+                ssd_checkpoint_age_ns=50_000_000,
+                human_gap_broadcast=True,
+                load_aware_admission=(
+                    key == "composite_adaptive"),
+            )
         if key == "never":
             return cls(key=key, mode="never")
         raise ValueError(
@@ -220,10 +268,18 @@ class SSDPromotionIntent:
     predecessor_request_id: int
     snapshot_version: int
     user_completion_ns: int
-    due_ns: int
+    due_ns: Optional[int]
     gap_type: Optional[str]
     serial: int
+    ssd_publication_ns: Optional[int] = None
+    human_due_now: bool = False
     due_reached: bool = False
+
+
+@dataclass(frozen=True)
+class DirectMigrationTicket:
+    job: MigrationJob
+    source_copy_id: int
 
 
 @dataclass
@@ -252,6 +308,12 @@ class SSDStagedHybridMetrics:
     promotion_load_deferrals: int = 0
     hbf_imports_committed: int = 0
     hbf_imports_stale: int = 0
+    direct_migrations_started: int = 0
+    direct_migration_capacity_deferrals: int = 0
+    direct_migrations_committed: int = 0
+    direct_migrations_stale: int = 0
+    human_gap_broadcasts: int = 0
+    human_gap_broadcast_intents: int = 0
     max_pending_calls: int = 0
 
 
@@ -456,6 +518,8 @@ class SSDStagedGPUHBFNode:
         self._export_by_session: dict[str, SSDExportTicket] = {}
         self._import_by_session: dict[
             str, tuple[MigrationJob, SSDExportTicket]] = {}
+        self._direct_migrations: dict[
+            int, DirectMigrationTicket] = {}
         self._next_promotion_serial = 1
 
     def set_gap_type(
@@ -734,24 +798,90 @@ class SSDStagedGPUHBFNode:
         placement = self.hbf_lifecycle.sessions[call.session_id]
         serial = self._next_promotion_serial
         self._next_promotion_serial += 1
+        due_ns = (
+            None
+            if self.promotion_policy.ssd_checkpoint_age_ns is not None
+            else (
+                completion_ns
+                + self.promotion_policy.idle_delay_ns
+            )
+        )
         intent = SSDPromotionIntent(
             session_id=call.session_id,
             predecessor_request_id=call.request_id,
             snapshot_version=placement.version + 1,
             user_completion_ns=completion_ns,
-            due_ns=(
-                completion_ns
-                + self.promotion_policy.idle_delay_ns
-            ),
+            due_ns=due_ns,
             gap_type=gap_type,
             serial=serial,
         )
         self._intent_by_session[call.session_id] = intent
+        if due_ns is not None:
+            heapq.heappush(
+                self._promotion_heap,
+                (due_ns, intent.serial, intent.session_id),
+            )
+        self.metrics.promotion_intents_scheduled += 1
+
+    def _arm_intent(
+            self, intent: SSDPromotionIntent, *,
+            due_ns: int) -> None:
+        serial = self._next_promotion_serial
+        self._next_promotion_serial += 1
+        intent.serial = serial
+        intent.due_ns = due_ns
+        intent.due_reached = False
         heapq.heappush(
             self._promotion_heap,
-            (intent.due_ns, intent.serial, intent.session_id),
+            (due_ns, serial, intent.session_id),
         )
-        self.metrics.promotion_intents_scheduled += 1
+
+    def _broadcast_human_gap(self, *, now_ns: int) -> None:
+        if not self.promotion_policy.human_gap_broadcast:
+            return
+        self.metrics.human_gap_broadcasts += 1
+        broadcast_count = 0
+        for session_id, intent in sorted(
+                self._intent_by_session.items()):
+            hbf_record = self.hbf_lifecycle.sessions.get(
+                session_id)
+            tier_record = self.gpu_lifecycle.sessions.get(
+                session_id)
+            if (
+                hbf_record is None
+                or tier_record is None
+                or hbf_record.state != PlacementState.SSD_READY
+                or tier_record.state != TierSessionState.SSD_READY
+                or hbf_record.version != intent.snapshot_version
+                or session_id in self._import_by_session
+                or session_id in self._export_by_session
+                or intent.due_reached
+            ):
+                continue
+            intent.human_due_now = True
+            self._arm_intent(intent, due_ns=now_ns)
+            broadcast_count += 1
+        self.metrics.human_gap_broadcast_intents += broadcast_count
+
+    def _observe_gap_event(
+            self, call: HybridCall, *, now_ns: int) -> None:
+        if not self.promotion_policy.human_gap_broadcast:
+            return
+        gap_type = self._gap_type_by_request.get(call.request_id)
+        if (
+            gap_type is not None
+            and gap_type.strip().lower() == "human"
+        ):
+            current_intent = self._intent_by_session.get(
+                call.session_id)
+            if (
+                current_intent is not None
+                and current_intent.predecessor_request_id
+                == call.request_id
+            ):
+                current_intent.human_due_now = True
+                self.metrics.human_gap_broadcast_intents += 1
+            self._broadcast_human_gap(now_ns=now_ns)
 
     def _consume_gpu_notifications(self, now_ns: int) -> None:
         for tier_call in self.gpu_node.pop_completed():
@@ -772,6 +902,8 @@ class SSDStagedGPUHBFNode:
             if call.has_successor:
                 self._schedule_promotion(
                     call, completion_ns=now_ns)
+            self._observe_gap_event(
+                call, now_ns=now_ns)
 
         for request_id, tier_call in sorted(
                 self._tier_call_by_request.items()):
@@ -789,20 +921,60 @@ class SSDStagedGPUHBFNode:
                     "GPU internal completion at wrong node timestamp")
             total_tokens = (
                 call.input_tokens + call.output_tokens - 1)
-            self.hbf_lifecycle.complete_gpu_turn(
+            direct_candidate = bool(
+                self.promotion_policy.direct_d_resume
+                and call.call_index > 0
+                and tier_call.prepare_source == Tier.D
+                and call.has_successor
+            )
+            start_direct = direct_candidate
+            if (
+                start_direct
+                and self.promotion_policy.load_aware_admission
+                and not self._load_aware_allows_promotion(now_ns)
+            ):
+                start_direct = False
+                self.metrics.promotion_load_deferrals += 1
+            direct_job = self.hbf_lifecycle.complete_gpu_turn(
                 call.session_id,
                 now_ns=now_ns,
                 total_tokens=total_tokens,
                 has_successor=call.has_successor,
-                start_migration=False,
+                start_migration=start_direct,
             )
+            if direct_job is not None:
+                tier_record = self.gpu_lifecycle.sessions[
+                    call.session_id]
+                source_copy_id = tier_record.primary_copy_id
+                source_copy = (
+                    None
+                    if source_copy_id is None
+                    else self.gpu_lifecycle.copies.get(
+                        source_copy_id)
+                )
+                if (
+                    tier_record.state != TierSessionState.D_READY
+                    or source_copy is None
+                    or source_copy.tier != Tier.D
+                ):
+                    raise RuntimeError(
+                        "direct migration lacks a committed D source")
+                source_copy.foreground_pins += 1
+                self._direct_migrations[
+                    direct_job.job_id] = DirectMigrationTicket(
+                        job=direct_job,
+                        source_copy_id=source_copy_id,
+                    )
+                self.metrics.direct_migrations_started += 1
+            elif start_direct:
+                self.metrics.direct_migration_capacity_deferrals += 1
             session = self.sessions[call.session_id]
             session.last_internal_call_index = call.call_index
             session.ended = not call.has_successor
             call.internal_completion_ns = now_ns
             call.state = HybridCallState.INTERNAL_COMPLETE
             self.metrics.internal_completed_calls += 1
-            if call.has_successor:
+            if call.has_successor and direct_job is None:
                 version = self.hbf_lifecycle.sessions[
                     call.session_id].version
                 self._offload_version_by_session[
@@ -843,6 +1015,8 @@ class SSDStagedGPUHBFNode:
             session = self.sessions[call.session_id]
             session.last_internal_call_index = call.call_index
             session.ended = not call.has_successor
+            self._observe_gap_event(
+                call, now_ns=now_ns)
 
     def _try_start_offload(
             self, session_id: str, *,
@@ -862,6 +1036,23 @@ class SSDStagedGPUHBFNode:
             self._offload_version_by_session.pop(session_id, None)
             if published:
                 self.metrics.ssd_checkpoints_published += 1
+                intent = self._intent_by_session.get(session_id)
+                checkpoint_age_ns = (
+                    self.promotion_policy.ssd_checkpoint_age_ns)
+                if (
+                    intent is not None
+                    and checkpoint_age_ns is not None
+                    and intent.snapshot_version == snapshot_version
+                ):
+                    intent.ssd_publication_ns = now_ns
+                    self._arm_intent(
+                        intent,
+                        due_ns=(
+                            now_ns
+                            if intent.human_due_now
+                            else now_ns + checkpoint_age_ns
+                        ),
+                    )
             return
         if (
             tier_record.state == TierSessionState.D_READY
@@ -900,6 +1091,47 @@ class SSDStagedGPUHBFNode:
                 self._export_by_session.items()):
             if ticket.status == SSDExportStatus.ABORTED:
                 self._export_by_session.pop(session_id, None)
+
+    def _reconcile_direct_migrations(self, now_ns: int) -> None:
+        for job_id, ticket in tuple(
+                self._direct_migrations.items()):
+            job = ticket.job
+            record = self.hbf_lifecycle.sessions[job.session_id]
+            if job_id in record.migration_job_ids:
+                continue
+            committed = bool(
+                record.state == PlacementState.HBF_READY
+                and record.version == job.version
+                and record.group_id == job.group_id
+            )
+            source_copy = self.gpu_lifecycle.copies.get(
+                ticket.source_copy_id)
+            if (
+                source_copy is None
+                or source_copy.foreground_pins <= 0
+            ):
+                raise RuntimeError(
+                    "direct migration lost its D source pin")
+            source_copy.foreground_pins -= 1
+            self.gpu_lifecycle._maybe_release_retired(source_copy)
+            if committed:
+                tier_record = self.gpu_lifecycle.sessions[
+                    job.session_id]
+                if tier_record.state != TierSessionState.ENDED:
+                    self.gpu_lifecycle.end(
+                        job.session_id, now_ns=now_ns)
+                gpu_lineage = self.gpu_node.sessions.get(
+                    job.session_id)
+                if gpu_lineage is not None:
+                    gpu_lineage.ended = True
+                self._offload_version_by_session.pop(
+                    job.session_id, None)
+                self._intent_by_session.pop(
+                    job.session_id, None)
+                self.metrics.direct_migrations_committed += 1
+            else:
+                self.metrics.direct_migrations_stale += 1
+            self._direct_migrations.pop(job_id, None)
 
     def _reconcile_imports(self, now_ns: int) -> None:
         for session_id, (job, ticket) in tuple(
@@ -951,14 +1183,9 @@ class SSDStagedGPUHBFNode:
     def _queue_intent_retry(
             self, intent: SSDPromotionIntent, *,
             now_ns: int) -> None:
-        serial = self._next_promotion_serial
-        self._next_promotion_serial += 1
-        intent.serial = serial
-        intent.due_ns = now_ns + self.promotion_policy.retry_ns
-        intent.due_reached = False
-        heapq.heappush(
-            self._promotion_heap,
-            (intent.due_ns, serial, intent.session_id),
+        self._arm_intent(
+            intent,
+            due_ns=now_ns + self.promotion_policy.retry_ns,
         )
 
     def _mark_due_promotions(self, now_ns: int) -> None:
@@ -1048,7 +1275,7 @@ class SSDStagedGPUHBFNode:
             if session_id in self._import_by_session:
                 continue
             if (
-                self.promotion_policy.mode == "load_aware"
+                self.promotion_policy.load_aware_admission
                 and not self._load_aware_allows_promotion(now_ns)
             ):
                 self.metrics.promotion_load_deferrals += 1
@@ -1122,6 +1349,7 @@ class SSDStagedGPUHBFNode:
                 break
             # Transfer and HBF publication callbacks win same-time arrivals.
             self.hbf_lifecycle.advance(event_ns)
+            self._reconcile_direct_migrations(event_ns)
             self._reconcile_imports(event_ns)
             self.hbf_pool.advance(
                 event_ns, defer_schedule=True)
@@ -1137,6 +1365,7 @@ class SSDStagedGPUHBFNode:
                 break
             self.flush_scheduling(event_ns)
         self.hbf_lifecycle.advance(now_ns)
+        self._reconcile_direct_migrations(now_ns)
         self._reconcile_imports(now_ns)
         self.hbf_pool.advance(now_ns, defer_schedule=True)
         self.gpu_node.advance(now_ns, defer_schedule=True)
@@ -1188,7 +1417,8 @@ class SSDStagedGPUHBFNode:
             f"offloads={sorted(self._offload_version_by_session)}, "
             f"promotions={sorted(self._intent_by_session)}, "
             f"exports={sorted(self._export_by_session)}, "
-            f"imports={sorted(self._import_by_session)}"
+            f"imports={sorted(self._import_by_session)}, "
+            f"direct_migrations={sorted(self._direct_migrations)}"
         )
 
     def run_until_idle(self) -> list[HybridCall]:
@@ -1277,12 +1507,35 @@ class SSDStagedGPUHBFNode:
             }:
                 raise AssertionError(
                     "invalidated HBF import retained a live export")
+        for job_id, ticket in self._direct_migrations.items():
+            job = ticket.job
+            source = self.gpu_lifecycle.copies.get(
+                ticket.source_copy_id)
+            placement = self.hbf_lifecycle.sessions.get(
+                job.session_id)
+            if (
+                job.job_id != job_id
+                or source is None
+                or source.session_id != job.session_id
+                or source.tier != Tier.D
+                or source.foreground_pins <= 0
+                or placement is None
+                or job_id not in placement.migration_job_ids
+            ):
+                raise AssertionError(
+                    "direct migration source ownership mismatch")
         if (
             self.metrics.submitted_calls != len(self.calls)
             or self.metrics.routed_calls
             != self.metrics.gpu_calls + self.metrics.hbf_calls
             or self.metrics.user_completed_calls
             < self.metrics.internal_completed_calls
+            or self.metrics.direct_migrations_started
+            != (
+                self.metrics.direct_migrations_committed
+                + self.metrics.direct_migrations_stale
+                + len(self._direct_migrations)
+            )
         ):
             raise AssertionError(
                 "staged hybrid metric conservation failed")
@@ -1320,6 +1573,8 @@ class SSDStagedGPUHBFNode:
                     self._export_by_session),
                 "import_sessions": sorted(
                     self._import_by_session),
+                "direct_migration_job_ids": sorted(
+                    self._direct_migrations),
             },
             "calls": {
                 request_id: {

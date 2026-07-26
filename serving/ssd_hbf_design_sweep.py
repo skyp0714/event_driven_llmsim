@@ -7,7 +7,9 @@ causal contract:
 
 * baseline: two finite-HBM P4D4 GPU servers with sixteen local SSDs;
 * Oracle: two strict infinite-HBM P4D4 GPU servers;
-* design: one GPU+SSD server plus one eight-card HBF server.
+* design: one GPU+SSD server plus one eight-card HBF server.  Its staged
+  policies checkpoint through local SSD; the explicit composite policies
+  may instead send a stable D-HBM resume snapshot directly after that turn.
 
 Every seed builds one immutable long-cold-context schedule at exactly
 3 sessions/s.  The same tuple and exact measurement roster are passed to
@@ -104,8 +106,9 @@ from .hbf_comparison_sweep import (
 
 
 SSD_HBF_SWEEP_SCHEMA_VERSION = 8
-SSD_HBF_CELL_SCHEMA_VERSION = 5
-SSD_HBF_CONTRACT_KEY = "two-gpu-local-ssd-vs-one-gpu-one-hbf-staged-v5"
+SSD_HBF_CELL_SCHEMA_VERSION = 6
+SSD_HBF_CONTRACT_KEY = (
+    "two-gpu-local-ssd-vs-one-gpu-one-hbf-composite-v6")
 REQUIRED_SESSION_RATE = 3.0
 PINNED_ENDURANCE_PROFILE = Path(
     "configs/storage/micron_9550_pro_3_84tb.json")
@@ -157,6 +160,8 @@ SUPPORTED_MIGRATION_POLICIES = (
     "delay_300s",
     "load_aware",
     "never",
+    "composite",
+    "composite_adaptive",
 )
 CANONICAL_MIGRATION_POLICIES = (
     "eager",
