@@ -358,6 +358,8 @@ class SSDHBFFinalPlotsTests(unittest.TestCase):
             loaded = load_staged_aggregate(path)
 
         self.assertTrue(loaded.runtime_available)
+        self.assertTrue(loaded.reference_eligible)
+        self.assertFalse(loaded.audit_mode)
         self.assertEqual(
             len(loaded.candidates),
             len(CANONICAL_MIGRATION_POLICIES) * 4,
@@ -367,6 +369,55 @@ class SSDHBFFinalPlotsTests(unittest.TestCase):
             loaded.source_aggregate_sha256,
             expected_file_hash,
         )
+
+    def test_ineligible_reference_requires_explicit_audit_mode(self):
+        aggregate = _aggregate()
+        aggregate["reference_eligibility_required"] = False
+        eligibility = aggregate["rates"][0][
+            "reference_eligibility"]
+        eligibility["eligible"] = False
+        eligibility["failures"] = [
+            "bulk:baseline_over_oracle_ci95_upper_above_0.10",
+            (
+                "layerwise_streaming:"
+                "baseline_over_oracle_ci95_upper_above_0.10"
+            ),
+        ]
+        for mode in SUPPORTED_RESTORE_EXECUTION_MODES:
+            eligibility["by_restore_execution_mode"][mode] = {
+                "eligible": False,
+                "failures": [
+                    "baseline_over_oracle_ci95_upper_above_0.10"],
+            }
+        for row in aggregate["rates"][0]["designs"]:
+            row["matched_reference_eligibility"] = {
+                "eligible": False,
+                "failures": [
+                    "baseline_over_oracle_ci95_upper_above_0.10"],
+            }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = _write_aggregate(root, aggregate)
+            with self.assertRaisesRegex(
+                    SSDHBFFinalResultsError,
+                    "failed reference eligibility"):
+                load_staged_aggregate(path)
+            loaded = load_staged_aggregate(
+                path, allow_ineligible_reference=True)
+            selection = select_meaningful_policies(loaded)
+            rows = build_plot_source_rows(loaded, selection)
+
+        self.assertFalse(loaded.reference_eligible)
+        self.assertTrue(loaded.audit_mode)
+        self.assertEqual(
+            selection["source"]["result_status"],
+            "audit_reference_ineligible",
+        )
+        self.assertTrue(all(
+            row["result_status"] == "audit_reference_ineligible"
+            and row["reference_eligible"] is False
+            for row in rows
+        ))
 
     def test_alias_is_collapsed_without_erasing_audit_record(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -489,6 +489,9 @@ class LoadedStagedResults:
     candidates: tuple[FinalCandidate, ...]
     alias_collapses: tuple[AliasCollapse, ...]
     runtime_available: bool
+    reference_eligible: bool
+    reference_eligibility_failures: tuple[str, ...]
+    audit_mode: bool
 
 
 def _validate_reference(
@@ -572,6 +575,8 @@ def _candidate_from_row(
         index: int,
         references: Mapping[str, Mapping[str, Any]],
         reference_goodput: Mapping[str, float],
+        *,
+        allow_ineligible_reference: bool,
 ) -> FinalCandidate:
     path = f"rates[0].designs[{index}]"
     design_row = _mapping(row, path)
@@ -596,7 +601,10 @@ def _candidate_from_row(
         design_row.get("matched_reference_eligibility"),
         f"{path}.matched_reference_eligibility",
     )
-    if eligibility.get("eligible") is not True:
+    if (
+        eligibility.get("eligible") is not True
+        and not allow_ineligible_reference
+    ):
         raise SSDHBFFinalResultsError(
             f"{path} failed matched reference eligibility")
     metrics = _mapping(design_row.get("metrics"), f"{path}.metrics")
@@ -744,8 +752,18 @@ def _validate_complete_roster(
                 f"{group_id}: missing={missing}, extra={extra}")
 
 
-def load_staged_aggregate(path: Path | str) -> LoadedStagedResults:
-    """Load and fail-closed validate one SSD-staged aggregate."""
+def load_staged_aggregate(
+        path: Path | str,
+        *,
+        allow_ineligible_reference: bool = False,
+) -> LoadedStagedResults:
+    """Load one SSD-staged aggregate.
+
+    The default remains fail-closed.  An explicitly audit-only aggregate
+    may be loaded with ``allow_ineligible_reference=True``; this never
+    changes the stored gate outcome and downstream artifacts remain
+    visibly marked as ineligible.
+    """
 
     source_path = Path(path).expanduser().resolve()
     try:
@@ -882,9 +900,34 @@ def load_staged_aggregate(path: Path | str) -> LoadedStagedResults:
         rate_row.get("reference_eligibility"),
         "rates[0].reference_eligibility",
     )
-    if eligibility.get("eligible") is not True:
+    reference_eligible = eligibility.get("eligible") is True
+    raw_failures = _sequence(
+        eligibility.get("failures"),
+        "rates[0].reference_eligibility.failures",
+    )
+    if any(
+        not isinstance(failure, str) or not failure
+        for failure in raw_failures
+    ):
+        raise SSDHBFFinalResultsError(
+            "reference eligibility failures must be non-empty strings")
+    reference_failures = tuple(str(value) for value in raw_failures)
+    if reference_eligible and reference_failures:
+        raise SSDHBFFinalResultsError(
+            "eligible reference cannot retain failure reasons")
+    if not reference_eligible and not allow_ineligible_reference:
         raise SSDHBFFinalResultsError(
             "final staged aggregate failed reference eligibility")
+    if (
+        not reference_eligible
+        and root.get("reference_eligibility_required") is not False
+    ):
+        raise SSDHBFFinalResultsError(
+            "ineligible reference can only be loaded from an explicit "
+            "audit aggregate")
+    if not reference_eligible and not reference_failures:
+        raise SSDHBFFinalResultsError(
+            "ineligible reference must retain failure reasons")
     by_restore = _mapping(
         eligibility.get("by_restore_execution_mode"),
         (
@@ -895,15 +938,19 @@ def load_staged_aggregate(path: Path | str) -> LoadedStagedResults:
     if set(by_restore) != set(SUPPORTED_RESTORE_EXECUTION_MODES):
         raise SSDHBFFinalResultsError(
             "reference eligibility must cover bulk and layerwise baselines")
-    if any(
+    restore_mode_failed = any(
         _mapping(
             by_restore[mode],
             f"reference_eligibility.by_restore.{mode}",
         ).get("eligible") is not True
         for mode in SUPPORTED_RESTORE_EXECUTION_MODES
-    ):
+    )
+    if restore_mode_failed and not allow_ineligible_reference:
         raise SSDHBFFinalResultsError(
             "a matched restore-mode baseline failed eligibility")
+    if reference_eligible and restore_mode_failed:
+        raise SSDHBFFinalResultsError(
+            "aggregate eligibility disagrees with a matched baseline")
 
     references = _mapping(rate_row.get("references"), "rates[0].references")
     if set(references) != _REQUIRED_REFERENCE_KEYS:
@@ -922,7 +969,13 @@ def load_staged_aggregate(path: Path | str) -> LoadedStagedResults:
             "rate design rows do not match grid design count")
     raw_candidates = tuple(
         _candidate_from_row(
-            row, index, references, reference_goodput)
+            row,
+            index,
+            references,
+            reference_goodput,
+            allow_ineligible_reference=(
+                allow_ineligible_reference),
+        )
         for index, row in enumerate(design_rows)
     )
     row_keys = {candidate.key for candidate in raw_candidates}
@@ -988,6 +1041,9 @@ def load_staged_aggregate(path: Path | str) -> LoadedStagedResults:
         candidates=candidates,
         alias_collapses=alias_collapses,
         runtime_available=runtime_available,
+        reference_eligible=reference_eligible,
+        reference_eligibility_failures=reference_failures,
+        audit_mode=not reference_eligible,
     )
 
 
@@ -1186,6 +1242,14 @@ def select_meaningful_policies(
                 loaded.source_payload_sha256),
             "comparison_contract": SSD_HBF_CONTRACT_KEY,
             "session_rate": loaded.session_rate,
+            "result_status": (
+                "audit_reference_ineligible"
+                if loaded.audit_mode
+                else "eligible_final"
+            ),
+            "reference_eligible": loaded.reference_eligible,
+            "reference_eligibility_failures": list(
+                loaded.reference_eligibility_failures),
         },
         "selection_algorithm": {
             "scope": (
@@ -1216,6 +1280,7 @@ def select_meaningful_policies(
                 "alias is excluded without metric-based cherry-picking"),
         },
         "runtime_objectives_available": loaded.runtime_available,
+        "audit_mode": loaded.audit_mode,
         "groups": group_reports,
         "selected_candidate_keys": sorted(selected_keys),
         "candidate_audit": [
@@ -1229,6 +1294,9 @@ def select_meaningful_policies(
 _PLOT_SOURCE_FIELDS = (
     "plot_source_schema_version",
     "source_aggregate_sha256",
+    "result_status",
+    "reference_eligible",
+    "reference_eligibility_failures",
     "candidate_kind",
     "candidate_key",
     "group_id",
@@ -1488,6 +1556,17 @@ def build_plot_source_rows(
                 if field == "plot_source_schema_version"
                 else loaded.source_aggregate_sha256
                 if field == "source_aggregate_sha256"
+                else (
+                    "audit_reference_ineligible"
+                    if loaded.audit_mode
+                    else "eligible_final"
+                )
+                if field == "result_status"
+                else loaded.reference_eligible
+                if field == "reference_eligible"
+                else "|".join(
+                    loaded.reference_eligibility_failures)
+                if field == "reference_eligibility_failures"
                 else row.get(field, "")
             )
             for field in _PLOT_SOURCE_FIELDS
@@ -1610,8 +1689,15 @@ def _render_performance(
     axis.set_yticks(positions, labels=labels, fontsize=7)
     axis.invert_yaxis()
     axis.set_xlabel("SLO-good output-token goodput / matched baseline")
+    audit_prefix = (
+        "AUDIT — reference eligibility failed\n"
+        if rows[0].get("result_status")
+        == "audit_reference_ineligible"
+        else ""
+    )
     axis.set_title(
-        "Selected staged HBF policies: read and restore sensitivity")
+        audit_prefix
+        + "Selected staged HBF policies: read and restore sensitivity")
     axis.grid(axis="x", alpha=0.22)
     axis.legend(fontsize=8, loc="best")
     _save_figure(figure, output_path)
@@ -1647,8 +1733,15 @@ def _render_runtime(
         axis.grid(axis="y", alpha=0.22)
     axes[-1].set_xticks(
         positions, labels=labels, rotation=55, ha="right", fontsize=7)
+    audit_prefix = (
+        "AUDIT — reference eligibility failed\n"
+        if rows[0].get("result_status")
+        == "audit_reference_ineligible"
+        else ""
+    )
     figure.suptitle(
-        "Event-derived runtime power, energy, and TCO "
+        audit_prefix
+        + "Event-derived runtime power, energy, and TCO "
         "(Oracle excluded)")
     figure.tight_layout()
     _save_figure(figure, output_path)
@@ -1695,8 +1788,15 @@ def _render_endurance(
         axis.grid(axis="y", alpha=0.22)
     axes[-1].set_xticks(
         positions, labels=labels, rotation=55, ha="right", fontsize=7)
+    audit_prefix = (
+        "AUDIT — reference eligibility failed\n"
+        if rows[0].get("result_status")
+        == "audit_reference_ineligible"
+        else ""
+    )
     figure.suptitle(
-        "HBF endurance from measured recurring writes "
+        audit_prefix
+        + "HBF endurance from measured recurring writes "
         "(uniform within-card spreading)")
     figure.tight_layout()
     _save_figure(figure, output_path)
@@ -1748,9 +1848,12 @@ def write_final_artifacts(
     matplotlib_available = pyplot is not None
     performance_path = runtime_path = endurance_path = None
     if render and pyplot is not None:
-        performance_path = root / "performance_sensitivity.png"
-        runtime_path = root / "runtime_power_energy_tco.png"
-        endurance_path = root / "hbf_endurance.png"
+        prefix = "audit_" if loaded.audit_mode else ""
+        performance_path = (
+            root / f"{prefix}performance_sensitivity.png")
+        runtime_path = (
+            root / f"{prefix}runtime_power_energy_tco.png")
+        endurance_path = root / f"{prefix}hbf_endurance.png"
         _render_performance(pyplot, rows, performance_path)
         _render_runtime(pyplot, rows, runtime_path)
         _render_endurance(pyplot, rows, endurance_path)
@@ -1773,11 +1876,16 @@ def generate_final_results(
         output_dir: Path | str,
         *,
         render: bool = True,
+        allow_ineligible_reference_audit: bool = False,
 ) -> FinalPlotArtifacts:
     """Convenience API: strict load, select, export, and render."""
 
     return write_final_artifacts(
-        load_staged_aggregate(aggregate_path),
+        load_staged_aggregate(
+            aggregate_path,
+            allow_ineligible_reference=(
+                allow_ineligible_reference_audit),
+        ),
         output_dir,
         render=render,
     )
@@ -1801,6 +1909,15 @@ def _parser() -> argparse.ArgumentParser:
             "fields. Use --no-render only for provisional audit files."
         ),
     )
+    parser.add_argument(
+        "--allow-ineligible-reference-audit",
+        action="store_true",
+        help=(
+            "Render an explicitly audit-only aggregate whose baseline/"
+            "Oracle eligibility gate failed. Output PNG names and titles "
+            "are marked AUDIT; strict mode remains the default."
+        ),
+    )
     return parser
 
 
@@ -1810,6 +1927,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         args.aggregate,
         args.output_dir,
         render=args.render,
+        allow_ineligible_reference_audit=(
+            args.allow_ineligible_reference_audit),
     )
     print(json.dumps(
         artifacts.to_json_dict(),
