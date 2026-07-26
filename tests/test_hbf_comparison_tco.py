@@ -157,6 +157,40 @@ class TopologyAndBOMTests(unittest.TestCase):
             anchors.h100_card_power_w,
         )
 
+    def test_hbm_credit_is_purchase_basis_not_legacy_30_percent(self):
+        anchors = HardwareAnchors()
+        self.assertEqual(
+            anchors.hbm_capex_accounting_basis,
+            "absolute_avoided_purchase_credit",
+        )
+        self.assertEqual(
+            anchors.hbm_stack_capex_usd_per_card, 1_350.0)
+        self.assertAlmostEqual(
+            anchors.hbm_capex_share_of_h100_purchase_price, 0.045)
+        self.assertNotAlmostEqual(
+            anchors.hbm_capex_share_of_h100_purchase_price,
+            anchors.hbm_capex_fraction_of_h100_card,
+        )
+        self.assertTrue(
+            anchors.hbm_component_cost_source_url.startswith("https://"))
+        self.assertTrue(
+            anchors.h100_purchase_price_source_url.startswith("https://"))
+        self.assertTrue(
+            anchors.h100_tdp_source_url.startswith("https://"))
+
+        legacy = replace(
+            anchors,
+            hbm_capex_accounting_basis=(
+                "legacy_fraction_of_purchase_price"),
+        )
+        self.assertEqual(
+            legacy.hbm_capex_share_of_h100_purchase_price, 0.30)
+        self.assertAlmostEqual(
+            legacy.gpu_logic_capex_usd_per_card
+            + legacy.hbm_stack_capex_usd_per_card,
+            legacy.h100_card_capex_usd,
+        )
+
     def test_pinned_hardware_hashes_match_the_effective_configs(self):
         gpu_bytes = (
             REPO_ROOT / "configs/wakekv_hbf/p4d4_gpu_server.json"
@@ -261,15 +295,37 @@ class SensitivityTests(unittest.TestCase):
         right = SensitivityPoint(0.50000002, 0.5, 0.5, 3.5)
         self.assertNotEqual(left.key, right.key)
 
-    def test_entire_hbf_subsystem_is_always_cheaper_than_hbm_stack(self):
+    def test_hbf_subsystem_is_cheaper_than_hbm_per_installed_byte(self):
         anchors = HardwareAnchors()
         for point in sensitivity_points():
             cost = proposed_hbf_cost(point, anchors)
             hbf = cost.component("hbf_media_controller_subsystem")
             self.assertLess(
-                hbf.unit_capex_usd,
+                (
+                    hbf.unit_capex_usd
+                    / DEFAULT_HBF_HARDWARE_VARIANT
+                    .hbf_capacity_ratio_to_hbm
+                ),
                 anchors.hbm_stack_capex_usd_per_card,
             )
+
+    def test_central_hbf_card_power_matches_whole_card_anchor(self):
+        anchors = HardwareAnchors()
+        cost = proposed_hbf_cost(central_point(), anchors)
+        media = cost.component("hbf_media_controller_subsystem")
+        logic = cost.component("hbf_npu_logic")
+        lpddr = cost.component("hbf_card_lpddr")
+        self.assertEqual(media.unit_capex_usd, 4_500.0)
+        self.assertEqual(media.unit_it_power_w, 300.0)
+        whole_card_power = (
+            logic.unit_it_power_w
+            + media.unit_it_power_w
+            + lpddr.it_power_w / logic.quantity
+        )
+        self.assertAlmostEqual(
+            whole_card_power / anchors.h100_card_power_w,
+            1.2358857142857143,
+        )
 
     def test_hbf_power_sensitivity_changes_energy_opex_and_tco(self):
         low = proposed_hbf_cost(SensitivityPoint(

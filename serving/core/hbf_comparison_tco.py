@@ -100,9 +100,11 @@ GOODPUT_SEMANTICS = (
     "offered-load-normalized SLO-good output tokens per second"
 )
 PRICE_SOURCE_SEMANTICS = (
-    "analytical assumptions for sensitivity analysis; not measured or quoted "
-    "vendor prices"
+    "H100 purchase price plus dated analyst component-cost estimates and "
+    "explicit HBF sensitivity assumptions; not a vendor HBF quote"
 )
+HBF_CAPEX_SENSITIVITY_CENTRAL_AXIS_VALUE = 0.50
+HBF_POWER_SENSITIVITY_CENTRAL_AXIS_VALUE = 3.50
 ORACLE_EXCLUSION_REASON = (
     "The Oracle assumes infinite HBM capacity, so it is an unphysical "
     "performance reference and its capacity cannot be assigned a finite BOM."
@@ -227,17 +229,34 @@ class JSONSafeDataclass:
 class HardwareAnchors(JSONSafeDataclass):
     """Per-component analytical price and power anchors.
 
-    ``h100_card_*`` includes GPU logic plus the HBM stack.  The two fraction
-    fields split that total; they are not additional costs or power.
+    ``h100_card_*`` includes GPU logic plus the HBM stack.  Purchase-basis
+    CAPEX uses an explicit avoided-HBM dollar credit rather than applying a
+    manufacturing fraction to the accelerator selling price.  The legacy
+    30% field remains only for an aggressive sensitivity case.  Power keeps
+    a separate analytical split because no event-derived component split is
+    available here.
     Host anchors exclude DRAM, NICs, fabric, SSDs, and accelerator cards so
     those components remain visible in the BOM.
     """
 
     h100_card_capex_usd: float = 30_000.0
     h100_card_power_w: float = 700.0
+    hbm_capex_accounting_basis: str = (
+        "absolute_avoided_purchase_credit")
+    hbm_avoided_capex_usd_per_card: float = 1_350.0
     hbm_capex_fraction_of_h100_card: float = 0.30
     hbm_power_fraction_of_h100_card: float = 0.20
     h100_hbm_capacity_bytes_per_card: int = 80_000_000_000
+    hbf_media_controller_capex_usd_per_card: float = 4_500.0
+    hbf_media_controller_power_w_per_card: float = 300.0
+    h100_purchase_price_source_url: str = (
+        "https://siliconanalysts.com/data/ai-chip-costs")
+    h100_tdp_source_url: str = (
+        "https://www.nvidia.com/en-us/data-center/h100/")
+    hbm_component_cost_source_url: str = (
+        "https://siliconanalysts.com/data/ai-chip-costs")
+    hbf_power_source_url: str = (
+        "https://arxiv.org/html/2607.10186#S7.SS6")
 
     cpu_host_base_capex_usd: float = 20_000.0
     cpu_host_base_power_w: float = 800.0
@@ -271,6 +290,9 @@ class HardwareAnchors(JSONSafeDataclass):
         for name in (
             "h100_card_capex_usd",
             "h100_card_power_w",
+            "hbm_avoided_capex_usd_per_card",
+            "hbf_media_controller_capex_usd_per_card",
+            "hbf_media_controller_power_w_per_card",
             "cpu_host_base_capex_usd",
             "cpu_host_base_power_w",
             "host_dram_capex_usd_per_gib",
@@ -295,6 +317,19 @@ class HardwareAnchors(JSONSafeDataclass):
             "lpddr_power_w_per_gib",
         ):
             _require_finite(name, getattr(self, name), minimum=0.0)
+        if self.hbm_capex_accounting_basis not in {
+            "absolute_avoided_purchase_credit",
+            "legacy_fraction_of_purchase_price",
+        }:
+            raise HBFComparisonTCOError(
+                "hbm_capex_accounting_basis is unsupported")
+        for name in (
+            "h100_purchase_price_source_url",
+            "h100_tdp_source_url",
+            "hbm_component_cost_source_url",
+            "hbf_power_source_url",
+        ):
+            _require_nonempty_string(name, getattr(self, name))
         _require_open_unit_interval(
             "hbm_capex_fraction_of_h100_card",
             self.hbm_capex_fraction_of_h100_card,
@@ -307,19 +342,34 @@ class HardwareAnchors(JSONSafeDataclass):
             "h100_hbm_capacity_bytes_per_card",
             self.h100_hbm_capacity_bytes_per_card,
         )
+        if self.hbm_stack_capex_usd_per_card > (
+                self.h100_card_capex_usd):
+            raise HBFComparisonTCOError(
+                "avoided HBM CAPEX cannot exceed H100 purchase CAPEX")
 
     @property
     def gpu_logic_capex_usd_per_card(self) -> float:
         return (
             self.h100_card_capex_usd
-            * (1.0 - self.hbm_capex_fraction_of_h100_card)
+            - self.hbm_stack_capex_usd_per_card
         )
 
     @property
     def hbm_stack_capex_usd_per_card(self) -> float:
+        if self.hbm_capex_accounting_basis == (
+                "absolute_avoided_purchase_credit"):
+            return self.hbm_avoided_capex_usd_per_card
         return (
             self.h100_card_capex_usd
-            * self.hbm_capex_fraction_of_h100_card
+            * self.hbm_capex_fraction_of_h100_card)
+
+    @property
+    def hbm_capex_share_of_h100_purchase_price(self) -> float:
+        if self.h100_card_capex_usd == 0.0:
+            return 0.0
+        return (
+            self.hbm_stack_capex_usd_per_card
+            / self.h100_card_capex_usd
         )
 
     @property
@@ -553,7 +603,10 @@ class SensitivityAxes(JSONSafeDataclass):
     """Cartesian component-ratio sensitivity axes.
 
     The ``npu_logic_*`` names are retained for report compatibility.  Their
-    default singleton value is the full H100 GPU-logic anchor.
+    default singleton value is the full H100 GPU-logic anchor.  The HBF field
+    names are also retained for compatibility, but their values are normalized
+    around the independent HBF media/controller anchors: 0.50 means 1.0x the
+    CAPEX anchor and 3.50 means 1.0x the power anchor.
     """
 
     npu_logic_capex_ratios_to_gpu_logic: tuple[float, ...] = (
@@ -658,6 +711,20 @@ class SensitivityPoint(JSONSafeDataclass):
             f"npu_power_{label(self.npu_logic_power_ratio_to_gpu_logic)}",
             f"hbf_power_{label(self.hbf_subsystem_power_ratio_to_hbm_stack)}",
         ))
+
+    @property
+    def hbf_media_controller_capex_multiplier(self) -> float:
+        return (
+            self.hbf_subsystem_capex_ratio_to_hbm_stack
+            / HBF_CAPEX_SENSITIVITY_CENTRAL_AXIS_VALUE
+        )
+
+    @property
+    def hbf_media_controller_power_multiplier(self) -> float:
+        return (
+            self.hbf_subsystem_power_ratio_to_hbm_stack
+            / HBF_POWER_SENSITIVITY_CENTRAL_AXIS_VALUE
+        )
 
 
 @dataclass(frozen=True)
@@ -1145,21 +1212,25 @@ def proposed_hbf_cost(
         * point.npu_logic_capex_ratio_to_gpu_logic
     )
     hbf_subsystem_capex = (
-        anchors.hbm_stack_capex_usd_per_card
-        * point.hbf_subsystem_capex_ratio_to_hbm_stack
+        anchors.hbf_media_controller_capex_usd_per_card
+        * point.hbf_media_controller_capex_multiplier
     )
     hbf_gpu_logic_power = (
         anchors.gpu_logic_power_w_per_card
         * point.npu_logic_power_ratio_to_gpu_logic
     )
     hbf_subsystem_power = (
-        anchors.hbm_stack_power_w_per_card
-        * point.hbf_subsystem_power_ratio_to_hbm_stack
+        anchors.hbf_media_controller_power_w_per_card
+        * point.hbf_media_controller_power_multiplier
     )
-    if not hbf_subsystem_capex < anchors.hbm_stack_capex_usd_per_card:
+    if not (
+        hbf_subsystem_capex
+        / hbf_hardware_variant.hbf_capacity_ratio_to_hbm
+        < anchors.hbm_stack_capex_usd_per_card
+    ):
         raise HBFComparisonTCOError(
-            "the complete HBF media/controller subsystem must be cheaper "
-            "than the complete H100 HBM stack")
+            "HBF media/controller CAPEX must be cheaper than HBM after "
+            "normalizing for installed capacity")
     if hbf_hardware_variant.intra_fabric_kind == "pcie":
         hbf_fabric_capex = (
             anchors.hbf_npu_pcie_fabric_capex_usd_per_unit)
@@ -1278,8 +1349,12 @@ def proposed_hbf_cost(
             hbf_subsystem_capex,
             hbf_subsystem_power,
             (
-                "The full HBF media/controller subsystem is priced below "
-                "one complete H100 HBM stack; power is swept at 3-4x HBM. "
+                "The full HBF media/controller subsystem uses an independent "
+                f"${anchors.hbf_media_controller_capex_usd_per_card:,.0f} "
+                "per-card CAPEX anchor and "
+                f"{anchors.hbf_media_controller_power_w_per_card:,.0f} W "
+                "power anchor. Compatibility sensitivity-axis values are "
+                "normalized around 0.50=1.0x CAPEX and 3.50=1.0x power. "
                 f"Installed capacity is "
                 f"{hbf_hardware_variant.hbf_capacity_bytes_per_card} bytes "
                 "per card, or "

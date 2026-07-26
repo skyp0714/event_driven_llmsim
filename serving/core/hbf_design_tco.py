@@ -357,12 +357,12 @@ def proposed_hbf_design_cost(
         * sensitivity_point.npu_logic_power_ratio_to_gpu_logic
     )
     hbf_subsystem_capex = (
-        anchors.hbm_stack_capex_usd_per_card
-        * sensitivity_point.hbf_subsystem_capex_ratio_to_hbm_stack
+        anchors.hbf_media_controller_capex_usd_per_card
+        * sensitivity_point.hbf_media_controller_capex_multiplier
     )
     hbf_subsystem_power = (
-        anchors.hbm_stack_power_w_per_card
-        * sensitivity_point.hbf_subsystem_power_ratio_to_hbm_stack
+        anchors.hbf_media_controller_power_w_per_card
+        * sensitivity_point.hbf_media_controller_power_multiplier
     )
     host_dram_gib = (
         P4D4_CPU_MEMORY_BYTES_PER_HOST / BYTES_PER_GIB)
@@ -436,7 +436,10 @@ def proposed_hbf_design_cost(
             topology.hbf_card_count,
             hbf_subsystem_capex,
             hbf_subsystem_power,
-            "Sensitivity ratios apply to one complete H100 HBM stack.",
+            (
+                "Normalized sensitivity multipliers apply to independent "
+                "HBF media/controller CAPEX and power anchors."
+            ),
         ),
         _bom_line(
             "hbf_gpu_intraserver_fabric",
