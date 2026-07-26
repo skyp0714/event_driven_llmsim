@@ -8,7 +8,9 @@ import unittest
 
 from serving.hbf_design_space_sweep import (
     BASELINE_CANDIDATE_KEY,
+    DEFAULT_MIGRATION_POLICIES,
     ORACLE_CANDIDATE_KEY,
+    SUPPORTED_MIGRATION_POLICIES,
     HBFDesignSpaceError,
     aggregate_cell_records,
     build_design_grid,
@@ -56,6 +58,15 @@ def _record(
 
 
 class HBFDesignSpaceSweepTests(unittest.TestCase):
+
+    def test_default_grid_evaluates_every_supported_migration_policy(self):
+        self.assertEqual(
+            DEFAULT_MIGRATION_POLICIES,
+            SUPPORTED_MIGRATION_POLICIES,
+        )
+        self.assertEqual(len(DEFAULT_MIGRATION_POLICIES), 11)
+        self.assertIn("jit_oracle", DEFAULT_MIGRATION_POLICIES)
+        self.assertIn("never", DEFAULT_MIGRATION_POLICIES)
 
     def test_parses_canonical_layout_sets_and_explicit_memory(self):
         self.assertEqual(

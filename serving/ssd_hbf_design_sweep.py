@@ -153,15 +153,24 @@ SUPPORTED_MIGRATION_POLICIES = (
     "load_aware",
     "never",
 )
-DEFAULT_MIGRATION_POLICIES = (
+CANONICAL_MIGRATION_POLICIES = (
+    "eager",
+    "tool_immediate",
+    "human_immediate",
     "tool_or_human_immediate",
-    "delay_1s",
+    "delay_25ms",
+    "delay_50ms",
+    "delay_100ms",
+    "delay_200ms",
+    "delay_500ms",
+    "delay_1000ms",
     "delay_5s",
     "delay_30s",
     "delay_300s",
     "load_aware",
     "never",
 )
+DEFAULT_MIGRATION_POLICIES = CANONICAL_MIGRATION_POLICIES
 SMOKE_MIGRATION_POLICIES = (
     "tool_or_human_immediate",
     "delay_1s",
@@ -2103,6 +2112,7 @@ __all__ = [
     "BASELINE_CANDIDATE_KEYS",
     "BASELINE_OVER_ORACLE_GOODPUT_CI95_UPPER_MAX",
     "BASELINE_RESTORE_MODES",
+    "CANONICAL_MIGRATION_POLICIES",
     "DEFAULT_RESTORE_EXECUTION_MODES",
     "DEFAULT_SSD_HBF_SEEDS",
     "ORACLE_CANDIDATE_KEY",

@@ -26,11 +26,14 @@ from serving.ssd_hbf_design_sweep import (
     BASELINE_CANDIDATE_KEY,
     BASELINE_CANDIDATE_KEYS,
     BASELINE_RESTORE_MODES,
+    CANONICAL_MIGRATION_POLICIES,
+    DEFAULT_MIGRATION_POLICIES,
     ORACLE_CANDIDATE_KEY,
     REQUIRED_SESSION_RATE,
     SSDHBFDesignSweepError,
     SSD_HBF_CONTRACT_KEY,
     STREAMING_BASELINE_CANDIDATE_KEY,
+    SUPPORTED_MIGRATION_POLICIES,
     _CellTask,
     _execute_task,
     _load_resumable_cell,
@@ -223,6 +226,19 @@ class SSDHBFDesignSweepTests(unittest.TestCase):
             migration_policy="tool_or_human_immediate",
             active_memory=self.memory16,
         )
+
+    def test_defaults_cover_all_distinct_supported_migration_policies(self):
+        self.assertEqual(
+            DEFAULT_MIGRATION_POLICIES,
+            CANONICAL_MIGRATION_POLICIES,
+        )
+        self.assertEqual(
+            set(SUPPORTED_MIGRATION_POLICIES)
+            - set(CANONICAL_MIGRATION_POLICIES),
+            {"delay_1s"},
+        )
+        self.assertIn("delay_1000ms", CANONICAL_MIGRATION_POLICIES)
+        self.assertNotIn("delay_1s", CANONICAL_MIGRATION_POLICIES)
 
     def test_grid_distinguishes_layouts_but_keeps_one_physical_host(self):
         grid = build_design_grid(

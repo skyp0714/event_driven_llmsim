@@ -89,14 +89,20 @@ BASELINE_SYSTEM_KEY = "cpu_ssd"
 BASELINE_CANDIDATE_KEY = "baseline_cpu_ssd"
 ORACLE_CANDIDATE_KEY = "oracle"
 SUPPORTED_DESIGN_LAYOUTS = ("tp4", "tp8_context")
-DEFAULT_MIGRATION_POLICIES = (
+SUPPORTED_MIGRATION_POLICIES = (
     "eager",
+    "delay_25ms",
+    "delay_50ms",
     "delay_100ms",
     "delay_200ms",
     "delay_500ms",
+    "delay_1000ms",
     "after_first_tool",
     "load_aware",
+    "jit_oracle",
+    "never",
 )
+DEFAULT_MIGRATION_POLICIES = SUPPORTED_MIGRATION_POLICIES
 SUPPORTED_HBF_READ_MODES = ("demand", "prefetch")
 DEFAULT_HBF_READ_MODES = SUPPORTED_HBF_READ_MODES
 BYTES_PER_GIB = 1024 ** 3
@@ -1466,6 +1472,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--policies",
         nargs="+",
+        choices=SUPPORTED_MIGRATION_POLICIES,
         default=list(DEFAULT_MIGRATION_POLICIES),
     )
     parser.add_argument(
@@ -1632,6 +1639,7 @@ __all__ = [
     "HBFDesignSpec",
     "ORACLE_CANDIDATE_KEY",
     "SUPPORTED_DESIGN_LAYOUTS",
+    "SUPPORTED_MIGRATION_POLICIES",
     "aggregate_cell_records",
     "build_design_grid",
     "build_tasks",
