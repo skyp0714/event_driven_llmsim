@@ -43,9 +43,9 @@ from .ssd_hbf_design_sweep import (
 )
 
 
-FINAL_RESULTS_SCHEMA_VERSION = 1
-POLICY_SELECTION_SCHEMA_VERSION = 1
-PLOT_SOURCE_SCHEMA_VERSION = 1
+FINAL_RESULTS_SCHEMA_VERSION = 2
+POLICY_SELECTION_SCHEMA_VERSION = 2
+PLOT_SOURCE_SCHEMA_VERSION = 2
 DELAY_POLICY_ALIASES = {"delay_1s": "delay_1000ms"}
 CENTRAL_ENDURANCE_SCENARIO = "slc_100k_pe_waf1"
 RUNTIME_TCO_REPORT_SCHEMA = "ssd-hbf-runtime-tco-v1"
@@ -80,6 +80,11 @@ _SELECTION_OBJECTIVES_WITHOUT_RUNTIME = (
     "goodput_max",
     "hbf_five_year_wear_min",
 )
+MIN_FINAL_GOODPUT_RATIO_TO_BASELINE = 1.0
+_POLICY_PRIORITY = {
+    policy: index
+    for index, policy in enumerate(CANONICAL_MIGRATION_POLICIES)
+}
 
 
 class SSDHBFFinalResultsError(ValueError):
@@ -1105,10 +1110,104 @@ def _candidate_objectives(
     }
 
 
+def _policy_objectives(
+        candidates: Sequence[FinalCandidate],
+) -> dict[str, Any]:
+    ordered = tuple(sorted(
+        candidates,
+        key=lambda value: (
+            value.hbf_read_mode,
+            value.restore_execution_mode,
+        ),
+    ))
+    if (
+        len(ordered) != len(_REQUIRED_OPTIONS)
+        or {candidate.option for candidate in ordered}
+        != set(_REQUIRED_OPTIONS)
+    ):
+        raise SSDHBFFinalResultsError(
+            "policy summary requires all four read/restore options")
+    ratios = tuple(
+        candidate.goodput_mean / candidate.baseline_goodput_mean
+        for candidate in ordered
+    )
+    runtime_ratios = tuple(
+        None if candidate.runtime is None
+        else candidate.runtime.tco_ratio
+        for candidate in ordered
+    )
+    if any(value is None for value in runtime_ratios):
+        mean_runtime_tco_ratio = None
+    else:
+        mean_runtime_tco_ratio = math.fsum(
+            float(value) for value in runtime_ratios
+        ) / len(runtime_ratios)
+    signature = tuple(
+        (
+            candidate.option,
+            candidate.goodput_mean,
+            candidate.runtime,
+            candidate.wear,
+        )
+        for candidate in ordered
+    )
+    return {
+        "policy": ordered[0].canonical_migration_policy,
+        "candidate_keys": [
+            candidate.key for candidate in ordered],
+        "minimum_goodput_ratio_to_baseline": min(ratios),
+        "mean_goodput_ratio_to_baseline": (
+            math.fsum(ratios) / len(ratios)),
+        "mean_runtime_tco_ratio_to_baseline": (
+            mean_runtime_tco_ratio),
+        "maximum_five_year_wear_budget_fraction": max(
+            candidate.wear.five_year_budget_fraction
+            for candidate in ordered
+        ),
+        "robust_across_all_options": (
+            min(ratios)
+            >= MIN_FINAL_GOODPUT_RATIO_TO_BASELINE
+        ),
+        "_signature": signature,
+    }
+
+
+def _normalized_distance_to_ideal(
+        summary: Mapping[str, Any],
+        robust_summaries: Sequence[Mapping[str, Any]],
+        *,
+        runtime_available: bool,
+) -> float:
+    axes = (
+        ("mean_goodput_ratio_to_baseline", True),
+        ("maximum_five_year_wear_budget_fraction", False),
+    )
+    if runtime_available:
+        axes = (
+            axes[0],
+            ("mean_runtime_tco_ratio_to_baseline", False),
+            axes[1],
+        )
+    squared = []
+    for field, maximize in axes:
+        values = [float(row[field]) for row in robust_summaries]
+        lower = min(values)
+        upper = max(values)
+        observed = float(summary[field])
+        if math.isclose(lower, upper, rel_tol=0.0, abs_tol=1e-15):
+            cost = 0.0
+        elif maximize:
+            cost = (upper - observed) / (upper - lower)
+        else:
+            cost = (observed - lower) / (upper - lower)
+        squared.append(cost * cost)
+    return math.sqrt(math.fsum(squared) / len(squared))
+
+
 def select_meaningful_policies(
         loaded: LoadedStagedResults,
 ) -> dict[str, Any]:
-    """Select option winners plus the multidimensional Pareto frontier."""
+    """Select auditable policy-level performance, knee, and wear anchors."""
 
     if not isinstance(loaded, LoadedStagedResults):
         raise SSDHBFFinalResultsError(
@@ -1124,7 +1223,6 @@ def select_meaningful_policies(
     for group_id, group_candidates in sorted(
             candidates_by_group.items()):
         option_winners: dict[str, list[str]] = {}
-        best_keys = set()
         for read_mode, restore_mode in sorted(_REQUIRED_OPTIONS):
             option_candidates = [
                 candidate for candidate in group_candidates
@@ -1146,7 +1244,6 @@ def select_meaningful_policies(
                 for candidate in option_candidates
                 if candidate.goodput_mean == maximum
             )
-            best_keys.update(winners)
             option_winners[
                 f"{read_mode}|{restore_mode}"
             ] = winners
@@ -1174,8 +1271,98 @@ def select_meaningful_policies(
             if not dominating_keys:
                 frontier.append(candidate.key)
         frontier = sorted(frontier)
-        retained = best_keys | set(frontier)
+
+        candidates_by_policy: dict[
+            str, list[FinalCandidate]
+        ] = {}
+        for candidate in group_candidates:
+            candidates_by_policy.setdefault(
+                candidate.canonical_migration_policy,
+                [],
+            ).append(candidate)
+        policy_summaries = {
+            policy: _policy_objectives(rows)
+            for policy, rows in candidates_by_policy.items()
+        }
+        robust_summaries = [
+            summary for summary in policy_summaries.values()
+            if summary["robust_across_all_options"]
+        ]
+        if not robust_summaries:
+            raise SSDHBFFinalResultsError(
+                "no migration policy meets the matched baseline in all "
+                f"four options for {group_id}")
+
+        def priority(summary: Mapping[str, Any]) -> int:
+            return _POLICY_PRIORITY[str(summary["policy"])]
+
+        maximum_goodput = max(
+            float(summary["mean_goodput_ratio_to_baseline"])
+            for summary in robust_summaries
+        )
+        performance = min(
+            (
+                summary for summary in robust_summaries
+                if math.isclose(
+                    float(summary[
+                        "mean_goodput_ratio_to_baseline"]),
+                    maximum_goodput,
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+            ),
+            key=priority,
+        )
+        endurance = min(
+            robust_summaries,
+            key=lambda summary: (
+                float(summary[
+                    "maximum_five_year_wear_budget_fraction"]),
+                (
+                    float(summary[
+                        "mean_runtime_tco_ratio_to_baseline"])
+                    if loaded.runtime_available
+                    else 0.0
+                ),
+                -float(summary[
+                    "mean_goodput_ratio_to_baseline"]),
+                priority(summary),
+            ),
+        )
+        knee_distances = {
+            str(summary["policy"]): _normalized_distance_to_ideal(
+                summary,
+                robust_summaries,
+                runtime_available=loaded.runtime_available,
+            )
+            for summary in robust_summaries
+        }
+        knee = min(
+            robust_summaries,
+            key=lambda summary: (
+                knee_distances[str(summary["policy"])],
+                priority(summary),
+            ),
+        )
+        anchor_policies = {
+            "performance_across_all_options": str(
+                performance["policy"]),
+            "normalized_multiobjective_knee": str(knee["policy"]),
+            "minimum_wear_with_goodput_ge_baseline": str(
+                endurance["policy"]),
+        }
+        selected_policies = set(anchor_policies.values())
+        retained = {
+            candidate.key
+            for candidate in group_candidates
+            if candidate.canonical_migration_policy
+            in selected_policies
+        }
         selected_keys.update(retained)
+        selected_signature_policy = {
+            policy_summaries[policy]["_signature"]: policy
+            for policy in selected_policies
+        }
 
         for candidate in sorted(
                 group_candidates, key=lambda value: value.key):
@@ -1185,20 +1372,48 @@ def select_meaningful_policies(
                 f"{candidate.hbf_read_mode}|"
                 f"{candidate.restore_execution_mode}"
             )
+            policy = candidate.canonical_migration_policy
+            summary = policy_summaries[policy]
+            if candidate.key in retained:
+                selection_reasons.extend(
+                    f"policy_anchor:{anchor_name}"
+                    for anchor_name, anchor_policy
+                    in sorted(anchor_policies.items())
+                    if anchor_policy == policy
+                )
+            elif not summary["robust_across_all_options"]:
+                exclusion_reasons.append(
+                    "policy_minimum_goodput_below_matched_baseline:"
+                    f"{summary['minimum_goodput_ratio_to_baseline']:.12g}"
+                )
+            else:
+                equivalent = selected_signature_policy.get(
+                    summary["_signature"])
+                if equivalent is not None:
+                    exclusion_reasons.append(
+                        "metric_equivalent_policy_not_retained:"
+                        f"{equivalent}")
+                else:
+                    exclusion_reasons.append(
+                        "not_a_policy_level_anchor")
+
+            if candidate.key in option_winners[option_key]:
+                if candidate.key in retained:
+                    selection_reasons.append(
+                        f"best_goodput_for_option:{option_key}")
+                else:
+                    exclusion_reasons.append(
+                        f"option_goodput_tie_not_retained:{option_key}")
             if candidate.goodput_mean <= 0.0:
                 exclusion_reasons.append(
                     "zero_slo_goodput_ineligible_for_final_selection")
-            elif candidate.key in best_keys:
-                selection_reasons.append(
-                    f"best_goodput_for_option:{option_key}")
-            else:
-                exclusion_reasons.append(
-                    f"not_best_goodput_for_option:{option_key}")
-            if candidate.goodput_mean <= 0.0:
-                pass
             elif candidate.key in frontier:
-                selection_reasons.append(
-                    "nondominated_on_declared_objectives")
+                if candidate.key in retained:
+                    selection_reasons.append(
+                        "nondominated_on_declared_objectives")
+                else:
+                    exclusion_reasons.append(
+                        "individual_nondominated_but_not_policy_anchor")
             else:
                 exclusion_reasons.append(
                     "dominated_by:" + ",".join(
@@ -1227,6 +1442,25 @@ def select_meaningful_policies(
                 group_candidates),
             "option_best_goodput_candidate_keys": option_winners,
             "nondominated_candidate_keys": frontier,
+            "minimum_final_goodput_ratio_to_baseline": (
+                MIN_FINAL_GOODPUT_RATIO_TO_BASELINE),
+            "robust_policy_keys": sorted(
+                str(summary["policy"])
+                for summary in robust_summaries
+            ),
+            "selected_policy_anchors": anchor_policies,
+            "policy_knee_distances": dict(sorted(knee_distances.items())),
+            "policy_summaries": [
+                {
+                    key: value
+                    for key, value in summary.items()
+                    if key != "_signature"
+                }
+                for summary in sorted(
+                    policy_summaries.values(),
+                    key=priority,
+                )
+            ],
             "selected_candidate_keys": sorted(retained),
         })
 
@@ -1271,8 +1505,9 @@ def select_meaningful_policies(
         },
         "selection_algorithm": {
             "scope": (
-                "within each identical HBF layout and active-memory "
-                "hardware/economic group"),
+                "migration policy within each identical HBF layout and "
+                "active-memory hardware/economic group; every selected "
+                "policy is rendered in all four read/restore options"),
             "required_migration_policies": list(
                 CANONICAL_MIGRATION_POLICIES),
             "required_read_restore_options": [
@@ -1288,10 +1523,13 @@ def select_meaningful_policies(
                 else _SELECTION_OBJECTIVES_WITHOUT_RUNTIME
             ),
             "retention_rule": (
-                "union of all tied best-goodput candidates per "
-                "read/restore option and all nondominated candidates; "
-                "zero SLO-goodput candidates remain in the audit but are "
-                "ineligible for final selection"),
+                "retain the performance, normalized multiobjective-knee, "
+                "and minimum-wear policy anchors after requiring every "
+                "read/restore option to meet the matched baseline; exact "
+                "metric-equivalent policies use canonical policy order "
+                "as a deterministic representative"),
+            "minimum_goodput_ratio_to_baseline_in_every_option": (
+                MIN_FINAL_GOODPUT_RATIO_TO_BASELINE),
             "oracle_semantics": (
                 "performance-only upper reference; excluded from "
                 "power, energy, TCO, endurance, and Pareto selection"),
