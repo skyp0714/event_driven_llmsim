@@ -35,6 +35,7 @@ from serving.ssd_hbf_design_sweep import (
     STREAMING_BASELINE_CANDIDATE_KEY,
     SUPPORTED_MIGRATION_POLICIES,
     _CellTask,
+    _design_runtime_energy_tco,
     _execute_task,
     _load_resumable_cell,
     _seal_record,
@@ -573,6 +574,91 @@ class SSDHBFDesignSweepTests(unittest.TestCase):
             1.0,
         )
 
+    def test_runtime_tco_is_pooled_and_keeps_per_seed_audit(self):
+        baseline_projection = SimpleNamespace(
+            trace_average_it_power_w=10_000.0,
+            five_year_facility_energy_kwh=525_600.0,
+            five_year_tco_usd=600_000.0,
+        )
+        proposed_projection = SimpleNamespace(
+            trace_average_it_power_w=11_000.0,
+            five_year_facility_energy_kwh=578_160.0,
+            five_year_tco_usd=620_000.0,
+        )
+
+        class FakeComparison:
+            baseline = baseline_projection
+            proposed = proposed_projection
+
+            def to_json_dict(self):
+                return {
+                    "report_schema": "ssd-hbf-runtime-tco-v1",
+                    "baseline": {
+                        "report_schema": "ssd-hbf-runtime-tco-v1",
+                        "system_key": "two_gpu_local_ssd_baseline",
+                        "trace_average_it_power_w": 10_000.0,
+                        "five_year_facility_energy_kwh": 525_600.0,
+                        "five_year_tco_usd": 600_000.0,
+                    },
+                    "proposed": {
+                        "report_schema": "ssd-hbf-runtime-tco-v1",
+                        "system_key": (
+                            "one_gpu_local_ssd_plus_one_hbf"),
+                        "trace_average_it_power_w": 11_000.0,
+                        "five_year_facility_energy_kwh": 578_160.0,
+                        "five_year_tco_usd": 620_000.0,
+                    },
+                }
+
+        fake = FakeComparison()
+        records = {
+            seed: {"system_report": {"seed": seed}}
+            for seed in (7, 11, 13)
+        }
+        static_tco = {
+            "baseline_cost": {
+                "capex_usd": 500_000.0,
+                "five_year_electricity_opex_usd": 50_000.0,
+            },
+            "proposed_cost": {
+                "capex_usd": 510_000.0,
+                "five_year_electricity_opex_usd": 55_000.0,
+            },
+        }
+        with (
+            patch(
+                "serving.ssd_hbf_design_sweep."
+                "evaluate_ssd_hbf_runtime_tco",
+                return_value=fake,
+            ) as evaluate,
+            patch(
+                "serving.ssd_hbf_design_sweep."
+                "aggregate_runtime_tco_comparisons",
+                return_value=fake,
+            ) as pool,
+        ):
+            result, reason = _design_runtime_energy_tco(
+                baseline_records_by_seed=records,
+                proposed_records_by_seed=records,
+                static_tco=static_tco,
+                require_runtime_energy=True,
+            )
+
+        self.assertIsNone(reason)
+        self.assertEqual(evaluate.call_count, 3)
+        pool.assert_called_once()
+        self.assertEqual(
+            result["aggregation"]["method"],
+            "pooled_energy_over_pooled_simulated_horizon",
+        )
+        self.assertEqual(
+            set(result["per_seed"]), {"7", "11", "13"})
+        self.assertEqual(
+            result["aggregation"]["paired_by_seed"]["power"][
+                "candidate_over_reference"]["mean"],
+            1.1,
+        )
+
     def test_tasks_share_one_schedule_object_and_hash_per_seed(self):
         scenario = _FakeScenario()
         contract = {
@@ -971,6 +1057,7 @@ class SSDHBFDesignSweepTests(unittest.TestCase):
                     designs=(self.tp4,),
                     seeds=(7, 11, 13),
                     workers=1,
+                    require_runtime_energy=False,
                 )
             self.assertEqual(first_execute.call_count, 9)
             self.assertTrue(aggregate_path.is_file())
@@ -1039,6 +1126,7 @@ class SSDHBFDesignSweepTests(unittest.TestCase):
                     seeds=(7, 11, 13),
                     workers=1,
                     resume=True,
+                    require_runtime_energy=False,
                 )
             resumed_execute.assert_not_called()
             self.assertEqual(

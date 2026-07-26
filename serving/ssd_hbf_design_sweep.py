@@ -87,6 +87,11 @@ from .core.ssd_hbf_tco import (
     SSDHBFTCOError,
     evaluate_ssd_hbf_tco,
 )
+from .core.ssd_hbf_runtime_energy import (
+    SSDHBFRuntimeEnergyError,
+    aggregate_runtime_tco_comparisons,
+    evaluate_ssd_hbf_runtime_tco,
+)
 from .core.tracelab_comparison_scenarios import (
     LongColdContextStressManifest,
     TraceLabComparisonScenario,
@@ -98,9 +103,9 @@ from .hbf_comparison_sweep import (
 )
 
 
-SSD_HBF_SWEEP_SCHEMA_VERSION = 6
+SSD_HBF_SWEEP_SCHEMA_VERSION = 7
 SSD_HBF_CELL_SCHEMA_VERSION = 5
-SSD_HBF_CONTRACT_KEY = "two-gpu-local-ssd-vs-one-gpu-one-hbf-staged-v4"
+SSD_HBF_CONTRACT_KEY = "two-gpu-local-ssd-vs-one-gpu-one-hbf-staged-v5"
 REQUIRED_SESSION_RATE = 3.0
 PINNED_ENDURANCE_PROFILE = Path(
     "configs/storage/micron_9550_pro_3_84tb.json")
@@ -199,6 +204,7 @@ _EXECUTION_INPUTS = (
     Path("serving/core/endurance_model.py"),
     Path("serving/core/hbf_endurance.py"),
     Path("serving/core/ssd_hbf_tco.py"),
+    Path("serving/core/ssd_hbf_runtime_energy.py"),
     Path("serving/core/gpu_pd_tiered_node.py"),
     Path("serving/core/gpu_pd_oracle_node.py"),
     Path("serving/core/h100_kernel_calibrated_prompt.py"),
@@ -1212,11 +1218,136 @@ def _design_hbf_endurance(
             f"cannot aggregate design HBF endurance: {exc}") from exc
 
 
+def _design_runtime_energy_tco(
+        *,
+        baseline_records_by_seed: Mapping[
+            int, Mapping[str, object]],
+        proposed_records_by_seed: Mapping[
+            int, Mapping[str, object]],
+        static_tco: Optional[Mapping[str, object]],
+        require_runtime_energy: bool,
+) -> tuple[Optional[dict[str, object]], Optional[str]]:
+    if static_tco is None:
+        return None, (
+            "static CAPEX basis is unavailable, so runtime TCO cannot "
+            "be projected"
+        )
+    if set(baseline_records_by_seed) != set(proposed_records_by_seed):
+        raise SSDHBFDesignSweepError(
+            "runtime energy inputs must use paired seeds")
+    try:
+        baseline_cost = static_tco["baseline_cost"]
+        proposed_cost = static_tco["proposed_cost"]
+        if (
+            not isinstance(baseline_cost, Mapping)
+            or not isinstance(proposed_cost, Mapping)
+        ):
+            raise SSDHBFRuntimeEnergyError(
+                "static TCO report lacks finite system costs")
+        comparisons = {}
+        for seed in sorted(baseline_records_by_seed):
+            baseline_report = baseline_records_by_seed[
+                seed].get("system_report")
+            proposed_report = proposed_records_by_seed[
+                seed].get("system_report")
+            if (
+                not isinstance(baseline_report, Mapping)
+                or not isinstance(proposed_report, Mapping)
+            ):
+                raise SSDHBFRuntimeEnergyError(
+                    f"seed {seed} lacks a system report")
+            comparisons[seed] = evaluate_ssd_hbf_runtime_tco(
+                baseline_system_report=baseline_report,
+                proposed_system_report=proposed_report,
+                baseline_capex_usd=float(
+                    baseline_cost["capex_usd"]),
+                proposed_capex_usd=float(
+                    proposed_cost["capex_usd"]),
+                baseline_static_electricity_opex_usd=float(
+                    baseline_cost[
+                        "five_year_electricity_opex_usd"]),
+                proposed_static_electricity_opex_usd=float(
+                    proposed_cost[
+                        "five_year_electricity_opex_usd"]),
+            )
+        pooled = aggregate_runtime_tco_comparisons(
+            tuple(comparisons.values()))
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        SSDHBFRuntimeEnergyError,
+    ) as exc:
+        if require_runtime_energy:
+            raise SSDHBFDesignSweepError(
+                f"runtime energy/TCO accounting failed: {exc}") from exc
+        return None, str(exc)
+
+    def stats(side_name: str, field_name: str) -> dict[str, object]:
+        return asdict(aggregate_seed_values({
+            seed: float(getattr(
+                getattr(comparison, side_name), field_name))
+            for seed, comparison in comparisons.items()
+        }))
+
+    def paired(field_name: str) -> dict[str, object]:
+        return asdict(aggregate_paired_seed_values(
+            {
+                seed: float(getattr(
+                    comparison.baseline, field_name))
+                for seed, comparison in comparisons.items()
+            },
+            {
+                seed: float(getattr(
+                    comparison.proposed, field_name))
+                for seed, comparison in comparisons.items()
+            },
+        ))
+
+    result = pooled.to_json_dict()
+    result["aggregation"] = {
+        "method": "pooled_energy_over_pooled_simulated_horizon",
+        "seed_count": len(comparisons),
+        "seeds": sorted(comparisons),
+        "student_t_95_by_seed": {
+            "baseline_trace_average_it_power_w": stats(
+                "baseline", "trace_average_it_power_w"),
+            "proposed_trace_average_it_power_w": stats(
+                "proposed", "trace_average_it_power_w"),
+            "baseline_five_year_facility_energy_kwh": stats(
+                "baseline", "five_year_facility_energy_kwh"),
+            "proposed_five_year_facility_energy_kwh": stats(
+                "proposed", "five_year_facility_energy_kwh"),
+            "baseline_five_year_tco_usd": stats(
+                "baseline", "five_year_tco_usd"),
+            "proposed_five_year_tco_usd": stats(
+                "proposed", "five_year_tco_usd"),
+        },
+        "paired_by_seed": {
+            "power": paired("trace_average_it_power_w"),
+            "facility_energy": paired(
+                "five_year_facility_energy_kwh"),
+            "tco": paired("five_year_tco_usd"),
+        },
+        "semantics": (
+            "The central projection pools component energy and simulated "
+            "horizon across seeds. Student-t intervals retain seed-level "
+            "variation; runtime electricity replaces static electricity."
+        ),
+    }
+    result["per_seed"] = {
+        str(seed): comparison.to_json_dict()
+        for seed, comparison in sorted(comparisons.items())
+    }
+    return result, None
+
+
 def aggregate_cell_records(
         records: Sequence[Mapping[str, object]],
         designs: Sequence[SSDHBFDesignSpec],
         *,
         require_eligibility: bool = True,
+        require_runtime_energy: bool = False,
 ) -> dict[str, object]:
     design_by_key = {design.key: design for design in designs}
     if not design_by_key:
@@ -1437,6 +1568,14 @@ def aggregate_cell_records(
                 tco = None
                 tco_unavailable_reason = (
                     "reference eligibility failed or baseline goodput is zero")
+            runtime_energy_tco, runtime_unavailable_reason = (
+                _design_runtime_energy_tco(
+                    baseline_records_by_seed=candidates[baseline_key],
+                    proposed_records_by_seed=candidates[key],
+                    static_tco=tco,
+                    require_runtime_energy=require_runtime_energy,
+                )
+            )
             row = {
                 "design": spec.to_json_dict(),
                 "metrics": aggregates[key],
@@ -1448,11 +1587,24 @@ def aggregate_cell_records(
                 "paired_vs_oracle_goodput": paired_oracle,
                 "tco": tco,
                 "tco_unavailable_reason": tco_unavailable_reason,
+                "runtime_energy_tco": runtime_energy_tco,
+                "runtime_energy_tco_unavailable_reason": (
+                    runtime_unavailable_reason),
             }
             design_rows.append(row)
             mean = aggregates[key][
                 "slo_good_output_tokens_per_second"]["mean"]
-            if tco is not None and mean > 0.0:
+            if runtime_energy_tco is not None and mean > 0.0:
+                pareto_points[key] = (
+                    mean,
+                    runtime_energy_tco[
+                        "proposed"]["five_year_tco_usd"],
+                )
+            elif (
+                not require_runtime_energy
+                and tco is not None
+                and mean > 0.0
+            ):
                 pareto_points[key] = (
                     mean,
                     tco["proposed_cost"]["five_year_tco_usd"],
@@ -1474,6 +1626,11 @@ def aggregate_cell_records(
             },
             "designs": design_rows,
             "performance_tco_pareto_design_keys": list(frontier),
+            "performance_tco_pareto_cost_basis": (
+                "event_derived_runtime_tco"
+                if require_runtime_energy
+                else "event_derived_runtime_tco_with_static_fallback"
+            ),
             "performance_ranking": [
                 key for key, _ in sorted(
                     (
@@ -1612,8 +1769,13 @@ def _write_summary_csv(
         "oracle_goodput_mean",
         "goodput_ratio_to_baseline_mean",
         "goodput_ratio_to_oracle_mean",
+        "tco_accounting_basis",
+        "runtime_energy_tco_available",
+        "runtime_seed_count",
         "tco_lifetime_years",
+        "baseline_five_year_tco_usd",
         "five_year_tco_usd",
+        "incremental_five_year_tco_usd",
         "tco_usd_per_million_slo_good_tokens",
         "baseline_it_power_w",
         "proposed_it_power_w",
@@ -1624,6 +1786,16 @@ def _write_summary_csv(
         "incremental_five_year_facility_energy_kwh",
         "proposed_facility_energy_ratio_to_baseline",
         "meets_token_value_break_even",
+        "runtime_baseline_it_power_ci95_lower_w",
+        "runtime_baseline_it_power_ci95_upper_w",
+        "runtime_proposed_it_power_ci95_lower_w",
+        "runtime_proposed_it_power_ci95_upper_w",
+        "static_bom_baseline_five_year_tco_usd",
+        "static_bom_proposed_five_year_tco_usd",
+        "static_bom_baseline_it_power_w",
+        "static_bom_proposed_it_power_w",
+        "static_bom_baseline_five_year_facility_energy_kwh",
+        "static_bom_proposed_five_year_facility_energy_kwh",
         "performance_tco_pareto",
     )
     rows = []
@@ -1643,10 +1815,79 @@ def _write_summary_csv(
             central_endurance = endurance_scenarios[
                 "slc_100k_pe_waf1"]
             tco = row["tco"]
+            runtime = row["runtime_energy_tco"]
+            if runtime is None:
+                runtime_baseline = None
+                runtime_proposed = None
+                runtime_stats = None
+            else:
+                runtime_baseline = runtime["baseline"]
+                runtime_proposed = runtime["proposed"]
+                runtime_stats = runtime["aggregation"][
+                    "student_t_95_by_seed"]
             baseline_ratio = row["paired_vs_baseline_goodput"][
                 "candidate_over_reference"]
             oracle_ratio = row["paired_vs_oracle_goodput"][
                 "candidate_over_reference"]
+            if runtime is not None:
+                primary_baseline_power = runtime_baseline[
+                    "trace_average_it_power_w"]
+                primary_proposed_power = runtime_proposed[
+                    "trace_average_it_power_w"]
+                primary_baseline_energy = runtime_baseline[
+                    "five_year_facility_energy_kwh"]
+                primary_proposed_energy = runtime_proposed[
+                    "five_year_facility_energy_kwh"]
+                primary_baseline_tco = runtime_baseline[
+                    "five_year_tco_usd"]
+                primary_proposed_tco = runtime_proposed[
+                    "five_year_tco_usd"]
+                tco_accounting_basis = (
+                    "event_derived_runtime_electricity_replaces_static")
+                runtime_seed_count = runtime["aggregation"]["seed_count"]
+            elif tco is not None:
+                primary_baseline_power = tco[
+                    "power_energy_comparison"]["baseline_it_power_w"]
+                primary_proposed_power = tco[
+                    "power_energy_comparison"]["proposed_it_power_w"]
+                primary_baseline_energy = tco[
+                    "power_energy_comparison"][
+                        "baseline_five_year_facility_energy_kwh"]
+                primary_proposed_energy = tco[
+                    "power_energy_comparison"][
+                        "proposed_five_year_facility_energy_kwh"]
+                primary_baseline_tco = tco[
+                    "baseline_cost"]["five_year_tco_usd"]
+                primary_proposed_tco = tco[
+                    "proposed_cost"]["five_year_tco_usd"]
+                tco_accounting_basis = (
+                    "static_bom_fallback_runtime_unavailable")
+                runtime_seed_count = None
+            else:
+                primary_baseline_power = None
+                primary_proposed_power = None
+                primary_baseline_energy = None
+                primary_proposed_energy = None
+                primary_baseline_tco = None
+                primary_proposed_tco = None
+                tco_accounting_basis = None
+                runtime_seed_count = None
+            if (
+                primary_proposed_tco is None
+                or goodput["mean"] <= 0.0
+            ):
+                primary_token_tco = None
+            else:
+                primary_token_tco = (
+                    primary_proposed_tco
+                    / (
+                        goodput["mean"]
+                        * 5.0
+                        * 8_760.0
+                        * 3_600.0
+                    )
+                    * 1_000_000.0
+                )
             rows.append({
                 "session_rate": rate_row["session_rate"],
                 "design_key": design["key"],
@@ -1723,52 +1964,116 @@ def _write_summary_csv(
                 "goodput_ratio_to_oracle_mean": (
                     None if oracle_ratio is None
                     else oracle_ratio["mean"]),
+                "tco_accounting_basis": tco_accounting_basis,
+                "runtime_energy_tco_available": runtime is not None,
+                "runtime_seed_count": runtime_seed_count,
                 "tco_lifetime_years": (
+                    None
+                    if primary_proposed_tco is None
+                    else 5.0),
+                "baseline_five_year_tco_usd": primary_baseline_tco,
+                "five_year_tco_usd": primary_proposed_tco,
+                "incremental_five_year_tco_usd": (
+                    None
+                    if primary_proposed_tco is None
+                    else (
+                        primary_proposed_tco
+                        - primary_baseline_tco
+                    )
+                ),
+                "tco_usd_per_million_slo_good_tokens": (
+                    primary_token_tco),
+                "baseline_it_power_w": primary_baseline_power,
+                "proposed_it_power_w": primary_proposed_power,
+                "incremental_it_power_w": (
+                    None
+                    if primary_proposed_power is None
+                    else (
+                        primary_proposed_power
+                        - primary_baseline_power
+                    )
+                ),
+                "proposed_it_power_ratio_to_baseline": (
+                    None
+                    if primary_proposed_power is None
+                    else (
+                        primary_proposed_power
+                        / primary_baseline_power
+                    )
+                ),
+                "baseline_five_year_facility_energy_kwh": (
+                    primary_baseline_energy),
+                "proposed_five_year_facility_energy_kwh": (
+                    primary_proposed_energy),
+                "incremental_five_year_facility_energy_kwh": (
+                    None
+                    if primary_proposed_energy is None
+                    else (
+                        primary_proposed_energy
+                        - primary_baseline_energy
+                    )
+                ),
+                "proposed_facility_energy_ratio_to_baseline": (
+                    None
+                    if primary_proposed_energy is None
+                    else (
+                        primary_proposed_energy
+                        / primary_baseline_energy
+                    )
+                ),
+                "meets_token_value_break_even": (
+                    None
+                    if primary_proposed_tco is None
+                    else (
+                        goodput["mean"] / baseline
+                        >= (
+                            primary_proposed_tco
+                            / primary_baseline_tco
+                        )
+                    )
+                ),
+                "runtime_baseline_it_power_ci95_lower_w": (
+                    None if runtime_stats is None else
+                    runtime_stats[
+                        "baseline_trace_average_it_power_w"][
+                            "ci95_lower"]),
+                "runtime_baseline_it_power_ci95_upper_w": (
+                    None if runtime_stats is None else
+                    runtime_stats[
+                        "baseline_trace_average_it_power_w"][
+                            "ci95_upper"]),
+                "runtime_proposed_it_power_ci95_lower_w": (
+                    None if runtime_stats is None else
+                    runtime_stats[
+                        "proposed_trace_average_it_power_w"][
+                            "ci95_lower"]),
+                "runtime_proposed_it_power_ci95_upper_w": (
+                    None if runtime_stats is None else
+                    runtime_stats[
+                        "proposed_trace_average_it_power_w"][
+                            "ci95_upper"]),
+                "static_bom_baseline_five_year_tco_usd": (
                     None if tco is None else
-                    tco["power_energy_comparison"]["lifetime_years"]),
-                "five_year_tco_usd": (
+                    tco["baseline_cost"]["five_year_tco_usd"]),
+                "static_bom_proposed_five_year_tco_usd": (
                     None if tco is None else
                     tco["proposed_cost"]["five_year_tco_usd"]),
-                "tco_usd_per_million_slo_good_tokens": (
-                    None if tco is None else
-                    tco["proposed_token_economics"][
-                        "tco_usd_per_million_slo_good_output_tokens"]),
-                "baseline_it_power_w": (
+                "static_bom_baseline_it_power_w": (
                     None if tco is None else
                     tco["power_energy_comparison"][
                         "baseline_it_power_w"]),
-                "proposed_it_power_w": (
+                "static_bom_proposed_it_power_w": (
                     None if tco is None else
                     tco["power_energy_comparison"][
                         "proposed_it_power_w"]),
-                "incremental_it_power_w": (
-                    None if tco is None else
-                    tco["power_energy_comparison"][
-                        "incremental_it_power_w"]),
-                "proposed_it_power_ratio_to_baseline": (
-                    None if tco is None else
-                    tco["power_energy_comparison"][
-                        "proposed_it_power_ratio_to_baseline"]),
-                "baseline_five_year_facility_energy_kwh": (
+                "static_bom_baseline_five_year_facility_energy_kwh": (
                     None if tco is None else
                     tco["power_energy_comparison"][
                         "baseline_five_year_facility_energy_kwh"]),
-                "proposed_five_year_facility_energy_kwh": (
+                "static_bom_proposed_five_year_facility_energy_kwh": (
                     None if tco is None else
                     tco["power_energy_comparison"][
                         "proposed_five_year_facility_energy_kwh"]),
-                "incremental_five_year_facility_energy_kwh": (
-                    None if tco is None else
-                    tco["power_energy_comparison"][
-                        "incremental_five_year_facility_energy_kwh"]),
-                "proposed_facility_energy_ratio_to_baseline": (
-                    None if tco is None else
-                    tco["power_energy_comparison"][
-                        "proposed_facility_energy_ratio_to_baseline"]),
-                "meets_token_value_break_even": (
-                    None if tco is None else
-                    tco[
-                        "proposed_meets_or_exceeds_goodput_break_even"]),
                 "performance_tco_pareto": (
                     row["performance_tco_pareto"]),
             })
@@ -1795,6 +2100,7 @@ def run_design_space(
         resume_ttft_seconds: float = DEFAULT_RESUME_TTFT_SECONDS,
         tpot_milliseconds: float = DEFAULT_TPOT_MILLISECONDS,
         resume: bool = False,
+        require_runtime_energy: bool = True,
         progress: Optional[Callable[[Mapping[str, object]], None]] = None,
 ) -> tuple[dict[str, object], Path]:
     root = Path(output_root).expanduser().resolve()
@@ -1895,7 +2201,11 @@ def run_design_space(
     if current_hash != expected_hash:
         raise SSDHBFDesignSweepError(
             "execution source or hardware config changed during sweep")
-    aggregate = aggregate_cell_records(records, designs)
+    aggregate = aggregate_cell_records(
+        records,
+        designs,
+        require_runtime_energy=require_runtime_energy,
+    )
     restore_mode_count = len({
         design.restore_execution_mode
         for design in designs
@@ -1915,6 +2225,7 @@ def run_design_space(
                 design.to_json_dict() for design in designs],
         },
         "execution_inputs_sha256": expected_hash,
+        "runtime_energy_tco_required": require_runtime_energy,
     }
     aggregate_path = root / "aggregate.json"
     write_json_atomic(aggregate_path, manifest)
