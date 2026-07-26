@@ -217,6 +217,30 @@ class SSDHBFDesignSweepTests(unittest.TestCase):
                     design.migration_policy,
                 )
 
+    def test_hbf_read_mode_is_a_distinct_propagated_axis(self):
+        grid = build_design_grid(
+            layouts=("tp8_context",),
+            migration_policies=("eager",),
+            active_memories=(self.memory16,),
+            hbf_read_modes=("demand", "prefetch"),
+        )
+
+        self.assertEqual(len(grid), 2)
+        self.assertEqual(
+            {design.hbf_read_mode for design in grid},
+            {"demand", "prefetch"},
+        )
+        self.assertEqual(len({design.key for design in grid}), 2)
+        for design in grid:
+            system = make_design_system(
+                repo_root=REPO_ROOT,
+                spec=design,
+            )
+            self.assertEqual(
+                system.node.hbf_hardware.hbf_read_prefetch_enabled,
+                design.hbf_read_mode == "prefetch",
+            )
+
     def test_tasks_share_one_schedule_object_and_hash_per_seed(self):
         scenario = _FakeScenario()
         contract = {

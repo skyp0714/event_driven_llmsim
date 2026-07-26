@@ -83,8 +83,8 @@ from .hbf_comparison_sweep import (
 )
 
 
-SSD_HBF_SWEEP_SCHEMA_VERSION = 2
-SSD_HBF_CELL_SCHEMA_VERSION = 1
+SSD_HBF_SWEEP_SCHEMA_VERSION = 3
+SSD_HBF_CELL_SCHEMA_VERSION = 2
 SSD_HBF_CONTRACT_KEY = "one-gpu-local-ssd-plus-one-hbf-staged-v1"
 REQUIRED_SESSION_RATE = 3.0
 
@@ -133,6 +133,8 @@ SMOKE_MIGRATION_POLICIES = (
     "tool_or_human_immediate",
     "delay_1s",
 )
+SUPPORTED_HBF_READ_MODES = ("demand", "prefetch")
+DEFAULT_HBF_READ_MODES = SUPPORTED_HBF_READ_MODES
 DEFAULT_SSD_HBF_SEEDS = (101, 102, 103)
 SMOKE_SEEDS = (101, 102)
 
@@ -148,6 +150,7 @@ _EXECUTION_INPUTS = (
     Path("serving/core/ssd_hbf_tco.py"),
     Path("serving/core/gpu_pd_tiered_node.py"),
     Path("serving/core/gpu_pd_oracle_node.py"),
+    Path("serving/core/hbf_full_model_latency.py"),
     Path("serving/core/hbf_comparison_cell.py"),
     Path("serving/core/hbf_comparison_metrics.py"),
     Path("serving/core/hbf_comparison_workload.py"),
@@ -231,6 +234,7 @@ class SSDHBFDesignSpec:
     hbf_layout: str
     migration_policy: str
     active_memory: ActiveMemorySpec
+    hbf_read_mode: str = "demand"
     gpu_host_count: int = 1
     hbf_host_count: int = 1
     hbf_card_count: int = 8
@@ -249,6 +253,10 @@ class SSDHBFDesignSpec:
         if not isinstance(self.active_memory, ActiveMemorySpec):
             raise SSDHBFDesignSweepError(
                 "active_memory must be ActiveMemorySpec")
+        if self.hbf_read_mode not in SUPPORTED_HBF_READ_MODES:
+            raise SSDHBFDesignSweepError(
+                "hbf_read_mode must be one of "
+                f"{SUPPORTED_HBF_READ_MODES!r}")
         if (
             self.gpu_host_count != 1
             or self.hbf_host_count != 1
@@ -277,6 +285,7 @@ def make_design_spec(
         hbf_layout: str,
         migration_policy: str,
         active_memory: ActiveMemorySpec,
+        hbf_read_mode: str = "demand",
 ) -> SSDHBFDesignSpec:
     if hbf_layout not in SUPPORTED_LAYOUTS:
         raise SSDHBFDesignSweepError(
@@ -284,6 +293,9 @@ def make_design_spec(
     if migration_policy not in SUPPORTED_MIGRATION_POLICIES:
         raise SSDHBFDesignSweepError(
             f"unsupported migration policy {migration_policy!r}")
+    if hbf_read_mode not in SUPPORTED_HBF_READ_MODES:
+        raise SSDHBFDesignSweepError(
+            f"unsupported HBF read mode {hbf_read_mode!r}")
     memory_key = (
         f"{active_memory.kind}-"
         f"{active_memory.capacity_gib_per_card:g}gib-"
@@ -293,10 +305,12 @@ def make_design_spec(
     )
     return SSDHBFDesignSpec(
         key=_slug(
-            f"ssd-hbf-{hbf_layout}-{migration_policy}-{memory_key}"),
+            f"ssd-hbf-{hbf_layout}-{migration_policy}-"
+            f"{hbf_read_mode}-{memory_key}"),
         hbf_layout=hbf_layout,
         migration_policy=migration_policy,
         active_memory=active_memory,
+        hbf_read_mode=hbf_read_mode,
     )
 
 
@@ -305,8 +319,14 @@ def build_design_grid(
         layouts: Sequence[str],
         migration_policies: Sequence[str],
         active_memories: Sequence[ActiveMemorySpec],
+        hbf_read_modes: Sequence[str] = ("demand",),
 ) -> tuple[SSDHBFDesignSpec, ...]:
-    if not layouts or not migration_policies or not active_memories:
+    if (
+        not layouts
+        or not migration_policies
+        or not active_memories
+        or not hbf_read_modes
+    ):
         raise SSDHBFDesignSweepError(
             "layout, policy, and active-memory axes must be non-empty")
     if len(layouts) != len(set(layouts)):
@@ -314,15 +334,27 @@ def build_design_grid(
     if len(migration_policies) != len(set(migration_policies)):
         raise SSDHBFDesignSweepError(
             "migration-policy axis contains duplicates")
+    if (
+        len(hbf_read_modes) != len(set(hbf_read_modes))
+        or any(
+            mode not in SUPPORTED_HBF_READ_MODES
+            for mode in hbf_read_modes
+        )
+    ):
+        raise SSDHBFDesignSweepError(
+            "HBF read modes must be unique members of "
+            f"{SUPPORTED_HBF_READ_MODES!r}")
     specs = tuple(
         make_design_spec(
             hbf_layout=layout,
             migration_policy=policy,
             active_memory=memory,
+            hbf_read_mode=read_mode,
         )
         for layout in layouts
         for policy in migration_policies
         for memory in active_memories
+        for read_mode in hbf_read_modes
     )
     keys = [spec.key for spec in specs]
     if len(keys) != len(set(keys)):
@@ -407,6 +439,8 @@ def make_design_system(
             workspace["capacity_bytes_per_card"]),
         lpddr_bandwidth_gbps_per_card=(
             spec.active_memory.bandwidth_gbps_per_card),
+        hbf_read_prefetch_enabled=(
+            spec.hbf_read_mode == "prefetch"),
     )
     hbf_hardware.validate()
     return SSDStagedGPUHBFSystem(
@@ -1229,6 +1263,7 @@ def _write_summary_csv(
         "gpu_host_count",
         "hbf_host_count",
         "migration_policy",
+        "hbf_read_mode",
         "active_memory_kind",
         "active_memory_gib_per_card",
         "active_memory_gbps_per_card",
@@ -1276,6 +1311,7 @@ def _write_summary_csv(
                 "gpu_host_count": design["gpu_host_count"],
                 "hbf_host_count": design["hbf_host_count"],
                 "migration_policy": design["migration_policy"],
+                "hbf_read_mode": design["hbf_read_mode"],
                 "active_memory_kind": memory["kind"],
                 "active_memory_gib_per_card": (
                     memory["capacity_gib_per_card"]),
@@ -1516,6 +1552,16 @@ def _parser() -> argparse.ArgumentParser:
         default=list(DEFAULT_MIGRATION_POLICIES),
     )
     parser.add_argument(
+        "--hbf-read-modes",
+        nargs="+",
+        choices=SUPPORTED_HBF_READ_MODES,
+        default=list(DEFAULT_HBF_READ_MODES),
+        help=(
+            "demand exposes one configured fixed latency per HBF-touching "
+            "kernel; prefetch hides only that fixed latency"
+        ),
+    )
+    parser.add_argument(
         "--memory",
         action="append",
         default=None,
@@ -1568,6 +1614,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         layouts=tuple(args.layouts),
         migration_policies=policies,
         active_memories=memories,
+        hbf_read_modes=tuple(args.hbf_read_modes),
     )
     for design in designs:
         validate_design_workspace(design)

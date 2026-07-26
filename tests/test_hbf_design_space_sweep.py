@@ -12,6 +12,7 @@ from serving.hbf_design_space_sweep import (
     HBFDesignSpaceError,
     aggregate_cell_records,
     build_design_grid,
+    make_design_system,
     make_design_spec,
     pareto_frontier,
     parse_active_memory_spec,
@@ -110,6 +111,32 @@ class HBFDesignSpaceSweepTests(unittest.TestCase):
             active_memories=(first, second),
         )
         self.assertEqual(len({spec.key for spec in specs}), 2)
+
+    def test_hbf_read_mode_is_a_distinct_propagated_axis(self):
+        memory = parse_active_memory_spec("lpddr:16:204.8")
+        specs = build_design_grid(
+            hbf_host_counts=(1,),
+            layouts=("tp4",),
+            migration_policies=("eager",),
+            active_memories=(memory,),
+            hbf_read_modes=("demand", "prefetch"),
+        )
+
+        self.assertEqual(len(specs), 2)
+        self.assertEqual(
+            {spec.hbf_read_mode for spec in specs},
+            {"demand", "prefetch"},
+        )
+        self.assertEqual(len({spec.key for spec in specs}), 2)
+        for spec in specs:
+            system = make_design_system(
+                repo_root=Path(__file__).resolve().parents[1],
+                spec=spec,
+            )
+            self.assertEqual(
+                system.node.hbf_hardware.hbf_read_prefetch_enabled,
+                spec.hbf_read_mode == "prefetch",
+            )
 
     def test_workspace_is_checked_before_an_expensive_cell(self):
         too_small = make_design_spec(

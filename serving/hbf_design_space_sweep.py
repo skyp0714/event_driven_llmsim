@@ -83,8 +83,8 @@ from .hbf_comparison_sweep import (
 )
 
 
-DESIGN_SPACE_SCHEMA_VERSION = 1
-DESIGN_CELL_SCHEMA_VERSION = 1
+DESIGN_SPACE_SCHEMA_VERSION = 2
+DESIGN_CELL_SCHEMA_VERSION = 2
 BASELINE_SYSTEM_KEY = "cpu_ssd"
 BASELINE_CANDIDATE_KEY = "baseline_cpu_ssd"
 ORACLE_CANDIDATE_KEY = "oracle"
@@ -97,6 +97,8 @@ DEFAULT_MIGRATION_POLICIES = (
     "after_first_tool",
     "load_aware",
 )
+SUPPORTED_HBF_READ_MODES = ("demand", "prefetch")
+DEFAULT_HBF_READ_MODES = SUPPORTED_HBF_READ_MODES
 BYTES_PER_GIB = 1024 ** 3
 _EXECUTION_INPUTS = (
     Path("serving/hbf_design_space_sweep.py"),
@@ -212,6 +214,7 @@ class HBFDesignSpec:
     hbf_server_layouts: tuple[str, ...]
     migration_policy: str
     active_memory: ActiveMemorySpec
+    hbf_read_mode: str = "demand"
 
     def __post_init__(self) -> None:
         if not isinstance(self.key, str) or not self.key:
@@ -229,6 +232,10 @@ class HBFDesignSpec:
         if not isinstance(self.active_memory, ActiveMemorySpec):
             raise HBFDesignSpaceError(
                 "active_memory must be ActiveMemorySpec")
+        if self.hbf_read_mode not in SUPPORTED_HBF_READ_MODES:
+            raise HBFDesignSpaceError(
+                "hbf_read_mode must be one of "
+                f"{SUPPORTED_HBF_READ_MODES!r}")
         try:
             MigrationPolicy.for_key(self.migration_policy)
         except (TypeError, ValueError) as exc:
@@ -249,6 +256,7 @@ def design_key(
         hbf_server_layouts: Sequence[str],
         migration_policy: str,
         active_memory: ActiveMemorySpec,
+        hbf_read_mode: str = "demand",
 ) -> str:
     layouts = parse_layout_set(",".join(hbf_server_layouts))
     memory = (
@@ -261,7 +269,7 @@ def design_key(
     return _slug(
         f"hbf{len(layouts)}-"
         f"{'+'.join(layouts)}-"
-        f"{migration_policy}-{memory}"
+        f"{migration_policy}-{hbf_read_mode}-{memory}"
     )
 
 
@@ -270,6 +278,7 @@ def make_design_spec(
         hbf_server_layouts: Sequence[str],
         migration_policy: str,
         active_memory: ActiveMemorySpec,
+        hbf_read_mode: str = "demand",
 ) -> HBFDesignSpec:
     layouts = parse_layout_set(",".join(hbf_server_layouts))
     return HBFDesignSpec(
@@ -277,10 +286,12 @@ def make_design_spec(
             hbf_server_layouts=layouts,
             migration_policy=migration_policy,
             active_memory=active_memory,
+            hbf_read_mode=hbf_read_mode,
         ),
         hbf_server_layouts=layouts,
         migration_policy=migration_policy,
         active_memory=active_memory,
+        hbf_read_mode=hbf_read_mode,
     )
 
 
@@ -290,6 +301,7 @@ def build_design_grid(
         layouts: Sequence[str],
         migration_policies: Sequence[str],
         active_memories: Sequence[ActiveMemorySpec],
+        hbf_read_modes: Sequence[str] = ("demand",),
         include_mixed_layouts: bool = False,
 ) -> tuple[HBFDesignSpec, ...]:
     """Build deterministic homogeneous or symmetry-reduced mixed layouts."""
@@ -323,6 +335,18 @@ def build_design_grid(
     if any(not isinstance(item, ActiveMemorySpec) for item in memories):
         raise HBFDesignSpaceError(
             "active_memories must contain ActiveMemorySpec values")
+    read_modes = tuple(hbf_read_modes)
+    if (
+        not read_modes
+        or len(read_modes) != len(set(read_modes))
+        or any(
+            mode not in SUPPORTED_HBF_READ_MODES
+            for mode in read_modes
+        )
+    ):
+        raise HBFDesignSpaceError(
+            "hbf_read_modes must be unique members of "
+            f"{SUPPORTED_HBF_READ_MODES!r}")
 
     layout_sets = []
     for count in sorted(counts):
@@ -337,10 +361,12 @@ def build_design_grid(
             hbf_server_layouts=layout_set,
             migration_policy=policy,
             active_memory=memory,
+            hbf_read_mode=read_mode,
         )
         for layout_set in layout_sets
         for policy in policies
         for memory in memories
+        for read_mode in read_modes
     )
     keys = [spec.key for spec in specs]
     if len(keys) != len(set(keys)):
@@ -422,6 +448,8 @@ def make_design_system(
             workspace["capacity_bytes_per_card"]),
         lpddr_bandwidth_gbps_per_card=(
             spec.active_memory.bandwidth_gbps_per_card),
+        hbf_read_prefetch_enabled=(
+            spec.hbf_read_mode == "prefetch"),
     )
     hbf_hardware.validate()
     layout_values = tuple(
@@ -1068,6 +1096,7 @@ def _write_summary_csv(
         "hbf_host_count",
         "hbf_server_layouts",
         "migration_policy",
+        "hbf_read_mode",
         "active_memory_kind",
         "active_memory_gib_per_card",
         "active_memory_gbps_per_card",
@@ -1111,6 +1140,7 @@ def _write_summary_csv(
                 "hbf_server_layouts": "+".join(
                     design["hbf_server_layouts"]),
                 "migration_policy": design["migration_policy"],
+                "hbf_read_mode": design["hbf_read_mode"],
                 "active_memory_kind": memory["kind"],
                 "active_memory_gib_per_card": (
                     memory["capacity_gib_per_card"]),
@@ -1439,6 +1469,16 @@ def _parser() -> argparse.ArgumentParser:
         default=list(DEFAULT_MIGRATION_POLICIES),
     )
     parser.add_argument(
+        "--hbf-read-modes",
+        nargs="+",
+        choices=SUPPORTED_HBF_READ_MODES,
+        default=list(DEFAULT_HBF_READ_MODES),
+        help=(
+            "demand exposes the configured fixed HBF read latency once per "
+            "touching kernel; prefetch hides only that fixed latency"
+        ),
+    )
+    parser.add_argument(
         "--memory",
         action="append",
         default=None,
@@ -1492,10 +1532,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 hbf_server_layouts=layout_set,
                 migration_policy=policy,
                 active_memory=memory,
+                hbf_read_mode=read_mode,
             )
             for layout_set in layout_sets
             for policy in args.policies
             for memory in memories
+            for read_mode in args.hbf_read_modes
         )
     else:
         designs = build_design_grid(
@@ -1503,6 +1545,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             layouts=args.layouts,
             migration_policies=args.policies,
             active_memories=memories,
+            hbf_read_modes=args.hbf_read_modes,
             include_mixed_layouts=args.include_mixed_layouts,
         )
     for design in designs:
