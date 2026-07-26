@@ -13,7 +13,10 @@ from enum import Enum
 import heapq
 from typing import Any, Mapping, Optional
 
-from .gpu_pd_latency import P4D4GPUHardware
+from .gpu_pd_latency import (
+    P4D4_MODEL_LAYER_COUNT,
+    P4D4GPUHardware,
+)
 from .gpu_pd_tier_resources import TierNodeResources, TierTransferStage
 from .hbf_full_model_lifecycle import ResourceCalendar
 
@@ -22,6 +25,12 @@ SUPPORTED_TIER_POLICIES = frozenset({
     "hbm_lru_recompute",
     "ssd_direct",
     "cpu_ssd",
+})
+RESTORE_EXECUTION_BULK = "bulk"
+RESTORE_EXECUTION_LAYERWISE = "layerwise_streaming"
+SUPPORTED_RESTORE_EXECUTION_MODES = frozenset({
+    RESTORE_EXECUTION_BULK,
+    RESTORE_EXECUTION_LAYERWISE,
 })
 MAX_CONTEXT_TOKENS = 1_010_000
 
@@ -298,7 +307,11 @@ class PrepareTicket:
     stages: tuple[ScheduledTierStage, ...]
     start_ns: int
     completion_ns: int
+    restore_execution_mode: str = RESTORE_EXECUTION_BULK
+    restore_layer_ready_ns: tuple[int, ...] = ()
     completed: bool = False
+    pool_released: bool = False
+    pool_release_ns: Optional[int] = None
     active: bool = False
     p_released: bool = False
     committed: bool = False
@@ -367,6 +380,8 @@ class TierLifecycleMetrics:
     stale_demotions: int = 0
     prepare_started: int = 0
     prepare_completed: int = 0
+    streaming_prepare_started: int = 0
+    streaming_prepare_pool_released: int = 0
     p_handoff_releases: int = 0
     prepare_misses: int = 0
     d_prepare_hits: int = 0
@@ -404,11 +419,17 @@ class TieredPDKVLifecycle:
             d_capacity_bytes_per_rank: Optional[int] = None,
             cpu_capacity_bytes: Optional[int] = None,
             ssd_capacity_bytes: Optional[int] = None,
+            restore_execution_mode: str = RESTORE_EXECUTION_BULK,
             validate_every_event: bool = True) -> None:
         hardware.validate()
         if policy not in SUPPORTED_TIER_POLICIES:
             raise ValueError(
                 f"unsupported tier policy {policy!r}")
+        if restore_execution_mode not in (
+                SUPPORTED_RESTORE_EXECUTION_MODES):
+            raise ValueError(
+                "restore_execution_mode must be one of "
+                f"{sorted(SUPPORTED_RESTORE_EXECUTION_MODES)}")
         if (
             isinstance(node_id, bool)
             or not isinstance(node_id, int)
@@ -421,6 +442,7 @@ class TieredPDKVLifecycle:
         self.hardware = hardware
         self.node_id = node_id
         self.policy = policy
+        self.restore_execution_mode = restore_execution_mode
         self.validate_every_event = validate_every_event
         self.calendar = (
             calendar if calendar is not None else ResourceCalendar())
@@ -1312,6 +1334,61 @@ class TieredPDKVLifecycle:
             bounce_owner if needs_bounce_bytes else None,
         )
 
+    def _restore_byte_partitions(
+            self, hit_tokens: int) -> tuple[int, ...]:
+        total_bytes_per_rank = self._per_rank_bytes(hit_tokens)
+        base, remainder = divmod(
+            total_bytes_per_rank, P4D4_MODEL_LAYER_COUNT)
+        partitions = tuple(
+            base + int(layer_index < remainder)
+            for layer_index in range(P4D4_MODEL_LAYER_COUNT)
+        )
+        if (
+            len(partitions) != P4D4_MODEL_LAYER_COUNT
+            or sum(partitions) != total_bytes_per_rank
+            or any(byte_count <= 0 for byte_count in partitions)
+        ):
+            raise AssertionError(
+                "layer-wise restore byte partition is not exact")
+        return partitions
+
+    def _streaming_prepare_stages(
+            self, *, source: Tier,
+            hit_tokens: int,
+    ) -> Optional[tuple[
+            tuple[TierTransferStage, ...],
+            tuple[int, ...],
+    ]]:
+        if (
+            self.restore_execution_mode
+            != RESTORE_EXECUTION_LAYERWISE
+            or source not in {Tier.CPU, Tier.SSD}
+        ):
+            return None
+        stages = []
+        layer_ready_stage_indexes = []
+        partitions = self._restore_byte_partitions(hit_tokens)
+        for layer_index, bytes_per_rank in enumerate(partitions):
+            if source == Tier.SSD:
+                stages.append(self.resources.ssd_bytes_stage(
+                    logical_token_count=hit_tokens,
+                    bytes_per_rank=bytes_per_rank,
+                    direction="ssd_to_cpu",
+                    partition_index=layer_index,
+                    partition_count=P4D4_MODEL_LAYER_COUNT,
+                ))
+            stages.append(self.resources.gpu_cpu_bytes_stage(
+                logical_token_count=hit_tokens,
+                bytes_per_rank=bytes_per_rank,
+                gpu_role="p",
+                direction="cpu_to_gpu",
+                block_rounded=True,
+                partition_index=layer_index,
+                partition_count=P4D4_MODEL_LAYER_COUNT,
+            ))
+            layer_ready_stage_indexes.append(len(stages) - 1)
+        return tuple(stages), tuple(layer_ready_stage_indexes)
+
     def begin_prepare(
             self, session_id: str, *, request_id: int,
             now_ns: int, input_tokens: int, output_tokens: int,
@@ -1435,6 +1512,7 @@ class TieredPDKVLifecycle:
         if effective_source is not None:
             effective_source.foreground_pins += 1
         stages: tuple[TierTransferStage, ...]
+        layer_ready_stage_indexes: tuple[int, ...] = ()
         if effective_source is None:
             stages = ()
             self.metrics.prepare_misses += 1
@@ -1448,27 +1526,41 @@ class TieredPDKVLifecycle:
             )
             self.metrics.d_prepare_hits += 1
         elif effective_source.tier == Tier.CPU:
-            stages = (
-                self.resources.gpu_cpu_stage(
-                    hit_tokens,
-                    gpu_role="p",
-                    direction="cpu_to_gpu",
-                ),
+            streaming = self._streaming_prepare_stages(
+                source=effective_source.tier,
+                hit_tokens=hit_tokens,
             )
+            if streaming is None:
+                stages = (
+                    self.resources.gpu_cpu_stage(
+                        hit_tokens,
+                        gpu_role="p",
+                        direction="cpu_to_gpu",
+                    ),
+                )
+            else:
+                stages, layer_ready_stage_indexes = streaming
             effective_source.retired = True
             record.primary = None
             record.primary_copy_id = None
             self.metrics.cpu_prepare_hits += 1
         else:
-            stages = (
-                self.resources.ssd_stage(
-                    hit_tokens, direction="ssd_to_cpu"),
-                self.resources.gpu_cpu_stage(
-                    hit_tokens,
-                    gpu_role="p",
-                    direction="cpu_to_gpu",
-                ),
+            streaming = self._streaming_prepare_stages(
+                source=effective_source.tier,
+                hit_tokens=hit_tokens,
             )
+            if streaming is None:
+                stages = (
+                    self.resources.ssd_stage(
+                        hit_tokens, direction="ssd_to_cpu"),
+                    self.resources.gpu_cpu_stage(
+                        hit_tokens,
+                        gpu_role="p",
+                        direction="cpu_to_gpu",
+                    ),
+                )
+            else:
+                stages, layer_ready_stage_indexes = streaming
             effective_source.shadow = True
             record.primary = None
             record.primary_copy_id = None
@@ -1485,6 +1577,19 @@ class TieredPDKVLifecycle:
             stages=stages,
             ready_ns=now_ns,
         )
+        restore_layer_ready_ns = tuple(
+            job.stages[index].completion_ns
+            for index in layer_ready_stage_indexes
+        )
+        if restore_layer_ready_ns:
+            if (
+                len(restore_layer_ready_ns)
+                != P4D4_MODEL_LAYER_COUNT
+                or restore_layer_ready_ns[-1] != job.completion_ns
+            ):
+                raise AssertionError(
+                    "streaming restore readiness is incomplete")
+            self.metrics.streaming_prepare_started += 1
         ticket = PrepareTicket(
             prepare_id=prepare_id,
             job_id=job.job_id,
@@ -1517,6 +1622,12 @@ class TieredPDKVLifecycle:
             stages=job.stages,
             start_ns=job.start_ns,
             completion_ns=job.completion_ns,
+            restore_execution_mode=(
+                RESTORE_EXECUTION_LAYERWISE
+                if restore_layer_ready_ns
+                else RESTORE_EXECUTION_BULK
+            ),
+            restore_layer_ready_ns=restore_layer_ready_ns,
         )
         self.prepares[prepare_id] = ticket
         self._seen_request_ids.add(request_id)
@@ -1619,6 +1730,37 @@ class TieredPDKVLifecycle:
         completed = self._completed_prepares
         self._completed_prepares = []
         return completed
+
+    def release_prepare_to_pool(
+            self, ticket: PrepareTicket, *,
+            now_ns: int) -> None:
+        """Mark one prepare visible to execution exactly once."""
+
+        self._validate_time(now_ns)
+        self.advance(now_ns)
+        stored = self.prepares.get(ticket.prepare_id)
+        if stored is not ticket:
+            raise RuntimeError("stale prepare ticket")
+        if ticket.pool_released:
+            raise RuntimeError("prepare was already released to the pool")
+        if not ticket.completed:
+            if (
+                ticket.restore_execution_mode
+                != RESTORE_EXECUTION_LAYERWISE
+                or len(ticket.restore_layer_ready_ns)
+                != P4D4_MODEL_LAYER_COUNT
+                or ticket.restore_layer_ready_ns[-1]
+                != ticket.completion_ns
+                or ticket.source not in {Tier.CPU, Tier.SSD}
+            ):
+                raise RuntimeError(
+                    "only a complete layer-wise lower-tier restore may "
+                    "be released early")
+        ticket.pool_released = True
+        ticket.pool_release_ns = now_ns
+        self.metrics.streaming_prepare_pool_released += int(
+            not ticket.completed)
+        self._maybe_assert_invariants()
 
     def mark_active(self, ticket: PrepareTicket, *, now_ns: int) -> None:
         self._validate_time(now_ns)
@@ -2037,6 +2179,42 @@ class TieredPDKVLifecycle:
                     raise AssertionError(
                         "pending transfer index mismatch")
         for ticket in self.prepares.values():
+            if (
+                ticket.pool_released
+                != (ticket.pool_release_ns is not None)
+            ):
+                raise AssertionError(
+                    "prepare pool-publication timestamp mismatch")
+            if ticket.active and not ticket.completed:
+                raise AssertionError(
+                    "active prepare is not physically complete")
+            if ticket.restore_layer_ready_ns:
+                if (
+                    ticket.restore_execution_mode
+                    != RESTORE_EXECUTION_LAYERWISE
+                    or ticket.source not in {Tier.CPU, Tier.SSD}
+                    or len(ticket.restore_layer_ready_ns)
+                    != P4D4_MODEL_LAYER_COUNT
+                    or tuple(sorted(ticket.restore_layer_ready_ns))
+                    != ticket.restore_layer_ready_ns
+                    or ticket.restore_layer_ready_ns[-1]
+                    != ticket.completion_ns
+                ):
+                    raise AssertionError(
+                        "invalid layer-wise restore readiness contract")
+            elif (
+                ticket.restore_execution_mode
+                != RESTORE_EXECUTION_BULK
+            ):
+                raise AssertionError(
+                    "non-streaming prepare has a streaming mode")
+            if (
+                ticket.pool_released
+                and not ticket.completed
+                and not ticket.restore_layer_ready_ns
+            ):
+                raise AssertionError(
+                    "incomplete bulk prepare reached execution")
             if ticket.committed and not ticket.p_released:
                 raise AssertionError(
                     "committed ticket did not release P destination")
@@ -2110,6 +2288,12 @@ class TieredPDKVLifecycle:
         return {
             "node_id": self.node_id,
             "policy": self.policy,
+            "restore_execution_mode": self.restore_execution_mode,
+            "restore_streaming_semantics": (
+                "optional layer-major CPU/SSD-to-P sensitivity; full "
+                "source pin, CPU bounce, and P/D reservations persist "
+                "until the final layer transfer completes"
+            ),
             "validate_every_event": self.validate_every_event,
             "current_ns": self.current_ns,
             "completion_order": (
@@ -2183,10 +2367,13 @@ class TieredPDKVLifecycle:
 __all__ = [
     "MAX_CONTEXT_TOKENS",
     "PrepareTicket",
+    "RESTORE_EXECUTION_BULK",
+    "RESTORE_EXECUTION_LAYERWISE",
     "ResumeSource",
     "SSDExportStatus",
     "SSDExportTicket",
     "SUPPORTED_TIER_POLICIES",
+    "SUPPORTED_RESTORE_EXECUTION_MODES",
     "ScheduledTierStage",
     "SharedByteLedger",
     "Tier",

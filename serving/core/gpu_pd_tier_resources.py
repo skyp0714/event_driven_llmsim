@@ -27,6 +27,8 @@ class TierTransferStage:
     aggregate_bytes: int
     latency_ns: int
     demands: tuple[ResourceDemand, ...]
+    partition_index: int = 0
+    partition_count: int = 1
 
     @property
     def resources(self) -> tuple[str, ...]:
@@ -131,6 +133,193 @@ class TierNodeResources:
         if gpu_role == "d":
             return 1
         raise ValueError("gpu_role must be 'p' or 'd'")
+
+    @staticmethod
+    def _validate_byte_partition(
+            *, bytes_per_rank: int,
+            partition_index: int,
+            partition_count: int) -> None:
+        if (
+            isinstance(bytes_per_rank, bool)
+            or not isinstance(bytes_per_rank, int)
+            or bytes_per_rank < 0
+        ):
+            raise ValueError(
+                "bytes_per_rank must be a non-negative integer")
+        if (
+            isinstance(partition_count, bool)
+            or not isinstance(partition_count, int)
+            or partition_count <= 0
+        ):
+            raise ValueError(
+                "partition_count must be a positive integer")
+        if (
+            isinstance(partition_index, bool)
+            or not isinstance(partition_index, int)
+            or not 0 <= partition_index < partition_count
+        ):
+            raise ValueError(
+                "partition_index must be in 0..partition_count-1")
+
+    def gpu_cpu_bytes_stage(
+            self, *, logical_token_count: int,
+            bytes_per_rank: int,
+            gpu_role: str,
+            direction: str,
+            block_rounded: bool,
+            partition_index: int,
+            partition_count: int) -> TierTransferStage:
+        """Build one exact-byte partition of a CPU<->TP4 HBM transfer."""
+
+        self._validate_tokens(logical_token_count)
+        self._validate_byte_partition(
+            bytes_per_rank=bytes_per_rank,
+            partition_index=partition_index,
+            partition_count=partition_count,
+        )
+        if direction not in {"cpu_to_gpu", "gpu_to_cpu"}:
+            raise ValueError(
+                "GPU/CPU direction must be cpu_to_gpu or gpu_to_cpu")
+        root_id = self._gpu_root(gpu_role)
+        aggregate = bytes_per_rank * self.hardware.tp_size
+        if aggregate == 0:
+            latency_ns = 0
+        else:
+            seconds = (
+                self.hardware.cpu_transfer_latency_us * 1e-6
+                + max(
+                    bytes_per_rank
+                    / (
+                        self.hardware.pcie_bandwidth_gbps_per_gpu
+                        * 1e9
+                    ),
+                    aggregate
+                    / (
+                        self.hardware.pcie_root_bandwidth_gbps
+                        * 1e9
+                    ),
+                    aggregate
+                    / (
+                        self.hardware.cpu_memory_bandwidth_gbps
+                        * 1e9
+                    ),
+                )
+            )
+            latency_ns = self._ns(seconds)
+        demands = [
+            ResourceDemand(
+                f"gpu-node-{self.node_id}-{gpu_role}-pcie-rank-{rank}",
+                latency_ns,
+                bytes_per_rank,
+            )
+            for rank in range(self.hardware.tp_size)
+        ]
+        demands.extend((
+            ResourceDemand(
+                f"gpu-node-{self.node_id}-pcie-root-{root_id}",
+                latency_ns,
+                aggregate,
+            ),
+            ResourceDemand(
+                f"gpu-node-{self.node_id}-cpu-dram",
+                latency_ns,
+                aggregate,
+            ),
+        ))
+        return TierTransferStage(
+            kind=f"{gpu_role}-{direction}",
+            direction=direction,
+            token_count=logical_token_count,
+            block_rounded=block_rounded,
+            bytes_per_rank=bytes_per_rank,
+            aggregate_bytes=aggregate,
+            latency_ns=latency_ns,
+            demands=tuple(demands),
+            partition_index=partition_index,
+            partition_count=partition_count,
+        )
+
+    def ssd_bytes_stage(
+            self, *, logical_token_count: int,
+            bytes_per_rank: int,
+            direction: str,
+            partition_index: int,
+            partition_count: int) -> TierTransferStage:
+        """Build one exact-byte partition of a CPU<->SSD transfer."""
+
+        self._validate_tokens(logical_token_count)
+        self._validate_byte_partition(
+            bytes_per_rank=bytes_per_rank,
+            partition_index=partition_index,
+            partition_count=partition_count,
+        )
+        if direction not in {"ssd_to_cpu", "cpu_to_ssd"}:
+            raise ValueError(
+                "SSD direction must be ssd_to_cpu or cpu_to_ssd")
+        aggregate = bytes_per_rank * self.hardware.tp_size
+        if aggregate == 0:
+            latency_ns = 0
+        elif direction == "ssd_to_cpu":
+            seconds = (
+                self.hardware.ssd_read_latency_us * 1e-6
+                + max(
+                    aggregate
+                    / (
+                        self.hardware.ssd_read_bandwidth_gbps
+                        * 1e9
+                    ),
+                    aggregate
+                    / (
+                        self.hardware.cpu_memory_bandwidth_gbps
+                        * 1e9
+                    ),
+                )
+            )
+            latency_ns = self._ns(seconds)
+        else:
+            seconds = (
+                self.hardware.ssd_write_latency_us * 1e-6
+                + max(
+                    aggregate
+                    / (
+                        self.hardware.ssd_write_bandwidth_gbps
+                        * 1e9
+                    ),
+                    aggregate
+                    / (
+                        self.hardware.cpu_memory_bandwidth_gbps
+                        * 1e9
+                    ),
+                )
+            )
+            latency_ns = self._ns(seconds)
+        queue_name = (
+            "ssd-read" if direction == "ssd_to_cpu"
+            else "ssd-write"
+        )
+        return TierTransferStage(
+            kind=direction.replace("_", "-"),
+            direction=direction,
+            token_count=logical_token_count,
+            block_rounded=True,
+            bytes_per_rank=bytes_per_rank,
+            aggregate_bytes=aggregate,
+            latency_ns=latency_ns,
+            demands=(
+                ResourceDemand(
+                    f"gpu-node-{self.node_id}-{queue_name}",
+                    latency_ns,
+                    aggregate,
+                ),
+                ResourceDemand(
+                    f"gpu-node-{self.node_id}-cpu-dram",
+                    latency_ns,
+                    aggregate,
+                ),
+            ),
+            partition_index=partition_index,
+            partition_count=partition_count,
+        )
 
     def gpu_cpu_stage(
             self, token_count: int, *,

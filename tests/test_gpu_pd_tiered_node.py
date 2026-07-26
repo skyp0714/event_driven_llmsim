@@ -44,6 +44,7 @@ class FiniteHBMTieredP4D4NodeTests(unittest.TestCase):
             p_blocks=128, d_blocks=64,
             cpu_blocks=128, ssd_blocks=256,
             max_tokens=512, chunk=128,
+            restore_execution_mode="bulk",
             validate_every_event=True):
         return FiniteHBMTieredP4D4Node(
             repo_root=REPO_ROOT,
@@ -61,6 +62,7 @@ class FiniteHBMTieredP4D4NodeTests(unittest.TestCase):
             max_num_batched_tokens=max_tokens,
             max_num_seqs=32,
             max_prefill_chunk_tokens=chunk,
+            restore_execution_mode=restore_execution_mode,
             validate_every_event=validate_every_event,
         )
 
@@ -205,6 +207,84 @@ class FiniteHBMTieredP4D4NodeTests(unittest.TestCase):
                     node.lifecycle.cpu_ledger.used_bytes, 0)
                 self.assertEqual(
                     node.lifecycle.ssd_ledger.used_bytes, 0)
+
+    def test_layerwise_ssd_restore_overlaps_without_duplicate_execution(self):
+        completed = {}
+        for mode in ("bulk", "layerwise_streaming"):
+            node = self.make_node(
+                "ssd_direct",
+                restore_execution_mode=mode,
+            )
+            first = self.call(
+                0,
+                input_tokens=64,
+                output_tokens=2,
+                has_successor=True,
+            )
+            node.submit(first, now_ns=0)
+            node.run_until_idle()
+            demotion = node.lifecycle.demote(
+                "s", now_ns=node.current_ns)
+            node.advance(demotion.completion_ns)
+            release_ns = node.current_ns + 1
+            resume = self.call(
+                1,
+                call_index=1,
+                release=release_ns,
+                input_tokens=70,
+                output_tokens=2,
+                prefix=65,
+                has_successor=False,
+            )
+            node.submit(resume, now_ns=release_ns)
+            ticket = node._ticket_by_request[1]
+
+            if mode == "bulk":
+                self.assertEqual(
+                    ticket.restore_layer_ready_ns, ())
+                self.assertIsNone(resume.pool_request)
+            else:
+                self.assertEqual(
+                    len(ticket.restore_layer_ready_ns), 48)
+                self.assertIsNotNone(resume.pool_request)
+                p_batch = node.pool.p_worker.inflight
+                self.assertIsNotNone(p_batch)
+                self.assertLess(
+                    p_batch.start_ns, ticket.completion_ns)
+                self.assertGreater(
+                    p_batch.completion_ns, ticket.completion_ns)
+                self.assertTrue(ticket.pool_released)
+                self.assertFalse(ticket.completed)
+
+            drained = node.run_until_idle()
+            self.assertEqual(drained, [resume])
+            self.assertEqual(
+                node.pool.metrics.submitted_requests, 2)
+            self.assertEqual(
+                node.pool.metrics.completed_requests, 2)
+            self.assertEqual(resume.operational_hit_tokens, 65)
+            self.assertEqual(
+                resume.pool_request.p_prefix_tokens, 65)
+            self.assertEqual(
+                resume.pool_request.handoff_tokens, 70)
+            self.assertEqual(
+                node.lifecycle.p_ledger.used_bytes, 0)
+            self.assertEqual(
+                node.lifecycle.d_ledger.used_bytes, 0)
+            self.assertEqual(
+                node.lifecycle.cpu_ledger.used_bytes, 0)
+            self.assertEqual(
+                node.lifecycle.ssd_ledger.used_bytes, 0)
+            self.assertEqual(
+                node.metrics.streaming_lower_tier_hits,
+                int(mode == "layerwise_streaming"),
+            )
+            completed[mode] = resume.ttft_ns
+
+        self.assertLessEqual(
+            completed["layerwise_streaming"],
+            completed["bulk"],
+        )
 
     def test_resume_racing_demotion_uses_full_new_d_destination(self):
         node = self.make_node(

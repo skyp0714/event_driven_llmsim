@@ -26,7 +26,9 @@ from .gpu_pd_latency import P4D4GPUHardware
 from .gpu_pd_pool import P4D4ServingPool, PDServingRequest
 from .gpu_pd_tier_lifecycle import (
     PrepareTicket,
+    RESTORE_EXECUTION_BULK,
     SUPPORTED_TIER_POLICIES,
+    SUPPORTED_RESTORE_EXECUTION_MODES,
     Tier,
     TierSessionState,
     TieredPDKVLifecycle,
@@ -157,6 +159,7 @@ class TieredNodeMetrics:
     d_reclamation_immediate_drops: int = 0
     stable_d_hits: int = 0
     lower_tier_hits: int = 0
+    streaming_lower_tier_hits: int = 0
     recompute_resumes: int = 0
     recompute_tokens: int = 0
     context_shrink_calls: int = 0
@@ -183,10 +186,16 @@ class FiniteHBMTieredP4D4Node:
             d_max_num_seqs: Optional[int] = None,
             max_prefill_chunk_tokens: int = 4_096,
             band: str = "central",
+            restore_execution_mode: str = RESTORE_EXECUTION_BULK,
             validate_every_event: bool = True,
             retain_detailed_history: bool = True) -> None:
         if policy not in SUPPORTED_TIER_POLICIES:
             raise ValueError(f"unsupported tier policy {policy!r}")
+        if restore_execution_mode not in (
+                SUPPORTED_RESTORE_EXECUTION_MODES):
+            raise ValueError(
+                "restore_execution_mode must be one of "
+                f"{sorted(SUPPORTED_RESTORE_EXECUTION_MODES)}")
         if not isinstance(validate_every_event, bool):
             raise ValueError("validate_every_event must be a boolean")
         if not isinstance(retain_detailed_history, bool):
@@ -195,6 +204,7 @@ class FiniteHBMTieredP4D4Node:
         self.hardware = hardware
         self.node_id = node_id
         self.policy = policy
+        self.restore_execution_mode = restore_execution_mode
         self.validate_every_event = validate_every_event
         self.calendar = (
             resource_calendar
@@ -209,6 +219,7 @@ class FiniteHBMTieredP4D4Node:
             d_capacity_bytes_per_rank=d_capacity_bytes_per_rank,
             cpu_capacity_bytes=cpu_capacity_bytes,
             ssd_capacity_bytes=ssd_capacity_bytes,
+            restore_execution_mode=restore_execution_mode,
             validate_every_event=validate_every_event,
         )
         self.pool = P4D4ServingPool(
@@ -575,6 +586,11 @@ class FiniteHBMTieredP4D4Node:
                 self.metrics.stable_d_hits += 1
             elif ticket.source in {Tier.CPU, Tier.SSD}:
                 self.metrics.lower_tier_hits += 1
+                if ticket.restore_layer_ready_ns:
+                    self.lifecycle.release_prepare_to_pool(
+                        ticket, now_ns=now_ns)
+                    self._ready_call_ids.append(ticket.request_id)
+                    self.metrics.streaming_lower_tier_hits += 1
             elif (
                 call.call_index > 0
                 and call.prefix_reuse_tokens > 0
@@ -590,13 +606,27 @@ class FiniteHBMTieredP4D4Node:
             if (
                 self._ticket_by_request.get(ticket.request_id)
                 is not ticket
-                or call.state != TieredCallState.PREPARING
                 or call.prepare_completion_ns != now_ns
             ):
                 raise RuntimeError(
                     "stale tiered prepare completion")
-            self.lifecycle.mark_active(ticket, now_ns=now_ns)
-            self._ready_call_ids.append(ticket.request_id)
+            if ticket.restore_layer_ready_ns:
+                if (
+                    call.state != TieredCallState.EXECUTING
+                    or not ticket.pool_released
+                    or call.pool_request is None
+                ):
+                    raise RuntimeError(
+                        "streaming prepare was not released exactly once")
+                self.lifecycle.mark_active(ticket, now_ns=now_ns)
+            else:
+                if call.state != TieredCallState.PREPARING:
+                    raise RuntimeError(
+                        "bulk prepare completed outside preparing state")
+                self.lifecycle.mark_active(ticket, now_ns=now_ns)
+                self.lifecycle.release_prepare_to_pool(
+                    ticket, now_ns=now_ns)
+                self._ready_call_ids.append(ticket.request_id)
 
     @staticmethod
     def _d_prefix_tokens(ticket: PrepareTicket) -> int:
@@ -625,6 +655,7 @@ class FiniteHBMTieredP4D4Node:
             p_prefix_tokens=ticket.hit_tokens,
             d_prefix_tokens=d_prefix_tokens,
             has_successor=call.has_successor,
+            restore_layer_ready_ns=ticket.restore_layer_ready_ns,
         )
         call.pool_request = request
         call.state = TieredCallState.EXECUTING
@@ -929,6 +960,7 @@ class FiniteHBMTieredP4D4Node:
             "mode": "finite_hbm_p4d4_tiering",
             "node_id": self.node_id,
             "policy": self.policy,
+            "restore_execution_mode": self.restore_execution_mode,
             "validate_every_event": self.validate_every_event,
             "capacity_owner": (
                 "TieredPDKVLifecycle is the sole P/D KV ledger; "

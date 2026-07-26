@@ -137,6 +137,62 @@ class TierNodeResourcesTests(unittest.TestCase):
         self.assertEqual(h2d_start, ssd_end)
         self.assertEqual(h2d_end, 61_359)
 
+    def test_layer_partitions_conserve_block_rounded_restore_bytes(self):
+        token_count = 65
+        total_per_rank = (
+            self.hardware.kv_capacity_bytes_per_rank(token_count))
+        base, remainder = divmod(total_per_rank, 48)
+        partitions = tuple(
+            base + int(index < remainder)
+            for index in range(48)
+        )
+        cpu_stages = tuple(
+            self.node.gpu_cpu_bytes_stage(
+                logical_token_count=token_count,
+                bytes_per_rank=byte_count,
+                gpu_role="p",
+                direction="cpu_to_gpu",
+                block_rounded=True,
+                partition_index=index,
+                partition_count=48,
+            )
+            for index, byte_count in enumerate(partitions)
+        )
+        ssd_stages = tuple(
+            self.node.ssd_bytes_stage(
+                logical_token_count=token_count,
+                bytes_per_rank=byte_count,
+                direction="ssd_to_cpu",
+                partition_index=index,
+                partition_count=48,
+            )
+            for index, byte_count in enumerate(partitions)
+        )
+
+        self.assertEqual(
+            sum(stage.bytes_per_rank for stage in cpu_stages),
+            total_per_rank,
+        )
+        self.assertEqual(
+            sum(stage.aggregate_bytes for stage in ssd_stages),
+            total_per_rank * self.hardware.tp_size,
+        )
+        self.assertEqual(
+            {
+                (stage.partition_index, stage.partition_count)
+                for stage in cpu_stages
+            },
+            {(index, 48) for index in range(48)},
+        )
+        self.assertGreater(
+            sum(stage.latency_ns for stage in cpu_stages),
+            self.node.gpu_cpu_stage(
+                token_count,
+                gpu_role="p",
+                direction="cpu_to_gpu",
+            ).latency_ns,
+        )
+
     def test_two_nodes_do_not_share_resource_queues(self):
         node1 = TierNodeResources(
             hardware=self.hardware,
@@ -181,6 +237,14 @@ class TierNodeResourcesTests(unittest.TestCase):
             self.node.ssd_stage(1, direction="invalid")
         with self.assertRaisesRegex(ValueError, "token_count"):
             self.node.peer_stage(-1, direction="p_to_d")
+        with self.assertRaisesRegex(ValueError, "partition_index"):
+            self.node.ssd_bytes_stage(
+                logical_token_count=1,
+                bytes_per_rank=1,
+                direction="ssd_to_cpu",
+                partition_index=48,
+                partition_count=48,
+            )
 
 
 if __name__ == "__main__":

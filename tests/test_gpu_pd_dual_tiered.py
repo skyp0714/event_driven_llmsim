@@ -62,6 +62,7 @@ class DualFiniteHBMTieredBaselineTests(unittest.TestCase):
             p_blocks=64, d_blocks=8,
             cpu_blocks=64, ssd_blocks=512,
             max_tokens=512, chunk=128,
+            restore_execution_mode="bulk",
             validate_every_event=True,
             route_policy="offer_index_mod_2_sticky"):
         return DualFiniteHBMTieredBaseline(
@@ -79,8 +80,28 @@ class DualFiniteHBMTieredBaselineTests(unittest.TestCase):
             max_num_batched_tokens=max_tokens,
             max_num_seqs=32,
             max_prefill_chunk_tokens=chunk,
+            restore_execution_mode=restore_execution_mode,
             validate_every_event=validate_every_event,
             route_policy=route_policy,
+        )
+
+    def test_restore_execution_mode_propagates_to_both_nodes(self):
+        system = self.make_system(
+            restore_execution_mode="layerwise_streaming")
+
+        self.assertEqual(
+            system.restore_execution_mode,
+            "layerwise_streaming",
+        )
+        self.assertTrue(all(
+            node.restore_execution_mode == "layerwise_streaming"
+            and node.lifecycle.restore_execution_mode
+            == "layerwise_streaming"
+            for node in system.nodes
+        ))
+        self.assertEqual(
+            system.report()["restore_execution_mode"],
+            "layerwise_streaming",
         )
 
     @staticmethod

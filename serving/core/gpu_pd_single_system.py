@@ -24,7 +24,10 @@ from .gpu_pd_oracle_node import (
     OracleNodeCall,
     StrictInfiniteHBMNode,
 )
-from .gpu_pd_tier_lifecycle import SUPPORTED_TIER_POLICIES
+from .gpu_pd_tier_lifecycle import (
+    RESTORE_EXECUTION_BULK,
+    SUPPORTED_TIER_POLICIES,
+)
 from .gpu_pd_tiered_node import (
     FiniteHBMTieredP4D4Node,
     TieredCallState,
@@ -693,6 +696,7 @@ class SingleFiniteHBMTieredBaseline(_SingleP4D4CausalSystem):
             d_max_num_seqs: Optional[int] = None,
             max_prefill_chunk_tokens: int = 4_096,
             band: str = "central",
+            restore_execution_mode: str = RESTORE_EXECUTION_BULK,
             validate_every_event: bool = True) -> None:
         if policy not in SUPPORTED_TIER_POLICIES:
             raise ValueError(f"unsupported tier policy {policy!r}")
@@ -711,10 +715,12 @@ class SingleFiniteHBMTieredBaseline(_SingleP4D4CausalSystem):
             d_max_num_seqs=d_max_num_seqs,
             max_prefill_chunk_tokens=max_prefill_chunk_tokens,
             band=band,
+            restore_execution_mode=restore_execution_mode,
             validate_every_event=validate_every_event,
             retain_detailed_history=validate_every_event,
         )
         self.policy = policy
+        self.restore_execution_mode = restore_execution_mode
         super().__init__(
             repo_root=repo_root,
             hardware=hardware,
@@ -728,6 +734,7 @@ class SingleFiniteHBMTieredBaseline(_SingleP4D4CausalSystem):
             raise AssertionError("baseline owns the wrong node type")
         return {
             "policy": self.policy,
+            "restore_execution_mode": self.restore_execution_mode,
             "physical_isolation": (
                 "one P4D4 server; HBM, CPU DRAM, PCIe, and SSD queues and "
                 "capacity ledgers are node-local"),

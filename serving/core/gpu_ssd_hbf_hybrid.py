@@ -36,6 +36,7 @@ from .gpu_hbf_hybrid import (
 )
 from .gpu_pd_latency import P4D4GPUHardware
 from .gpu_pd_tier_lifecycle import (
+    RESTORE_EXECUTION_BULK,
     SSDExportStatus,
     SSDExportTicket,
     TierSessionState,
@@ -274,6 +275,7 @@ class SSDStagedGPUHBFNode:
             d_max_num_seqs: Optional[int] = None,
             max_prefill_chunk_tokens: int = 4_096,
             band: str = "central",
+            restore_execution_mode: str = RESTORE_EXECUTION_BULK,
             validate_every_event: bool = True,
             promotion_policy: Optional[
                 str | SSDPromotionPolicy] = None,
@@ -374,11 +376,14 @@ class SSDStagedGPUHBFNode:
             d_max_num_seqs=d_max_num_seqs,
             max_prefill_chunk_tokens=max_prefill_chunk_tokens,
             band=band,
+            restore_execution_mode=restore_execution_mode,
             validate_every_event=validate_every_event,
             retain_detailed_history=validate_every_event,
         )
         self.gpu_lifecycle = self.gpu_node.lifecycle
         self.gpu_pool = self.gpu_node.pool
+        self.restore_execution_mode = (
+            self.gpu_node.restore_execution_mode)
 
         workspace = derive_lpddr_workspace_bytes(
             layout,
@@ -1289,6 +1294,8 @@ class SSDStagedGPUHBFNode:
                 "gpu_server_count": 1,
                 "gpu_server": "one_4p4d_h100_server",
                 "gpu_tier_policy": "ssd_direct",
+                "gpu_restore_execution_mode": (
+                    self.restore_execution_mode),
                 "hbf_server_count": 1,
                 "hbf_server": "one_8card_full_model_hbf_server",
                 "hbf_card_count": self.hbf_hardware.card_count,
@@ -1347,6 +1354,7 @@ class SSDStagedGPUHBFSystem(GPUHBFHybridSystem):
             d_max_num_seqs: Optional[int] = None,
             max_prefill_chunk_tokens: int = 4_096,
             band: str = "central",
+            restore_execution_mode: str = RESTORE_EXECUTION_BULK,
             validate_every_event: bool = True,
             promotion_policy: Optional[
                 str | SSDPromotionPolicy] = None,
@@ -1373,6 +1381,7 @@ class SSDStagedGPUHBFSystem(GPUHBFHybridSystem):
             d_max_num_seqs=d_max_num_seqs,
             max_prefill_chunk_tokens=max_prefill_chunk_tokens,
             band=band,
+            restore_execution_mode=restore_execution_mode,
             validate_every_event=validate_every_event,
             promotion_policy=promotion_policy,
             migration_policy=migration_policy,
@@ -1426,6 +1435,8 @@ class SSDStagedGPUHBFSystem(GPUHBFHybridSystem):
             "architecture": {
                 "gpu_server_count": 1,
                 "gpu_server": "one_4p4d_h100_server",
+                "gpu_restore_execution_mode": (
+                    self.node.restore_execution_mode),
                 "local_ssd_checkpoint": True,
                 "hbf_server_count": 1,
                 "hbf_server": "one_8card_full_model_hbf_server",
@@ -1440,6 +1451,8 @@ class SSDStagedGPUHBFSystem(GPUHBFHybridSystem):
                 "resume_at_threshold": "resume_wins",
                 "promotion": asdict(
                     self.node.promotion_policy),
+                "gpu_restore_execution_mode": (
+                    self.node.restore_execution_mode),
             },
             "metrics": asdict(self.metrics),
             "current_ns": self.current_ns,

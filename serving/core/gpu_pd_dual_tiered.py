@@ -28,7 +28,10 @@ from .gpu_pd_dual_oracle import (
     DualStrictInfiniteHBMOracle,
 )
 from .gpu_pd_latency import P4D4GPUHardware
-from .gpu_pd_tier_lifecycle import SUPPORTED_TIER_POLICIES
+from .gpu_pd_tier_lifecycle import (
+    RESTORE_EXECUTION_BULK,
+    SUPPORTED_TIER_POLICIES,
+)
 from .gpu_pd_tiered_node import (
     FiniteHBMTieredP4D4Node,
     TieredCallState,
@@ -73,6 +76,7 @@ class DualFiniteHBMTieredBaseline(DualStrictInfiniteHBMOracle):
             d_max_num_seqs: Optional[int] = None,
             max_prefill_chunk_tokens: int = 4_096,
             band: str = "central",
+            restore_execution_mode: str = RESTORE_EXECUTION_BULK,
             validate_every_event: bool = True,
             route_policy: str = ROUTE_OFFER_RR) -> None:
         if policy not in SUPPORTED_TIER_POLICIES:
@@ -89,6 +93,7 @@ class DualFiniteHBMTieredBaseline(DualStrictInfiniteHBMOracle):
         self.repo_root = Path(repo_root)
         self.hardware = hardware
         self.policy = policy
+        self.restore_execution_mode = restore_execution_mode
         self.validate_every_event = validate_every_event
         self.route_policy = route_policy
         self.nodes = tuple(
@@ -109,6 +114,7 @@ class DualFiniteHBMTieredBaseline(DualStrictInfiniteHBMOracle):
                 d_max_num_seqs=d_max_num_seqs,
                 max_prefill_chunk_tokens=max_prefill_chunk_tokens,
                 band=band,
+                restore_execution_mode=restore_execution_mode,
                 validate_every_event=validate_every_event,
                 retain_detailed_history=validate_every_event,
             )
@@ -491,15 +497,18 @@ class DualFiniteHBMTieredBaseline(DualStrictInfiniteHBMOracle):
             if (
                 node.policy != self.policy
                 or node.lifecycle.policy != self.policy
+                or node.restore_execution_mode
+                != self.restore_execution_mode
             ):
                 raise AssertionError(
-                    "dual tiered policy propagation failed")
+                    "dual tiered policy/restore propagation failed")
 
     def report(self) -> Mapping[str, Any]:
         result = dict(super().report())
         result.update({
             "mode": "dual_finite_hbm_p4d4_tiering",
             "policy": self.policy,
+            "restore_execution_mode": self.restore_execution_mode,
             "routing_balance_limit": (
                 "balanced_trace_work uses only the oracle compute/context "
                 "proxy; it is static and does not balance tier I/O, "

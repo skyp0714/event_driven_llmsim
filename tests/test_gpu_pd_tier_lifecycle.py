@@ -63,6 +63,7 @@ class TieredPDKVLifecycleTests(unittest.TestCase):
     def make_lifecycle(
             self, policy, *, node_id=0, blocks=64,
             cpu_blocks=64, ssd_blocks=128, calendar=None,
+            restore_execution_mode="bulk",
             validate_every_event=True):
         return TieredPDKVLifecycle(
             hardware=self.hardware,
@@ -77,6 +78,7 @@ class TieredPDKVLifecycleTests(unittest.TestCase):
                 cpu_blocks * self.block_aggregate),
             ssd_capacity_bytes=(
                 ssd_blocks * self.block_aggregate),
+            restore_execution_mode=restore_execution_mode,
             validate_every_event=validate_every_event,
         )
 
@@ -409,6 +411,108 @@ class TieredPDKVLifecycleTests(unittest.TestCase):
             ssd, ticket, successor=True)
         self.assertNotIn(shadow_id, ssd.copies)
         self.assertEqual(ssd.ssd_ledger.used_bytes, 0)
+
+    def test_layerwise_cpu_and_ssd_restore_publish_before_full_transfer(self):
+        for policy, expected_source, expected_stage_count in (
+                ("cpu_ssd", Tier.CPU, 48),
+                ("ssd_direct", Tier.SSD, 96)):
+            with self.subTest(policy=policy):
+                lifecycle = self.make_lifecycle(
+                    policy,
+                    blocks=16,
+                    cpu_blocks=8,
+                    ssd_blocks=16,
+                    restore_execution_mode="layerwise_streaming",
+                )
+                lifecycle.register_d_ready("s", 64, now_ns=0)
+                demotion = lifecycle.demote("s", now_ns=0)
+                lifecycle.advance(demotion.completion_ns)
+                source_id = lifecycle.sessions[
+                    "s"].primary_copy_id
+                ticket = lifecycle.begin_prepare(
+                    "s",
+                    request_id=1,
+                    now_ns=lifecycle.current_ns,
+                    input_tokens=65,
+                    output_tokens=2,
+                    reusable_tokens=64,
+                    has_successor=True,
+                )
+
+                self.assertEqual(ticket.source, expected_source)
+                self.assertEqual(
+                    ticket.restore_execution_mode,
+                    "layerwise_streaming",
+                )
+                self.assertEqual(
+                    len(ticket.stages), expected_stage_count)
+                self.assertEqual(
+                    len(ticket.restore_layer_ready_ns), 48)
+                self.assertEqual(
+                    ticket.restore_layer_ready_ns[-1],
+                    ticket.completion_ns,
+                )
+                self.assertEqual(
+                    tuple(sorted(ticket.restore_layer_ready_ns)),
+                    ticket.restore_layer_ready_ns,
+                )
+                transferred = sum(
+                    stage.stage.aggregate_bytes
+                    for stage in ticket.stages
+                )
+                expected_object_bytes = (
+                    lifecycle._aggregate_bytes(ticket.hit_tokens))
+                self.assertEqual(
+                    transferred,
+                    expected_object_bytes
+                    * (2 if expected_source == Tier.SSD else 1),
+                )
+
+                lifecycle.release_prepare_to_pool(
+                    ticket, now_ns=lifecycle.current_ns)
+                self.assertTrue(ticket.pool_released)
+                self.assertFalse(ticket.completed)
+                source = lifecycle.copies[source_id]
+                self.assertEqual(source.foreground_pins, 1)
+                if expected_source == Tier.SSD:
+                    self.assertEqual(
+                        lifecycle.cpu_ledger.owner_bytes(
+                            ticket.bounce_owner),
+                        expected_object_bytes,
+                    )
+                lifecycle.advance(ticket.completion_ns - 1)
+                self.assertEqual(source.foreground_pins, 1)
+                self.assertFalse(ticket.completed)
+                lifecycle.advance(ticket.completion_ns)
+                lifecycle.pop_prepare_completed()
+                self.assertTrue(ticket.completed)
+                if expected_source == Tier.SSD:
+                    self.assertEqual(
+                        lifecycle.cpu_ledger.owner_bytes(
+                            ticket.bounce_owner),
+                        0,
+                    )
+                    self.assertIn(source_id, lifecycle.copies)
+                else:
+                    self.assertNotIn(source_id, lifecycle.copies)
+                lifecycle.mark_active(
+                    ticket, now_ns=ticket.completion_ns)
+                lifecycle.release_p_after_handoff(
+                    ticket, now_ns=ticket.completion_ns)
+                lifecycle.commit_d_ready(
+                    ticket,
+                    now_ns=ticket.completion_ns,
+                    has_successor=True,
+                )
+                lifecycle.assert_invariants()
+
+    def test_invalid_restore_execution_mode_is_rejected(self):
+        with self.assertRaisesRegex(
+                ValueError, "restore_execution_mode"):
+            self.make_lifecycle(
+                "ssd_direct",
+                restore_execution_mode="implicit_streaming",
+            )
 
     @staticmethod
     def finish_prepare_after_advance(

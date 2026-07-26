@@ -79,7 +79,9 @@ def make_schedule(
 
 class SSDStagedGPUHBFTests(unittest.TestCase):
     @staticmethod
-    def make_node(*, policy="eager", layout="tp4"):
+    def make_node(
+            *, policy="eager", layout="tp4",
+            restore_execution_mode="bulk"):
         return SSDStagedGPUHBFNode(
             repo_root=REPO_ROOT,
             gpu_hardware=P4D4GPUHardware(),
@@ -88,17 +90,21 @@ class SSDStagedGPUHBFTests(unittest.TestCase):
             max_num_batched_tokens=256,
             max_num_seqs=16,
             max_prefill_chunk_tokens=128,
+            restore_execution_mode=restore_execution_mode,
             promotion_policy=policy,
         )
 
     @staticmethod
-    def make_system(*, policy="eager", layout="tp4"):
+    def make_system(
+            *, policy="eager", layout="tp4",
+            restore_execution_mode="bulk"):
         return SSDStagedGPUHBFSystem(
             repo_root=REPO_ROOT,
             hbf_layout=layout,
             max_num_batched_tokens=256,
             max_num_seqs=16,
             max_prefill_chunk_tokens=128,
+            restore_execution_mode=restore_execution_mode,
             promotion_policy=policy,
         )
 
@@ -128,6 +134,35 @@ class SSDStagedGPUHBFTests(unittest.TestCase):
         self.assertEqual(node.hbf_layout.key, "tp8_context")
         self.assertIs(node.calendar, node.gpu_node.calendar)
         self.assertIs(node.calendar, node.gpu_lifecycle.calendar)
+
+    def test_gpu_restore_mode_propagates_without_changing_hbf_import(self):
+        node = self.make_node(
+            restore_execution_mode="layerwise_streaming")
+        system = self.make_system(
+            restore_execution_mode="layerwise_streaming")
+
+        self.assertEqual(
+            node.restore_execution_mode,
+            "layerwise_streaming",
+        )
+        self.assertEqual(
+            node.gpu_node.restore_execution_mode,
+            "layerwise_streaming",
+        )
+        self.assertEqual(
+            node.report()["architecture"][
+                "gpu_restore_execution_mode"],
+            "layerwise_streaming",
+        )
+        report = system.report()
+        self.assertEqual(
+            report["architecture"]["gpu_restore_execution_mode"],
+            "layerwise_streaming",
+        )
+        self.assertNotIn(
+            "restore_execution_mode",
+            node.hbf_lifecycle.report(),
+        )
         self.assertIs(node.calendar, node.gpu_pool.calendar)
         self.assertIs(node.calendar, node.hbf_lifecycle.calendar)
         self.assertIs(node.calendar, node.hbf_pool.calendar)
