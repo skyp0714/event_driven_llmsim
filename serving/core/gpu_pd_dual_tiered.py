@@ -509,6 +509,14 @@ class DualFiniteHBMTieredBaseline(DualStrictInfiniteHBMOracle):
             "mode": "dual_finite_hbm_p4d4_tiering",
             "policy": self.policy,
             "restore_execution_mode": self.restore_execution_mode,
+            "resource_calendars": [
+                node.calendar.report() for node in self.nodes
+            ],
+            "resource_calendar_semantics": (
+                "one lossless reservation-count/byte calendar per physical "
+                "GPU server; use canonical aggregate resources rather than "
+                "summing rank, root, and memory copies of the same payload"
+            ),
             "routing_balance_limit": (
                 "balanced_trace_work uses only the oracle compute/context "
                 "proxy; it is static and does not balance tier I/O, "

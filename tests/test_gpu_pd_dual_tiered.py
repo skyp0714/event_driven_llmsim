@@ -450,6 +450,15 @@ class DualFiniteHBMTieredBaselineTests(unittest.TestCase):
         self.assertEqual(
             report["mode"], "dual_finite_hbm_p4d4_tiering")
         self.assertEqual(report["policy"], "ssd_direct")
+        self.assertEqual(
+            report["resource_calendars"],
+            [node.calendar.report() for node in system.nodes],
+        )
+        self.assertEqual(len(report["resource_calendars"]), 2)
+        self.assertTrue(all(
+            calendar["resources"]
+            for calendar in report["resource_calendars"]
+        ))
         self.assertEqual(len(bottlenecks["per_node"]), 2)
         aggregate = bottlenecks["aggregate"]
         for metric_group in (
