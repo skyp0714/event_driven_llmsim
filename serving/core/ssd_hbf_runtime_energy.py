@@ -1715,6 +1715,119 @@ def account_one_gpu_one_hbf_runtime_energy(
     )
 
 
+def aggregate_runtime_energy_reports(
+        reports: Sequence[RuntimeEnergyReport],
+) -> RuntimeEnergyReport:
+    """Pool independent traces without averaging their averages.
+
+    Component energy, activity, traffic, and horizon are summed across
+    reports.  The resulting average IT power is therefore total energy
+    divided by total observed time, which correctly weights seeds with
+    different simulated horizons.
+    """
+
+    rows = tuple(reports)
+    if not rows:
+        raise SSDHBFRuntimeEnergyError(
+            "runtime report aggregation requires at least one report")
+    first = rows[0]
+    for index, report in enumerate(rows[1:], start=1):
+        if report.report_schema != RUNTIME_ENERGY_SCHEMA:
+            raise SSDHBFRuntimeEnergyError(
+                f"runtime report {index} has the wrong schema")
+        if report.system_key != first.system_key:
+            raise SSDHBFRuntimeEnergyError(
+                "runtime report aggregation cannot mix systems")
+        if report.assumptions != first.assumptions:
+            raise SSDHBFRuntimeEnergyError(
+                "runtime report aggregation cannot mix assumptions")
+
+    first_by_key = {
+        component.component_key: component
+        for component in first.components
+    }
+    expected_keys = set(first_by_key)
+    reports_by_key = []
+    for index, report in enumerate(rows):
+        by_key = {
+            component.component_key: component
+            for component in report.components
+        }
+        if set(by_key) != expected_keys:
+            raise SSDHBFRuntimeEnergyError(
+                f"runtime report {index} has a different component roster")
+        reports_by_key.append(by_key)
+
+    aggregate_components = []
+    identity_fields = (
+        "accounting_mode",
+        "physical_quantity",
+        "quantity_unit",
+        "driver",
+        "active_power_w_per_unit",
+        "idle_power_w_per_unit",
+        "traffic_energy_pj_per_bit",
+        "assumption",
+    )
+    for component_key in sorted(expected_keys):
+        members = tuple(
+            by_key[component_key] for by_key in reports_by_key)
+        template = first_by_key[component_key]
+        for index, member in enumerate(members[1:], start=1):
+            if any(
+                getattr(member, field_name)
+                != getattr(template, field_name)
+                for field_name in identity_fields
+            ):
+                raise SSDHBFRuntimeEnergyError(
+                    "runtime component assumptions differ across reports: "
+                    f"{component_key!r}, report={index}")
+        idle_energy_j = math.fsum(
+            member.idle_energy_j for member in members)
+        activity_energy_j = math.fsum(
+            member.activity_energy_j for member in members)
+        aggregate_components.append(RuntimeComponentEnergy(
+            component_key=component_key,
+            accounting_mode=template.accounting_mode,
+            physical_quantity=template.physical_quantity,
+            quantity_unit=template.quantity_unit,
+            driver=template.driver,
+            idle_energy_j=idle_energy_j,
+            activity_energy_j=activity_energy_j,
+            total_energy_j=idle_energy_j + activity_energy_j,
+            active_device_ns=sum(
+                member.active_device_ns for member in members),
+            device_time_capacity_ns=sum(
+                member.device_time_capacity_ns for member in members),
+            read_bytes=sum(member.read_bytes for member in members),
+            write_bytes=sum(member.write_bytes for member in members),
+            transfer_bytes=sum(
+                member.transfer_bytes for member in members),
+            active_power_w_per_unit=(
+                template.active_power_w_per_unit),
+            idle_power_w_per_unit=template.idle_power_w_per_unit,
+            traffic_energy_pj_per_bit=(
+                template.traffic_energy_pj_per_bit),
+            assumption=template.assumption,
+        ))
+
+    total_horizon_ns = sum(report.horizon_ns for report in rows)
+    return _finish_runtime_report(
+        system_key=first.system_key,
+        horizon_ns=total_horizon_ns,
+        components=aggregate_components,
+        input_summary={
+            "aggregation": "pooled_energy_over_pooled_horizon",
+            "report_count": len(rows),
+            "minimum_report_horizon_ns": min(
+                report.horizon_ns for report in rows),
+            "maximum_report_horizon_ns": max(
+                report.horizon_ns for report in rows),
+        },
+        assumptions=first.assumptions,
+    )
+
+
 def project_five_year_runtime_tco(
         runtime: RuntimeEnergyReport,
         *,
@@ -1829,6 +1942,91 @@ def evaluate_ssd_hbf_runtime_tco(
     )
 
 
+def aggregate_runtime_tco_comparisons(
+        comparisons: Sequence[RuntimeTCOComparison],
+) -> RuntimeTCOComparison:
+    """Pool seed-paired runtime comparisons into one auditable result."""
+
+    rows = tuple(comparisons)
+    if not rows:
+        raise SSDHBFRuntimeEnergyError(
+            "runtime TCO aggregation requires at least one comparison")
+    first = rows[0]
+    projection_identity_fields = (
+        "capex_usd",
+        "replaced_static_electricity_opex_usd",
+        "pue",
+        "electricity_usd_per_kwh",
+    )
+    for index, row in enumerate(rows[1:], start=1):
+        for side_name in ("baseline", "proposed"):
+            expected = getattr(first, side_name)
+            observed = getattr(row, side_name)
+            if any(
+                getattr(observed, field_name)
+                != getattr(expected, field_name)
+                for field_name in projection_identity_fields
+            ):
+                raise SSDHBFRuntimeEnergyError(
+                    "runtime TCO projection assumptions differ across "
+                    f"comparisons: side={side_name}, report={index}")
+
+    baseline_runtime = aggregate_runtime_energy_reports(
+        tuple(row.baseline_runtime for row in rows))
+    proposed_runtime = aggregate_runtime_energy_reports(
+        tuple(row.proposed_runtime for row in rows))
+    baseline = project_five_year_runtime_tco(
+        baseline_runtime,
+        capex_usd=first.baseline.capex_usd,
+        replaced_static_electricity_opex_usd=(
+            first.baseline.replaced_static_electricity_opex_usd),
+    )
+    proposed = project_five_year_runtime_tco(
+        proposed_runtime,
+        capex_usd=first.proposed.capex_usd,
+        replaced_static_electricity_opex_usd=(
+            first.proposed.replaced_static_electricity_opex_usd),
+    )
+    if (
+        baseline.trace_average_it_power_w <= 0.0
+        or baseline.five_year_it_energy_kwh <= 0.0
+        or baseline.five_year_tco_usd <= 0.0
+    ):
+        raise SSDHBFRuntimeEnergyError(
+            "pooled baseline runtime projection must be positive")
+    return RuntimeTCOComparison(
+        report_schema=RUNTIME_TCO_SCHEMA,
+        baseline=baseline,
+        proposed=proposed,
+        baseline_runtime=baseline_runtime,
+        proposed_runtime=proposed_runtime,
+        proposed_average_it_power_ratio_to_baseline=(
+            proposed.trace_average_it_power_w
+            / baseline.trace_average_it_power_w
+        ),
+        proposed_five_year_it_energy_ratio_to_baseline=(
+            proposed.five_year_it_energy_kwh
+            / baseline.five_year_it_energy_kwh
+        ),
+        proposed_five_year_tco_ratio_to_baseline=(
+            proposed.five_year_tco_usd
+            / baseline.five_year_tco_usd
+        ),
+        incremental_average_it_power_w=(
+            proposed.trace_average_it_power_w
+            - baseline.trace_average_it_power_w
+        ),
+        incremental_five_year_it_energy_kwh=(
+            proposed.five_year_it_energy_kwh
+            - baseline.five_year_it_energy_kwh
+        ),
+        incremental_five_year_tco_usd=(
+            proposed.five_year_tco_usd
+            - baseline.five_year_tco_usd
+        ),
+    )
+
+
 __all__ = [
     "BASELINE_SYSTEM_KEY",
     "DEFAULT_RUNTIME_POWER_SOURCES",
@@ -1844,6 +2042,8 @@ __all__ = [
     "SSDHBFRuntimeEnergyError",
     "account_one_gpu_one_hbf_runtime_energy",
     "account_two_gpu_runtime_energy",
+    "aggregate_runtime_energy_reports",
+    "aggregate_runtime_tco_comparisons",
     "evaluate_ssd_hbf_runtime_tco",
     "project_five_year_runtime_tco",
 ]

@@ -13,6 +13,8 @@ from serving.core.ssd_hbf_runtime_energy import (
     SSDHBFRuntimeEnergyError,
     account_one_gpu_one_hbf_runtime_energy,
     account_two_gpu_runtime_energy,
+    aggregate_runtime_energy_reports,
+    aggregate_runtime_tco_comparisons,
     evaluate_ssd_hbf_runtime_tco,
     project_five_year_runtime_tco,
 )
@@ -360,6 +362,41 @@ class RuntimeTCOTests(unittest.TestCase):
         )
         self.proposed = account_one_gpu_one_hbf_runtime_energy(
             _proposed_report())
+
+    def test_seed_aggregation_pools_energy_and_horizon(self):
+        first = evaluate_ssd_hbf_runtime_tco(
+            baseline_system_report=_baseline_report(),
+            proposed_system_report=_proposed_report(),
+            baseline_calendar_reports=(
+                _baseline_calendar(0),
+                _baseline_calendar(1),
+            ),
+            baseline_capex_usd=500_000.0,
+            proposed_capex_usd=450_000.0,
+            baseline_static_electricity_opex_usd=50_000.0,
+            proposed_static_electricity_opex_usd=60_000.0,
+        )
+        pooled_runtime = aggregate_runtime_energy_reports((
+            first.baseline_runtime,
+            first.baseline_runtime,
+        ))
+        pooled = aggregate_runtime_tco_comparisons((first, first))
+
+        self.assertEqual(pooled_runtime.horizon_ns, 2 * HORIZON_NS)
+        self.assertAlmostEqual(
+            pooled_runtime.total_it_energy_j,
+            2.0 * first.baseline_runtime.total_it_energy_j,
+        )
+        self.assertAlmostEqual(
+            pooled_runtime.average_it_power_w,
+            first.baseline_runtime.average_it_power_w,
+        )
+        self.assertEqual(
+            pooled.baseline_runtime.input_summary["report_count"], 2)
+        self.assertAlmostEqual(
+            pooled.proposed_average_it_power_ratio_to_baseline,
+            first.proposed_average_it_power_ratio_to_baseline,
+        )
 
     def test_trace_average_power_projects_without_utilization_multiplier(self):
         projection = project_five_year_runtime_tco(
