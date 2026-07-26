@@ -1,3 +1,4 @@
+from dataclasses import replace
 import json
 import math
 import unittest
@@ -13,18 +14,18 @@ from serving.core.hbf_design_tco import (
 )
 from serving.core.ssd_hbf_tco import (
     HBFServerLayout,
-    OneGPUOneHBFTopology,
     SSDHBFTCOError,
+    TwoGPUOneHBFComparisonTopology,
     evaluate_ssd_hbf_tco,
-    one_gpu_local_ssd_baseline_cost,
     one_gpu_one_hbf_cost,
+    two_gpu_local_ssd_baseline_cost,
 )
 
 
 class SSDHBFTopologyTests(unittest.TestCase):
     def test_layouts_change_replicas_not_physical_counts(self):
-        tp4 = OneGPUOneHBFTopology.for_layout("tp4x2")
-        tp8 = OneGPUOneHBFTopology.for_layout("tp8")
+        tp4 = TwoGPUOneHBFComparisonTopology.for_layout("tp4x2")
+        tp8 = TwoGPUOneHBFComparisonTopology.for_layout("tp8")
 
         self.assertEqual(tp4.hbf_layout.tensor_parallel_size, 4)
         self.assertEqual(
@@ -34,6 +35,9 @@ class SSDHBFTopologyTests(unittest.TestCase):
             tp8.hbf_layout.independent_serving_replicas, 1)
         self.assertEqual(tp4.baseline, tp8.baseline)
         self.assertEqual(tp4.proposed, tp8.proposed)
+        self.assertEqual(tp4.baseline.gpu_hosts, 2)
+        self.assertEqual(tp4.baseline.h100_cards, 16)
+        self.assertEqual(tp4.baseline.local_ssd_devices, 16)
         self.assertEqual(tp4.proposed.gpu_hosts, 1)
         self.assertEqual(tp4.proposed.hbf_hosts, 1)
         self.assertEqual(tp4.proposed.h100_cards, 8)
@@ -54,26 +58,26 @@ class SSDHBFTopologyTests(unittest.TestCase):
 
 
 class SSDHBFComponentCostTests(unittest.TestCase):
-    def test_baseline_is_exactly_one_gpu_host_with_eight_local_ssds(self):
-        cost = one_gpu_local_ssd_baseline_cost()
+    def test_baseline_is_exactly_two_gpu_hosts_with_sixteen_local_ssds(self):
+        cost = two_gpu_local_ssd_baseline_cost()
 
-        self.assertEqual(cost.counts.cpu_hosts, 1)
-        self.assertEqual(cost.counts.gpu_hosts, 1)
+        self.assertEqual(cost.counts.cpu_hosts, 2)
+        self.assertEqual(cost.counts.gpu_hosts, 2)
         self.assertEqual(cost.counts.hbf_hosts, 0)
-        self.assertEqual(cost.counts.h100_cards, 8)
+        self.assertEqual(cost.counts.h100_cards, 16)
         self.assertEqual(cost.counts.hbf_cards, 0)
-        self.assertEqual(cost.counts.local_ssd_devices, 8)
+        self.assertEqual(cost.counts.local_ssd_devices, 16)
         self.assertEqual(
-            cost.component("gpu_cpu_host_base").quantity, 1)
+            cost.component("gpu_cpu_host_base").quantity, 2)
         self.assertEqual(
-            cost.component("h100_gpu_logic").quantity, 8)
+            cost.component("h100_gpu_logic").quantity, 16)
         self.assertEqual(
-            cost.component("h100_hbm_stack").quantity, 8)
+            cost.component("h100_hbm_stack").quantity, 16)
         self.assertEqual(
-            cost.component("gpu_local_nvme_ssd").quantity, 8)
+            cost.component("gpu_local_nvme_ssd").quantity, 16)
 
-    def test_proposed_preserves_every_gpu_ssd_component_and_adds_one_hbf(self):
-        baseline = one_gpu_local_ssd_baseline_cost()
+    def test_proposed_replaces_one_gpu_ssd_host_with_one_hbf_host(self):
+        baseline = two_gpu_local_ssd_baseline_cost()
         proposed = one_gpu_one_hbf_cost(
             hbf_layout="tp4x2",
             active_memory=lpddr_active_memory(),
@@ -87,7 +91,24 @@ class SSDHBFComponentCostTests(unittest.TestCase):
         }
         for key, line in baseline_components.items():
             with self.subTest(component=key):
-                self.assertEqual(proposed_components[key], line)
+                proposed_line = proposed_components[key]
+                expected_ratio = (
+                    1.0
+                    if key == "network_fabric"
+                    else 2.0
+                )
+                self.assertEqual(
+                    line.quantity,
+                    expected_ratio * proposed_line.quantity,
+                )
+                self.assertEqual(
+                    line.unit_capex_usd,
+                    proposed_line.unit_capex_usd,
+                )
+                self.assertEqual(
+                    line.unit_it_power_w,
+                    proposed_line.unit_it_power_w,
+                )
         self.assertEqual(proposed.counts.gpu_hosts, 1)
         self.assertEqual(proposed.counts.hbf_hosts, 1)
         self.assertEqual(proposed.counts.h100_cards, 8)
@@ -110,14 +131,84 @@ class SSDHBFComponentCostTests(unittest.TestCase):
             for line in proposed.bom
             if line.component_key not in baseline_components
         )
+        removed_gpu_host_capex = math.fsum(
+            baseline_components[key].capex_usd
+            - proposed_components[key].capex_usd
+            for key in baseline_components
+        )
+        removed_gpu_host_power = math.fsum(
+            baseline_components[key].it_power_w
+            - proposed_components[key].it_power_w
+            for key in baseline_components
+        )
         self.assertAlmostEqual(
             proposed.capex_usd - baseline.capex_usd,
-            math.fsum(line.capex_usd for line in additions),
+            (
+                math.fsum(line.capex_usd for line in additions)
+                - removed_gpu_host_capex
+            ),
         )
         self.assertAlmostEqual(
             proposed.it_power_w - baseline.it_power_w,
-            math.fsum(line.it_power_w for line in additions),
+            (
+                math.fsum(line.it_power_w for line in additions)
+                - removed_gpu_host_power
+            ),
         )
+
+    def test_baseline_and_proposal_use_their_network_price_anchors(self):
+        anchors = HardwareAnchors(
+            baseline_nic_capex_usd=111.0,
+            baseline_nic_power_w=11.0,
+            baseline_fabric_capex_usd=222.0,
+            baseline_fabric_power_w=22.0,
+            rdma_nic_capex_usd=333.0,
+            rdma_nic_power_w=33.0,
+            rdma_fabric_capex_usd=444.0,
+            rdma_fabric_power_w=44.0,
+        )
+        baseline = two_gpu_local_ssd_baseline_cost(
+            anchors=anchors)
+        proposed = one_gpu_one_hbf_cost(
+            hbf_layout="tp4x2",
+            active_memory=lpddr_active_memory(anchors=anchors),
+            anchors=anchors,
+        )
+
+        self.assertEqual(
+            baseline.component(
+                "gpu_host_network_nic").unit_capex_usd,
+            111.0,
+        )
+        self.assertEqual(
+            baseline.component(
+                "network_fabric").unit_it_power_w,
+            22.0,
+        )
+        self.assertEqual(
+            proposed.component(
+                "gpu_host_network_nic").unit_capex_usd,
+            333.0,
+        )
+        self.assertEqual(
+            proposed.component(
+                "network_fabric").unit_it_power_w,
+            44.0,
+        )
+
+    def test_cost_records_reject_crossed_physical_topologies(self):
+        baseline = two_gpu_local_ssd_baseline_cost()
+        proposed = one_gpu_one_hbf_cost(
+            hbf_layout="tp4x2",
+            active_memory=lpddr_active_memory(),
+        )
+
+        with self.assertRaisesRegex(
+                SSDHBFTCOError, "exactly two"):
+            replace(baseline, counts=proposed.counts)
+        with self.assertRaisesRegex(
+                SSDHBFTCOError, "exactly one GPU"):
+            replace(proposed, counts=baseline.counts)
 
     def test_tp4x2_and_tp8_have_identical_bom_and_tco(self):
         memory = lpddr_active_memory()
@@ -207,7 +298,7 @@ class SSDHBFComponentCostTests(unittest.TestCase):
     def test_non_five_year_evaluation_is_rejected(self):
         with self.assertRaisesRegex(
                 SSDHBFTCOError, "five-year"):
-            one_gpu_local_ssd_baseline_cost(
+            two_gpu_local_ssd_baseline_cost(
                 evaluation=EvaluationAssumptions(
                     lifetime_years=4.0),
             )
@@ -235,7 +326,7 @@ class SSDHBFComponentCostTests(unittest.TestCase):
 class SSDHBFEconomicsTests(unittest.TestCase):
     def test_delta_and_required_goodput_break_even_are_auditable(self):
         baseline_goodput = 100.0
-        baseline = one_gpu_local_ssd_baseline_cost()
+        baseline = two_gpu_local_ssd_baseline_cost()
         proposed = one_gpu_one_hbf_cost(
             hbf_layout="tp8",
             active_memory=lpddr_active_memory(),

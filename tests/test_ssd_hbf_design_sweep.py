@@ -9,6 +9,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from serving.core.gpu_pd_dual_oracle import (
+    ROUTE_BALANCED_TRACE_WORK,
+    DualStrictInfiniteHBMOracle,
+)
+from serving.core.gpu_pd_dual_tiered import (
+    DualFiniteHBMTieredBaseline,
+)
 from serving.core.hbf_comparison_workload import (
     CallSpec,
     ScheduledSession,
@@ -32,7 +39,9 @@ from serving.ssd_hbf_design_sweep import (
     evaluate_reference_eligibility,
     make_design_system,
     make_design_spec,
+    make_reference_system,
     parse_active_memory_spec,
+    run_reference_cell,
     run_design_space,
 )
 
@@ -217,6 +226,49 @@ class SSDHBFDesignSweepTests(unittest.TestCase):
                     design.migration_policy,
                 )
 
+    def test_reference_factories_materialize_two_balanced_gpu_clusters(self):
+        baseline = make_reference_system(
+            repo_root=REPO_ROOT,
+            candidate_kind="baseline",
+        )
+        oracle = make_reference_system(
+            repo_root=REPO_ROOT,
+            candidate_kind="oracle",
+        )
+
+        self.assertIsInstance(
+            baseline, DualFiniteHBMTieredBaseline)
+        self.assertIsInstance(
+            oracle, DualStrictInfiniteHBMOracle)
+        self.assertEqual(len(baseline.nodes), 2)
+        self.assertEqual(len(oracle.nodes), 2)
+        self.assertEqual(
+            baseline.route_policy, ROUTE_BALANCED_TRACE_WORK)
+        self.assertEqual(
+            oracle.route_policy, ROUTE_BALANCED_TRACE_WORK)
+        self.assertEqual(baseline.policy, "ssd_direct")
+
+    def test_reference_cell_reports_dual_gpu_physical_topology(self):
+        result = run_reference_cell(
+            repo_root=REPO_ROOT,
+            candidate_kind="baseline",
+            scheduled_sessions=_scheduled_session(),
+            session_rate=REQUIRED_SESSION_RATE,
+            seed=0,
+            measurement_identities=("session-0::call-0",),
+        )
+
+        self.assertEqual(
+            result["physical_topology"],
+            {
+                "gpu_host_count": 2,
+                "hbf_host_count": 0,
+                "h100_card_count": 16,
+                "hbf_card_count": 0,
+                "local_ssd_device_count": 16,
+            },
+        )
+
     def test_hbf_read_mode_is_a_distinct_propagated_axis(self):
         grid = build_design_grid(
             layouts=("tp8_context",),
@@ -395,12 +447,14 @@ class SSDHBFDesignSweepTests(unittest.TestCase):
         cheap_tco = by_key[cheap.key]["tco"]
         self.assertIsNotNone(cheap_tco)
         self.assertEqual(
-            cheap_tco["topology"]["baseline"]["gpu_hosts"], 1)
+            cheap_tco["topology"]["baseline"]["gpu_hosts"], 2)
         self.assertEqual(
             cheap_tco["topology"]["baseline"]["hbf_hosts"], 0)
         self.assertEqual(
+            cheap_tco["topology"]["baseline"]["h100_cards"], 16)
+        self.assertEqual(
             cheap_tco["topology"]["baseline"][
-                "local_ssd_devices"], 8)
+                "local_ssd_devices"], 16)
         self.assertEqual(
             cheap_tco["topology"]["proposed"]["gpu_hosts"], 1)
         self.assertEqual(

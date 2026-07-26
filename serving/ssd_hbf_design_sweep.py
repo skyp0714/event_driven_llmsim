@@ -1,13 +1,13 @@
-"""Reproducible sweep for the SSD-staged one-GPU/one-HBF design.
+"""Reproducible sweep for the SSD-staged GPU+HBF design.
 
 This campaign is intentionally separate from ``hbf_design_space_sweep``.
 The historical runner models direct GPU-HBM-to-HBF migration and compares
 against two GPU servers.  This runner freezes the corrected physical and
 causal contract:
 
-* baseline: one finite-HBM P4D4 GPU server with eight local SSDs;
-* Oracle: one strict infinite-HBM P4D4 GPU server;
-* design: that one GPU+SSD server plus one eight-card HBF server.
+* baseline: two finite-HBM P4D4 GPU servers with sixteen local SSDs;
+* Oracle: two strict infinite-HBM P4D4 GPU servers;
+* design: one GPU+SSD server plus one eight-card HBF server.
 
 Every seed builds one immutable long-cold-context schedule at exactly
 3 sessions/s.  The same tuple and exact measurement roster are passed to
@@ -31,10 +31,11 @@ import time
 from typing import Callable, Mapping, Optional, Sequence
 
 from .core.gpu_pd_latency import load_p4d4_gpu_config
-from .core.gpu_pd_single_system import (
-    SingleFiniteHBMTieredBaseline,
-    SingleStrictInfiniteHBMOracle,
+from .core.gpu_pd_dual_oracle import (
+    ROUTE_BALANCED_TRACE_WORK,
+    DualStrictInfiniteHBMOracle,
 )
+from .core.gpu_pd_dual_tiered import DualFiniteHBMTieredBaseline
 from .core.hbf_comparison_cell import (
     DEFAULT_FIRST_TTFT_SECONDS,
     DEFAULT_RESUME_TTFT_SECONDS,
@@ -83,15 +84,15 @@ from .hbf_comparison_sweep import (
 )
 
 
-SSD_HBF_SWEEP_SCHEMA_VERSION = 3
-SSD_HBF_CELL_SCHEMA_VERSION = 2
-SSD_HBF_CONTRACT_KEY = "one-gpu-local-ssd-plus-one-hbf-staged-v1"
+SSD_HBF_SWEEP_SCHEMA_VERSION = 4
+SSD_HBF_CELL_SCHEMA_VERSION = 3
+SSD_HBF_CONTRACT_KEY = "two-gpu-local-ssd-vs-one-gpu-one-hbf-staged-v2"
 REQUIRED_SESSION_RATE = 3.0
 
-BASELINE_CANDIDATE_KEY = "baseline_one_gpu_local_ssd"
-ORACLE_CANDIDATE_KEY = "oracle_one_gpu_infinite_hbm"
-BASELINE_SYSTEM_KEY = "one_gpu_local_ssd_baseline"
-ORACLE_SYSTEM_KEY = "one_gpu_infinite_hbm_oracle"
+BASELINE_CANDIDATE_KEY = "baseline_two_gpu_local_ssd"
+ORACLE_CANDIDATE_KEY = "oracle_two_gpu_infinite_hbm"
+BASELINE_SYSTEM_KEY = "two_gpu_local_ssd_baseline"
+ORACLE_SYSTEM_KEY = "two_gpu_infinite_hbm_oracle"
 
 SUPPORTED_LAYOUTS = ("tp4x2", "tp8_context")
 LAYOUT_TO_SIMULATOR = {
@@ -145,15 +146,24 @@ BASELINE_OVER_ORACLE_GOODPUT_CI95_UPPER_MAX = 0.10
 BYTES_PER_GIB = 1024 ** 3
 _EXECUTION_INPUTS = (
     Path("serving/ssd_hbf_design_sweep.py"),
-    Path("serving/core/gpu_pd_single_system.py"),
+    Path("serving/core/comparison_cutoff.py"),
+    Path("serving/core/gpu_pd_dual_oracle.py"),
+    Path("serving/core/gpu_pd_dual_tiered.py"),
+    Path("serving/core/gpu_pd_hbm.py"),
+    Path("serving/core/gpu_pd_latency.py"),
+    Path("serving/core/gpu_pd_pool.py"),
+    Path("serving/core/gpu_pd_tier_lifecycle.py"),
+    Path("serving/core/gpu_pd_tier_resources.py"),
     Path("serving/core/gpu_ssd_hbf_hybrid.py"),
     Path("serving/core/ssd_hbf_tco.py"),
     Path("serving/core/gpu_pd_tiered_node.py"),
     Path("serving/core/gpu_pd_oracle_node.py"),
+    Path("serving/core/h100_kernel_calibrated_prompt.py"),
     Path("serving/core/hbf_full_model_latency.py"),
     Path("serving/core/hbf_comparison_cell.py"),
     Path("serving/core/hbf_comparison_metrics.py"),
     Path("serving/core/hbf_comparison_workload.py"),
+    Path("serving/core/online_latency_model.py"),
     Path("serving/core/tracelab_comparison_scenarios.py"),
     PINNED_GPU_CONFIG,
     PINNED_HBF_CONFIG,
@@ -476,10 +486,16 @@ def make_reference_system(
         "validate_every_event": False,
     }
     if candidate_kind == "baseline":
-        return SingleFiniteHBMTieredBaseline(
-            policy="ssd_direct", **common)
+        return DualFiniteHBMTieredBaseline(
+            policy="ssd_direct",
+            route_policy=ROUTE_BALANCED_TRACE_WORK,
+            **common,
+        )
     if candidate_kind == "oracle":
-        return SingleStrictInfiniteHBMOracle(**common)
+        return DualStrictInfiniteHBMOracle(
+            route_policy=ROUTE_BALANCED_TRACE_WORK,
+            **common,
+        )
     raise SSDHBFDesignSweepError(
         f"unknown reference candidate kind {candidate_kind!r}")
 
@@ -540,11 +556,11 @@ def _run_cell_system(
         list(measurement_identities))
     if design is None:
         topology = {
-            "gpu_host_count": 1,
+            "gpu_host_count": 2,
             "hbf_host_count": 0,
-            "h100_card_count": 8,
+            "h100_card_count": 16,
             "hbf_card_count": 0,
-            "local_ssd_device_count": 8,
+            "local_ssd_device_count": 16,
         }
     else:
         topology = {
@@ -1526,8 +1542,9 @@ def run_design_space(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Sweep the one-GPU local-SSD plus one-HBF staged-promotion "
-            "design on the pinned long-cold scenario at rate 3.0."
+            "Compare the two-GPU local-SSD baseline with the one-GPU "
+            "local-SSD plus one-HBF staged-promotion design on the pinned "
+            "long-cold scenario at rate 3.0."
         )
     )
     parser.add_argument(

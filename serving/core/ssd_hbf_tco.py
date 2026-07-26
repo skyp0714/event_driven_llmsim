@@ -1,10 +1,10 @@
-"""Five-year TCO for one GPU+SSD host with an optional HBF host.
+"""Five-year TCO for two GPU+SSD hosts versus one GPU+SSD plus HBF.
 
-This evaluator is deliberately separate from the historical two-GPU-host
-tiering comparison.  Its two finite systems are:
+Its two finite systems match the physical comparison used by the HBF
+evaluation:
 
-* baseline: one eight-H100 P4D4 host and its eight local NVMe SSDs;
-* proposed: that exact GPU host and SSD tier, plus one eight-card HBF host.
+* baseline: two eight-H100 P4D4 hosts and sixteen local NVMe SSDs;
+* proposed: one such GPU+SSD host plus one eight-card HBF host.
 
 HBF ``tp4x2`` and ``tp8`` are serving layouts inside the same physical
 eight-card HBF server.  Selecting a layout never changes host or card counts.
@@ -42,12 +42,13 @@ from .hbf_design_tco import (
 )
 
 
-SSD_HBF_REPORT_SCHEMA = "one-gpu-one-hbf-ssd-tco-v2"
-SSD_BASELINE_SYSTEM_KEY = "one_gpu_local_ssd_baseline"
+SSD_HBF_REPORT_SCHEMA = "two-gpu-vs-one-gpu-one-hbf-ssd-tco-v3"
+SSD_BASELINE_SYSTEM_KEY = "two_gpu_local_ssd_baseline"
 SSD_HBF_PROPOSED_SYSTEM_KEY = "one_gpu_local_ssd_plus_one_hbf"
-ORACLE_SYSTEM_KEY = "infinite_hbm_oracle"
+ORACLE_SYSTEM_KEY = "two_gpu_infinite_hbm_oracle"
 HBF_LAYOUT_KEYS = ("tp4x2", "tp8")
-GPU_HOST_COUNT = 1
+BASELINE_GPU_HOST_COUNT = 2
+PROPOSED_GPU_HOST_COUNT = 1
 HBF_HOST_COUNT = 1
 H100_CARD_COUNT = 8
 HBF_CARD_COUNT = 8
@@ -61,7 +62,7 @@ LAYOUT_COUNT_SEMANTICS = (
 
 
 class SSDHBFTCOError(ValueError):
-    """Raised when the fixed one-GPU/one-HBF contract is violated."""
+    """Raised when the fixed two-GPU versus GPU+HBF contract is violated."""
 
 
 def _finite(
@@ -199,8 +200,8 @@ class PhysicalComponentCounts:
 
 
 @dataclass(frozen=True)
-class OneGPUOneHBFTopology:
-    """The two fixed finite systems at one selected HBF layout."""
+class TwoGPUOneHBFComparisonTopology:
+    """The fixed two-GPU baseline and one-GPU/one-HBF proposal."""
 
     hbf_layout: HBFServerLayout
     baseline: PhysicalComponentCounts = field(init=False)
@@ -215,15 +216,17 @@ class OneGPUOneHBFTopology:
             self,
             "baseline",
             PhysicalComponentCounts(
-                cpu_hosts=1,
-                gpu_hosts=GPU_HOST_COUNT,
+                cpu_hosts=BASELINE_GPU_HOST_COUNT,
+                gpu_hosts=BASELINE_GPU_HOST_COUNT,
                 hbf_hosts=0,
-                h100_cards=H100_CARD_COUNT,
+                h100_cards=(
+                    BASELINE_GPU_HOST_COUNT * H100_CARD_COUNT),
                 hbf_cards=0,
-                local_ssd_devices=LOCAL_SSD_DEVICE_COUNT,
-                network_nics=1,
+                local_ssd_devices=(
+                    BASELINE_GPU_HOST_COUNT * LOCAL_SSD_DEVICE_COUNT),
+                network_nics=BASELINE_GPU_HOST_COUNT,
                 network_fabric_units=1,
-                gpu_intraserver_fabric_units=1,
+                gpu_intraserver_fabric_units=BASELINE_GPU_HOST_COUNT,
                 hbf_intraserver_fabric_units=0,
             ),
         )
@@ -231,8 +234,8 @@ class OneGPUOneHBFTopology:
             self,
             "proposed",
             PhysicalComponentCounts(
-                cpu_hosts=2,
-                gpu_hosts=GPU_HOST_COUNT,
+                cpu_hosts=PROPOSED_GPU_HOST_COUNT + HBF_HOST_COUNT,
+                gpu_hosts=PROPOSED_GPU_HOST_COUNT,
                 hbf_hosts=HBF_HOST_COUNT,
                 h100_cards=H100_CARD_COUNT,
                 hbf_cards=HBF_CARD_COUNT,
@@ -247,7 +250,7 @@ class OneGPUOneHBFTopology:
     @classmethod
     def for_layout(
             cls, layout: str | HBFServerLayout,
-    ) -> "OneGPUOneHBFTopology":
+    ) -> "TwoGPUOneHBFComparisonTopology":
         normalized = (
             layout
             if isinstance(layout, HBFServerLayout)
@@ -321,26 +324,36 @@ class SSDHBFSystemCost:
             raise SSDHBFTCOError(
                 "BOM component keys must be unique")
         if self.system_key == SSD_BASELINE_SYSTEM_KEY:
+            expected_counts = (
+                TwoGPUOneHBFComparisonTopology.for_layout(
+                    "tp4x2").baseline
+            )
             if (
                 self.hbf_layout is not None
                 or self.active_memory is not None
                 or self.sensitivity_point is not None
-                or self.counts.hbf_hosts
-                or self.counts.hbf_cards
+                or self.counts != expected_counts
             ):
                 raise SSDHBFTCOError(
-                    "baseline cannot contain HBF hardware")
+                    "baseline must contain exactly two GPU+SSD hosts")
         else:
+            expected_counts = (
+                TwoGPUOneHBFComparisonTopology.for_layout(
+                    self.hbf_layout
+                    if isinstance(self.hbf_layout, HBFServerLayout)
+                    else "tp4x2"
+                ).proposed
+            )
             if (
                 not isinstance(self.hbf_layout, HBFServerLayout)
                 or not isinstance(self.active_memory, ActiveMemorySpec)
                 or not isinstance(
                     self.sensitivity_point, SensitivityPoint)
-                or self.counts.hbf_hosts != HBF_HOST_COUNT
-                or self.counts.hbf_cards != HBF_CARD_COUNT
+                or self.counts != expected_counts
             ):
                 raise SSDHBFTCOError(
-                    "proposed cost requires one complete HBF server")
+                    "proposed cost requires exactly one GPU+SSD host and "
+                    "one complete HBF server")
         expected_capex = math.fsum(
             line.capex_usd for line in self.bom)
         expected_power = math.fsum(
@@ -423,17 +436,48 @@ def _finalize_cost(
     )
 
 
-def _common_gpu_ssd_bom(
-        anchors: HardwareAnchors,
+def _gpu_ssd_bom(
+        anchors: HardwareAnchors, *,
+        gpu_host_count: int,
+        baseline_network: bool,
 ) -> tuple[BOMLine, ...]:
+    if (
+        isinstance(gpu_host_count, bool)
+        or not isinstance(gpu_host_count, int)
+        or gpu_host_count <= 0
+    ):
+        raise SSDHBFTCOError(
+            "gpu_host_count must be a positive integer")
     host_dram_gib = (
         P4D4_CPU_MEMORY_BYTES_PER_HOST / BYTES_PER_GIB)
+    h100_card_count = gpu_host_count * H100_CARD_COUNT
+    ssd_device_count = gpu_host_count * LOCAL_SSD_DEVICE_COUNT
+    nic_capex = (
+        anchors.baseline_nic_capex_usd
+        if baseline_network
+        else anchors.rdma_nic_capex_usd
+    )
+    nic_power = (
+        anchors.baseline_nic_power_w
+        if baseline_network
+        else anchors.rdma_nic_power_w
+    )
+    fabric_capex = (
+        anchors.baseline_fabric_capex_usd
+        if baseline_network
+        else anchors.rdma_fabric_capex_usd
+    )
+    fabric_power = (
+        anchors.baseline_fabric_power_w
+        if baseline_network
+        else anchors.rdma_fabric_power_w
+    )
     return (
         _bom_line(
             "gpu_cpu_host_base",
             "GPU CPU-server base",
             "host",
-            1,
+            gpu_host_count,
             anchors.cpu_host_base_capex_usd,
             anchors.cpu_host_base_power_w,
             (
@@ -445,7 +489,7 @@ def _common_gpu_ssd_bom(
             "gpu_host_dram",
             "GPU-host DRAM",
             "GiB",
-            host_dram_gib,
+            gpu_host_count * host_dram_gib,
             anchors.host_dram_capex_usd_per_gib,
             anchors.host_dram_power_w_per_gib,
             "The P4D4 host retains its configured 512e9-byte DRAM tier.",
@@ -454,16 +498,16 @@ def _common_gpu_ssd_bom(
             "h100_gpu_logic",
             "H100 GPU logic excluding HBM",
             "card",
-            H100_CARD_COUNT,
+            h100_card_count,
             anchors.gpu_logic_capex_usd_per_card,
             anchors.gpu_logic_power_w_per_card,
-            "Exactly one eight-H100 GPU host is present.",
+            f"Exactly {gpu_host_count} eight-H100 GPU host(s) are present.",
         ),
         _bom_line(
             "h100_hbm_stack",
             "Complete H100 HBM stack",
             "card",
-            H100_CARD_COUNT,
+            h100_card_count,
             anchors.hbm_stack_capex_usd_per_card,
             anchors.hbm_stack_power_w_per_card,
             "HBM is priced separately from H100 GPU logic.",
@@ -472,71 +516,76 @@ def _common_gpu_ssd_bom(
             "gpu_intraserver_fabric",
             "GPU-host NVSwitch/NVLink fabric",
             "host fabric unit",
-            1,
+            gpu_host_count,
             anchors.gpu_intraserver_fabric_capex_usd_per_unit,
             anchors.gpu_intraserver_fabric_power_w_per_unit,
-            "The one GPU host retains one accelerator fabric allocation.",
+            "Every GPU host retains one accelerator fabric allocation.",
         ),
         _bom_line(
             "gpu_local_nvme_ssd",
             "GPU-host local NVMe SSD tier",
             "device",
-            LOCAL_SSD_DEVICE_COUNT,
+            ssd_device_count,
             anchors.nvme_ssd_capex_usd_per_device,
             anchors.nvme_ssd_power_w_per_device,
-            "Both systems retain the same eight local SSD devices.",
+            "Every GPU host retains eight local SSD devices.",
         ),
         _bom_line(
-            "gpu_host_rdma_nic",
-            "GPU-host RDMA-capable network NIC",
+            "gpu_host_network_nic",
+            "GPU-host network NIC",
             "NIC",
-            1,
-            anchors.rdma_nic_capex_usd,
-            anchors.rdma_nic_power_w,
+            gpu_host_count,
+            nic_capex,
+            nic_power,
             (
-                "The identical GPU host NIC is present in baseline and "
-                "proposed systems."
+                "Every GPU host receives one network NIC; the baseline "
+                "and proposed systems use their respective established "
+                "network-price anchors."
             ),
         ),
         _bom_line(
-            "rdma_network_fabric",
-            "Shared network fabric allocation",
+            "network_fabric",
+            "Shared external network fabric allocation",
             "fabric unit",
             1,
-            anchors.rdma_fabric_capex_usd,
-            anchors.rdma_fabric_power_w,
+            fabric_capex,
+            fabric_power,
             (
-                "The same system-level network allocation is present in "
-                "both systems; the proposed HBF host joins it."
+                "One system-level fabric allocation is present in each "
+                "deployment; the proposed HBF host joins its RDMA fabric."
             ),
         ),
     )
 
 
-def one_gpu_local_ssd_baseline_cost(
+def two_gpu_local_ssd_baseline_cost(
         *,
         anchors: HardwareAnchors = HardwareAnchors(),
         evaluation: EvaluationAssumptions = EvaluationAssumptions(),
 ) -> SSDHBFSystemCost:
-    """Price exactly one P4D4 GPU host and eight local SSDs."""
+    """Price exactly two P4D4 GPU hosts and sixteen local SSDs."""
 
     if not isinstance(anchors, HardwareAnchors):
         raise SSDHBFTCOError("anchors must be HardwareAnchors")
     _validate_evaluation(evaluation)
-    counts = OneGPUOneHBFTopology.for_layout(
+    counts = TwoGPUOneHBFComparisonTopology.for_layout(
         "tp4x2").baseline
     return _finalize_cost(
         system_key=SSD_BASELINE_SYSTEM_KEY,
         physical_description=(
-            "One P4D4 eight-H100 GPU host with host DRAM, one GPU "
-            "fabric, eight local NVMe SSDs, one NIC, and one shared "
-            "network-fabric allocation"
+            "Two independent-serving P4D4 eight-H100 GPU hosts with host "
+            "DRAM, two GPU fabrics, sixteen local NVMe SSDs, two NICs, "
+            "and one priced system-level network-fabric allocation"
         ),
         counts=counts,
         hbf_layout=None,
         active_memory=None,
         sensitivity_point=None,
-        bom=_common_gpu_ssd_bom(anchors),
+        bom=_gpu_ssd_bom(
+            anchors,
+            gpu_host_count=2,
+            baseline_network=True,
+        ),
         evaluation=evaluation,
     )
 
@@ -549,9 +598,9 @@ def one_gpu_one_hbf_cost(
         anchors: HardwareAnchors = HardwareAnchors(),
         evaluation: EvaluationAssumptions = EvaluationAssumptions(),
 ) -> SSDHBFSystemCost:
-    """Price the same GPU+SSD host plus exactly one HBF server."""
+    """Price one GPU+SSD host plus exactly one HBF server."""
 
-    topology = OneGPUOneHBFTopology.for_layout(hbf_layout)
+    topology = TwoGPUOneHBFComparisonTopology.for_layout(hbf_layout)
     if not isinstance(active_memory, ActiveMemorySpec):
         raise SSDHBFTCOError(
             "active_memory must be ActiveMemorySpec")
@@ -664,8 +713,9 @@ def one_gpu_one_hbf_cost(
     return _finalize_cost(
         system_key=SSD_HBF_PROPOSED_SYSTEM_KEY,
         physical_description=(
-            "The exact one-host GPU+eight-local-SSD baseline plus one "
-            "eight-card HBF server; HBF layout "
+            "One eight-H100 GPU host with eight local SSDs plus one "
+            "eight-card HBF server, compared with the two-GPU baseline; "
+            "HBF layout "
             f"{topology.hbf_layout.key} uses "
             f"{topology.hbf_layout.independent_serving_replicas} "
             "internal serving replica(s) without changing physical counts"
@@ -674,7 +724,14 @@ def one_gpu_one_hbf_cost(
         hbf_layout=topology.hbf_layout,
         active_memory=active_memory,
         sensitivity_point=sensitivity_point,
-        bom=_common_gpu_ssd_bom(anchors) + hbf_bom,
+        bom=(
+            _gpu_ssd_bom(
+                anchors,
+                gpu_host_count=1,
+                baseline_network=False,
+            )
+            + hbf_bom
+        ),
         evaluation=evaluation,
     )
 
@@ -766,7 +823,7 @@ class PowerEnergyComparison:
 class SSDHBFTCOReport:
     report_schema: str
     goodput_semantics: str
-    topology: OneGPUOneHBFTopology
+    topology: TwoGPUOneHBFComparisonTopology
     baseline_cost: SSDHBFSystemCost
     proposed_cost: SSDHBFSystemCost
     cost_delta_proposed_minus_baseline: SSDHBFCostDelta
@@ -798,7 +855,7 @@ def evaluate_ssd_hbf_tco(
         anchors: HardwareAnchors = HardwareAnchors(),
         evaluation: EvaluationAssumptions = EvaluationAssumptions(),
 ) -> SSDHBFTCOReport:
-    """Evaluate matched-rate goodput for one GPU host versus GPU+HBF."""
+    """Evaluate matched-rate goodput for two GPU hosts versus GPU+HBF."""
 
     baseline_goodput = _finite(
         "baseline_slo_good_output_tokens_per_second",
@@ -819,8 +876,8 @@ def evaluate_ssd_hbf_tco(
             minimum=0.0,
         )
     )
-    topology = OneGPUOneHBFTopology.for_layout(hbf_layout)
-    baseline = one_gpu_local_ssd_baseline_cost(
+    topology = TwoGPUOneHBFComparisonTopology.for_layout(hbf_layout)
+    baseline = two_gpu_local_ssd_baseline_cost(
         anchors=anchors,
         evaluation=evaluation,
     )
@@ -936,7 +993,7 @@ __all__ = [
     "SSD_HBF_PROPOSED_SYSTEM_KEY",
     "SSD_HBF_REPORT_SCHEMA",
     "HBFServerLayout",
-    "OneGPUOneHBFTopology",
+    "TwoGPUOneHBFComparisonTopology",
     "PerformanceOnlyOracle",
     "PhysicalComponentCounts",
     "SSDHBFCostDelta",
@@ -948,6 +1005,6 @@ __all__ = [
     "PowerEnergyComparison",
     "evaluate_ssd_hbf_tco",
     "lpddr_active_memory",
-    "one_gpu_local_ssd_baseline_cost",
     "one_gpu_one_hbf_cost",
+    "two_gpu_local_ssd_baseline_cost",
 ]
