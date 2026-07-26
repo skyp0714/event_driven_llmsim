@@ -421,6 +421,161 @@ fully drained in both compact validity and the hash-verified raw runtime
 report. The Oracle remains performance-only and never receives a BOM or
 tokens/dollar value.
 
+## SSD-staged design evaluation
+
+The SSD-staged campaign is separate from the direct GPU-HBM-to-HBF lifecycle
+described above. It compares the following fixed physical systems on the same
+rate, workload schedule, SLOs, and seeds:
+
+| System | Physical deployment |
+| --- | --- |
+| Baseline | Two eight-H100 P4D4 GPU hosts, with eight local NVMe SSDs per host |
+| Proposed | One eight-H100 P4D4 GPU+SSD host plus one eight-card H100-class HBF-GPU host |
+| Oracle | Two infinite-HBM P4D4 GPU hosts; performance-only, with no TCO |
+
+Every nonterminal GPU turn in the proposed system is first checkpointed
+through D-HBM → CPU DRAM → local SSD. A migration policy controls only the
+later SSD → CPU DRAM → NIC/RDMA → HBF promotion. It never uses the future
+tool or human wait duration.
+
+An SSD-origin promotion is opportunistic. If no HBF replica has enough free
+capacity, the import is deferred without evicting a useful HBF record, and
+the durable checkpoint remains on the GPU host's SSD for retry or restore.
+There is no SSD tier in the HBF server. By contrast, the direct
+GPU-HBM-to-HBF lifecycle may evict the least-recently-used idle HBF record
+when admitting a direct migration. A later continuation of that evicted
+lineage takes the GPU recomputation route with zero reusable tokens and runs
+through the P4 chunked-prefill queue.
+
+### Migration-policy roster
+
+The default campaign evaluates every distinct causal policy:
+
+| Policy group | Keys and behavior |
+| --- | --- |
+| Immediate | `eager`; or `tool_immediate`, `human_immediate`, and `tool_or_human_immediate`, filtered only by gap metadata known at completion |
+| Fixed delay | `delay_25ms`, `delay_50ms`, `delay_100ms`, `delay_200ms`, `delay_500ms`, `delay_1000ms`, `delay_5s`, `delay_30s`, and `delay_300s` |
+| Load-aware | `load_aware`, using only visible GPU/HBF queue and resource-calendar pressure plus GPU-HBM occupancy; a deferred decision retries after 50 ms |
+| Controls | `never` disables promotion |
+
+`delay_1s` remains accepted as a compatibility alias for
+`delay_1000ms`, but it is not part of the default roster because it is an
+exact duplicate.
+
+Every canonical policy is crossed with both HBF read modes and both
+lower-tier restore modes:
+
+| Axis | Mode | Semantics |
+| --- | --- | --- |
+| HBF read | `demand` | Serialize the configured 5 µs fixed HBF access once before the calibrated compute/bandwidth roof for each logical kernel that reads HBF |
+| HBF read | `prefetch` | Perfectly hide only that 5 µs fixed access; retain the same HBF bytes and bandwidth service |
+| CPU/SSD restore | `bulk` | Finish the complete lower-tier restore before GPU prefill can start |
+| CPU/SSD restore | `layerwise_streaming` | Divide restored KV into 48 exact layer-major partitions and gate each GPU layer on its matching transfer completion |
+
+A fused mixed prefill/decode attention kernel pays at most one demand-read
+fixed access. LPDDR has bandwidth service but no separate fixed first-access
+latency in this model.
+
+Layerwise streaming is an optimistic sensitivity, not a claim that it is the
+default behavior of vLLM or a storage connector. A CPU source creates one
+CPU-to-P transfer per transformer layer; an SSD source creates an ordered
+SSD-to-CPU and CPU-to-P pair per layer. Later layer transfers may overlap
+earlier GPU layer computation, while source pins, bounce storage, and P/D
+reservations remain live until the final layer completes. The baseline and
+proposed design are always compared using the same restore mode. GPU prefill
+remains token-chunked independently of this layer-major restore option.
+
+### Five-year cost basis
+
+The finite-system BOM includes CPU hosts, host DRAM, H100 cards and their HBM,
+local SSDs, HBF GPU logic, HBF media/controllers, LPDDR, GPU and HBF
+intra-server fabrics, RDMA NICs, and the external fabric. The configured
+80 GB/s proposed link requires two 400-Gbit/s-class NICs at each endpoint, so
+the proposed BOM contains four NICs; the baseline contains two.
+
+The central purchase accounting uses a $30,000 whole-H100 anchor and a
+$1,350 absolute avoided-HBM credit per HBF card. The latter is 4.5% of the
+purchase anchor, not 30%. It comes from an
+[analyst manufacturing-component estimate](https://siliconanalysts.com/data/ai-chip-costs);
+applying a manufacturing percentage to accelerator selling price is retained
+only as the explicitly labeled `legacy_30pct_purchase_price_credit`
+sensitivity. HBF media/controller CAPEX is a separate $4,500-per-card
+exploratory assumption, not a vendor quote. The report includes ±20% HBM
+credit cases, an optimistic HBF-price-equals-HBM-credit case, and the
+per-card HBF break-even price.
+
+All TCO results use a fixed five-year horizon. Static BOM power includes the
+same DRAM, SSD, PCIe/intra-server, NIC, and network-fabric components as
+CAPEX. It is retained as a component sensitivity, separate from the
+event-derived runtime projection below.
+
+### HBF endurance and card hotness
+
+The lifecycle records physical HBF payload bytes per card when a migration or
+append is admitted. A job that later becomes stale still consumed media
+writes and is included in the wasted-write counter. Model weights are treated
+as a one-time static write and excluded from recurring KV wear.
+
+The sweep pools write bytes and observed duration across seeds, then reports
+per-card bytes/day, full-region writes/day, five-year budget fraction, and
+years to first-card end of life. Its empirical proxy anchors are the
+[Micron 9550 PRO 3.84 TB ratings](https://www.micron.com/content/dam/micron/global/public/products/data-sheet/ssd/9550-nvme-ssd-tech-prod-spec.pdf):
+7,008 TBW for random 4 KiB writes and 29,400 TBW as a sequential 128 KiB
+sensitivity. Raw-HBF sensitivities use 100,000 and 1,000,000 P/E cycles with
+write-amplification factors of 1.0, 1.3, and 2.0.
+
+Cross-card hotness is measured directly as minimum, mean, maximum,
+coefficient of variation, maximum-to-mean ratio, hottest-card share, and
+limiting device IDs. Within a card, KV writes are assumed to spread randomly
+and uniformly over the writable KV region. The model does not claim
+cell-, page-, or erase-block-level hotness.
+
+### Runtime energy and TCO
+
+`runtime_energy_tco` uses report schema `ssd-hbf-runtime-tco-v1`. Per-seed
+resource activity is first converted to component energy, then seeds are
+pooled as total energy divided by total simulated horizon. The horizon
+already contains arrivals, tool gaps, queueing, and idle time, so the
+five-year projection applies no second utilization multiplier.
+
+Accounting assigns one exclusive driver to each physical component instead
+of summing every resource-calendar byte counter. H100 energy uses whole-card
+P/D active time and already includes HBM. HBF GPU logic, media/controller,
+LPDDR, SSD, CPU/DRAM, PCIe and intra-server fabrics, RDMA NICs, and the
+external fabric are separate components. In particular, HBF-media busy-time
+power is not followed by a second per-bit media charge, and one RDMA transfer
+is counted once by the fabric plus once at each endpoint rather than once at
+every internal queue.
+
+Runtime TCO is:
+
+```text
+five-year TCO = purchase CAPEX + event-derived five-year electricity
+```
+
+The static-BOM electricity estimate remains in the report for audit, but
+runtime electricity replaces it; the two are never added.
+
+Run the complete staged grid and then produce the auditable final selection:
+
+```bash
+python -m serving.ssd_hbf_design_sweep \
+  --output results/ssd-hbf-staged
+
+python -m serving.ssd_hbf_final_plots \
+  results/ssd-hbf-staged/aggregate.json \
+  --output-dir results/ssd-hbf-staged/final
+```
+
+The final plotter fails closed unless every layout/memory group contains the
+complete canonical policy × read-mode × restore-mode roster and complete
+runtime accounting. It collapses the one-second alias, retains the
+best-goodput policy in each read/restore quadrant, and also retains every
+candidate that is nondominated on SLO goodput, runtime five-year TCO,
+runtime facility energy, and HBF wear. `policy_selection.json` records every
+inclusion and exclusion; `plot_source.csv` is the exact source for the final
+graphs.
+
 ## Validation
 
 Run the focused semantic tests before an end-to-end simulation:
@@ -602,18 +757,22 @@ fallback recomputes on the GPU P path. There is no modeled D-to-P KV restore.
 Adding it requires a finite P-HBM destination reservation, an explicit
 transfer route, overlap policy, and same-time ordering with P dispatch.
 
-### Incomplete power and TCO coupling
+### Analytical runtime power and TCO
 
-The existing online power model covers GPU instances, not the HBF-side GPU,
-HBF media, LPDDR, PCIe, or RDMA components. A runtime energy result therefore
-does not represent the complete heterogeneous system.
+The ordinary cluster-config
+[power model](/docs/simulator/specialized/power-model) does not automatically
+consume the HBF analytical resource calendar. The SSD-staged campaign
+therefore uses the dedicated runtime adapter described above. It covers the
+complete declared heterogeneous BOM, but its active/idle wattage and per-bit
+coefficients are analytical anchors rather than power-sensor measurements.
 
-The separate design TCO evaluator uses a five-year horizon. It prices the
-HBF-side compute at the full H100 GPU-logic anchor while keeping HBF media
-separate, so HBM is not counted twice. Its JSON and summary CSV compare
-baseline and proposed IT power, facility power, and five-year IT/facility
-energy. These are static BOM sensitivity projections using utilization,
-idle-power, and PUE assumptions—not event-derived HBF runtime energy.
+The HBF-side compute is H100-class GPU logic, not a lower-performance NPU.
+The central simultaneous full-activity split is 560 W for GPU logic plus
+300 W for HBF media/controller, approximately 1.23× the 700 W whole-H100
+anchor. Workload activity and traffic are event-derived; these coefficients,
+five-year repetition of the observed horizon, PUE, and electricity price
+remain sensitivity assumptions. Report them whenever using runtime power or
+TCO results.
 
 These limits are fundamental modeling boundaries, not liveness exceptions.
 The current implementation has one causal online ASTRA process for GPU
