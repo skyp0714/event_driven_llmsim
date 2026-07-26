@@ -569,12 +569,30 @@ python -m serving.ssd_hbf_final_plots \
 
 The final plotter fails closed unless every layout/memory group contains the
 complete canonical policy × read-mode × restore-mode roster and complete
-runtime accounting. It collapses the one-second alias, retains the
-best-goodput policy in each read/restore quadrant, and also retains every
-candidate that is nondominated on SLO goodput, runtime five-year TCO,
-runtime facility energy, and HBF wear. `policy_selection.json` records every
-inclusion and exclusion; `plot_source.csv` is the exact source for the final
-graphs.
+runtime accounting. It collapses the one-second alias and evaluates
+migration policies across all four read/restore combinations as one policy
+unit. A policy is graph-eligible only when every combination meets its
+matched two-GPU baseline. The graph retains at most three auditable policy
+anchors per layout: highest mean goodput, the normalized
+goodput/runtime-TCO/wear knee, and minimum wear. Exact metric-equivalent
+policies use canonical policy order as a deterministic representative.
+`policy_selection.json` records every inclusion and exclusion;
+`plot_source.csv` is the exact source for the graphs.
+
+Reference eligibility remains a separate fail-closed gate. If a completed
+campaign intentionally set `reference_eligibility_required=false`, its data
+can be rendered for diagnosis only:
+
+```bash
+python -m serving.ssd_hbf_final_plots \
+  results/ssd-hbf-staged/aggregate.json \
+  --output-dir results/ssd-hbf-staged/audit \
+  --allow-ineligible-reference-audit
+```
+
+This opt-in does not change the stored gate outcome. The selection manifest,
+CSV, PNG names, and plot titles are all marked as an ineligible-reference
+audit and must not be reported as eligible final results.
 
 ## Validation
 
