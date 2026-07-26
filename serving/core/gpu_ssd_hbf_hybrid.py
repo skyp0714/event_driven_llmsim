@@ -343,6 +343,7 @@ class SSDStagedGPUHBFNode:
             p_max_num_seqs: Optional[int] = None,
             d_max_num_seqs: Optional[int] = None,
             max_prefill_chunk_tokens: int = 4_096,
+            hbf_mixed_batch_latency_limit_ns: Optional[int] = None,
             band: str = "central",
             restore_execution_mode: str = RESTORE_EXECUTION_BULK,
             validate_every_event: bool = True,
@@ -498,6 +499,8 @@ class SSDStagedGPUHBFNode:
             max_num_batched_tokens=max_num_batched_tokens,
             max_num_seqs=max_num_seqs,
             max_prefill_chunk_tokens=max_prefill_chunk_tokens,
+            mixed_batch_latency_limit_ns=(
+                hbf_mixed_batch_latency_limit_ns),
             band=band,
             validate_every_event=validate_every_event,
             retain_detailed_history=validate_every_event,
@@ -1560,6 +1563,8 @@ class SSDStagedGPUHBFNode:
                 "hbf_server": "one_8card_full_model_hbf_server",
                 "hbf_card_count": self.hbf_hardware.card_count,
                 "hbf_layout": self.hbf_layout.key,
+                "hbf_mixed_batch_latency_limit_ns": (
+                    self.hbf_pool.mixed_batch_latency_limit_ns),
                 "execution_backend": "analytical_calendar",
                 "shared_resource_calendar": True,
             },
@@ -1615,6 +1620,7 @@ class SSDStagedGPUHBFSystem(GPUHBFHybridSystem):
             p_max_num_seqs: Optional[int] = None,
             d_max_num_seqs: Optional[int] = None,
             max_prefill_chunk_tokens: int = 4_096,
+            hbf_mixed_batch_latency_limit_ns: Optional[int] = None,
             band: str = "central",
             restore_execution_mode: str = RESTORE_EXECUTION_BULK,
             validate_every_event: bool = True,
@@ -1642,6 +1648,8 @@ class SSDStagedGPUHBFSystem(GPUHBFHybridSystem):
             p_max_num_seqs=p_max_num_seqs,
             d_max_num_seqs=d_max_num_seqs,
             max_prefill_chunk_tokens=max_prefill_chunk_tokens,
+            hbf_mixed_batch_latency_limit_ns=(
+                hbf_mixed_batch_latency_limit_ns),
             band=band,
             restore_execution_mode=restore_execution_mode,
             validate_every_event=validate_every_event,
@@ -1703,6 +1711,8 @@ class SSDStagedGPUHBFSystem(GPUHBFHybridSystem):
                 "hbf_server_count": 1,
                 "hbf_server": "one_8card_full_model_hbf_server",
                 "hbf_layout": self.node.hbf_layout.key,
+                "hbf_mixed_batch_latency_limit_ns": (
+                    self.node.hbf_pool.mixed_batch_latency_limit_ns),
                 "execution_backend": "analytical_calendar",
                 "shared_resource_calendar": True,
             },

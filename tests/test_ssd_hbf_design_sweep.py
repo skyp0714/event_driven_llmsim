@@ -398,6 +398,41 @@ class SSDHBFDesignSweepTests(unittest.TestCase):
                 design.hbf_read_mode == "prefetch",
             )
 
+    def test_mixed_batch_latency_guard_is_a_distinct_propagated_axis(self):
+        grid = build_design_grid(
+            layouts=("tp8_context",),
+            migration_policies=("composite_ready",),
+            active_memories=(self.memory16,),
+            mixed_batch_latency_limits_ms=(None, 225, 250),
+        )
+
+        self.assertEqual(len(grid), 3)
+        self.assertEqual(
+            {
+                design.mixed_batch_latency_limit_ms
+                for design in grid
+            },
+            {None, 225, 250},
+        )
+        self.assertEqual(len({design.key for design in grid}), 3)
+        for design in grid:
+            system = make_design_system(
+                repo_root=REPO_ROOT,
+                spec=design,
+            )
+            expected = (
+                None
+                if design.mixed_batch_latency_limit_ms is None
+                else (
+                    design.mixed_batch_latency_limit_ms
+                    * 1_000_000
+                )
+            )
+            self.assertEqual(
+                system.node.hbf_pool.mixed_batch_latency_limit_ns,
+                expected,
+            )
+
     def test_restore_mode_is_propagated_and_gets_a_matched_baseline(self):
         grid = build_design_grid(
             layouts=("tp8_context",),

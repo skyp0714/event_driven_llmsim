@@ -234,6 +234,10 @@ class HBFPoolMetrics:
     mixed_batches: int = 0
     prefill_only_batches: int = 0
     decode_only_batches: int = 0
+    mixed_prefill_guard_considered: int = 0
+    mixed_prefill_guard_limited: int = 0
+    mixed_prefill_guard_deferred: int = 0
+    mixed_prefill_guard_tokens_removed: int = 0
     total_batch_items: int = 0
     prefill_query_tokens: int = 0
     decode_query_tokens: int = 0
@@ -326,6 +330,7 @@ class FullModelHBFServingPool:
             max_num_batched_tokens: int = 8_192,
             max_num_seqs: int = 128,
             max_prefill_chunk_tokens: int = 4_096,
+            mixed_batch_latency_limit_ns: Optional[int] = None,
             prefill_drain_tail_tokens: Optional[int] = None,
             prefill_drain_min_tokens: int = 4_096,
             scheduling_policy: str = "decode_first",
@@ -393,6 +398,17 @@ class FullModelHBFServingPool:
                 "max_prefill_chunk_tokens exceeds calibrated support "
                 "(131072)")
         if (
+            mixed_batch_latency_limit_ns is not None
+            and (
+                not isinstance(mixed_batch_latency_limit_ns, int)
+                or isinstance(mixed_batch_latency_limit_ns, bool)
+                or mixed_batch_latency_limit_ns <= 0
+            )
+        ):
+            raise ValueError(
+                "mixed_batch_latency_limit_ns must be a positive "
+                "integer or None")
+        if (
             prefill_drain_tail_tokens is not None
             and (
                 not isinstance(prefill_drain_tail_tokens, int)
@@ -425,6 +441,8 @@ class FullModelHBFServingPool:
         self.max_num_batched_tokens = max_num_batched_tokens
         self.max_num_seqs = max_num_seqs
         self.max_prefill_chunk_tokens = max_prefill_chunk_tokens
+        self.mixed_batch_latency_limit_ns = (
+            mixed_batch_latency_limit_ns)
         self.prefill_drain_tail_tokens = prefill_drain_tail_tokens
         self.prefill_drain_min_tokens = prefill_drain_min_tokens
         self.scheduling_policy = scheduling_policy
@@ -782,6 +800,43 @@ class FullModelHBFServingPool:
         token_budget = self.max_num_batched_tokens
         seq_budget = self.max_num_seqs
 
+        def batch_shape_with_prefill(
+                request: Optional[HBFServingRequest] = None,
+                chunk: int = 0) -> HBFModelBatchShape:
+            candidate = request is not None
+            return HBFModelBatchShape(
+                total_tokens=(
+                    sum(item.query_tokens for item in items)
+                    + (chunk if candidate else 0)
+                ),
+                prefill_q=(
+                    tuple(prefill_q)
+                    + ((chunk,) if candidate else ())
+                ),
+                prefill_hbf_k=(
+                    tuple(prefill_hbf_k)
+                    + (
+                        (request.hbf_prefix_tokens,)
+                        if candidate else ()
+                    )
+                ),
+                prefill_lpddr_k=(
+                    tuple(prefill_lpddr_k)
+                    + (
+                        (
+                            request.lpddr_prefix_tokens
+                            + request.prefill_processed_tokens,
+                        )
+                        if candidate else ()
+                    )
+                ),
+                decode_hbf_k=tuple(decode_hbf_k),
+                decode_lpddr_k=tuple(decode_lpddr_k),
+                lm_head_sequences=(
+                    len(items) + (1 if candidate else 0)
+                ),
+            )
+
         decode_count = len(worker.active_decode)
         for _ in range(decode_count):
             if token_budget <= 0 or seq_budget <= 0:
@@ -835,6 +890,40 @@ class FullModelHBFServingPool:
                 token_budget,
                 self.max_prefill_chunk_tokens,
             )
+            original_chunk = chunk
+            if (
+                decode_hbf_k
+                and self.mixed_batch_latency_limit_ns is not None
+            ):
+                self.metrics.mixed_prefill_guard_considered += 1
+                lower = 0
+                upper = chunk
+                while lower < upper:
+                    candidate = (lower + upper + 1) // 2
+                    candidate_latency = self.models[
+                        worker.group_id
+                    ].batch_latency(
+                        batch_shape_with_prefill(
+                            request, candidate)
+                    ).total_ns
+                    if (
+                        candidate_latency
+                        <= self.mixed_batch_latency_limit_ns
+                    ):
+                        lower = candidate
+                    else:
+                        upper = candidate - 1
+                chunk = lower
+                if chunk == 0:
+                    deferred_waiting.append(request_id)
+                    self.metrics.mixed_prefill_guard_deferred += 1
+                    self.metrics.mixed_prefill_guard_tokens_removed += (
+                        original_chunk)
+                    continue
+                if chunk < original_chunk:
+                    self.metrics.mixed_prefill_guard_limited += 1
+                    self.metrics.mixed_prefill_guard_tokens_removed += (
+                        original_chunk - chunk)
             additions[request_id] = chunk
             if not self._projected_lpddr_fits(
                     worker.group_id, additions):
@@ -856,15 +945,7 @@ class FullModelHBFServingPool:
 
         if not items:
             return None
-        shape = HBFModelBatchShape(
-            total_tokens=sum(item.query_tokens for item in items),
-            prefill_q=tuple(prefill_q),
-            prefill_hbf_k=tuple(prefill_hbf_k),
-            prefill_lpddr_k=tuple(prefill_lpddr_k),
-            decode_hbf_k=tuple(decode_hbf_k),
-            decode_lpddr_k=tuple(decode_lpddr_k),
-            lm_head_sequences=len(items),
-        )
+        shape = batch_shape_with_prefill()
         return tuple(items), shape
 
     def _should_prefill_drain(
@@ -1944,6 +2025,8 @@ class FullModelHBFServingPool:
             "max_num_batched_tokens": self.max_num_batched_tokens,
             "max_num_seqs": self.max_num_seqs,
             "max_prefill_chunk_tokens": self.max_prefill_chunk_tokens,
+            "mixed_batch_latency_limit_ns": (
+                self.mixed_batch_latency_limit_ns),
             "prefill_drain_tail_tokens": (
                 self.prefill_drain_tail_tokens),
             "prefill_drain_min_tokens": (

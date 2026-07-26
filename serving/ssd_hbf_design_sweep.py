@@ -105,10 +105,10 @@ from .hbf_comparison_sweep import (
 )
 
 
-SSD_HBF_SWEEP_SCHEMA_VERSION = 8
-SSD_HBF_CELL_SCHEMA_VERSION = 6
+SSD_HBF_SWEEP_SCHEMA_VERSION = 9
+SSD_HBF_CELL_SCHEMA_VERSION = 7
 SSD_HBF_CONTRACT_KEY = (
-    "two-gpu-local-ssd-vs-one-gpu-one-hbf-composite-v6")
+    "two-gpu-local-ssd-vs-one-gpu-one-hbf-mixed-guard-v7")
 REQUIRED_SESSION_RATE = 3.0
 PINNED_ENDURANCE_PROFILE = Path(
     "configs/storage/micron_9550_pro_3_84tb.json")
@@ -303,6 +303,7 @@ class SSDHBFDesignSpec:
     active_memory: ActiveMemorySpec
     hbf_read_mode: str = "demand"
     restore_execution_mode: str = RESTORE_EXECUTION_BULK
+    mixed_batch_latency_limit_ms: Optional[int] = None
     gpu_host_count: int = 1
     hbf_host_count: int = 1
     hbf_card_count: int = 8
@@ -333,6 +334,19 @@ class SSDHBFDesignSpec:
                 "restore_execution_mode must be one of "
                 f"{SUPPORTED_RESTORE_EXECUTION_MODES!r}")
         if (
+            self.mixed_batch_latency_limit_ms is not None
+            and (
+                not isinstance(
+                    self.mixed_batch_latency_limit_ms, int)
+                or isinstance(
+                    self.mixed_batch_latency_limit_ms, bool)
+                or self.mixed_batch_latency_limit_ms <= 0
+            )
+        ):
+            raise SSDHBFDesignSweepError(
+                "mixed_batch_latency_limit_ms must be a positive "
+                "integer or None")
+        if (
             self.gpu_host_count != 1
             or self.hbf_host_count != 1
             or self.hbf_card_count != 8
@@ -362,6 +376,7 @@ def make_design_spec(
         active_memory: ActiveMemorySpec,
         hbf_read_mode: str = "demand",
         restore_execution_mode: str = RESTORE_EXECUTION_BULK,
+        mixed_batch_latency_limit_ms: Optional[int] = None,
 ) -> SSDHBFDesignSpec:
     if hbf_layout not in SUPPORTED_LAYOUTS:
         raise SSDHBFDesignSweepError(
@@ -376,6 +391,17 @@ def make_design_spec(
         raise SSDHBFDesignSweepError(
             "unsupported restore execution mode "
             f"{restore_execution_mode!r}")
+    if (
+        mixed_batch_latency_limit_ms is not None
+        and (
+            not isinstance(mixed_batch_latency_limit_ms, int)
+            or isinstance(mixed_batch_latency_limit_ms, bool)
+            or mixed_batch_latency_limit_ms <= 0
+        )
+    ):
+        raise SSDHBFDesignSweepError(
+            "mixed_batch_latency_limit_ms must be a positive "
+            "integer or None")
     memory_key = (
         f"{active_memory.kind}-"
         f"{active_memory.capacity_gib_per_card:g}gib-"
@@ -386,12 +412,22 @@ def make_design_spec(
     return SSDHBFDesignSpec(
         key=_slug(
             f"ssd-hbf-{hbf_layout}-{migration_policy}-"
-            f"{hbf_read_mode}-{restore_execution_mode}-{memory_key}"),
+            f"{hbf_read_mode}-{restore_execution_mode}-{memory_key}"
+            + (
+                ""
+                if mixed_batch_latency_limit_ms is None
+                else (
+                    f"-mixed-guard-"
+                    f"{mixed_batch_latency_limit_ms}ms"
+                )
+            )),
         hbf_layout=hbf_layout,
         migration_policy=migration_policy,
         active_memory=active_memory,
         hbf_read_mode=hbf_read_mode,
         restore_execution_mode=restore_execution_mode,
+        mixed_batch_latency_limit_ms=(
+            mixed_batch_latency_limit_ms),
     )
 
 
@@ -404,6 +440,8 @@ def build_design_grid(
         restore_execution_modes: Sequence[str] = (
             RESTORE_EXECUTION_BULK,
         ),
+        mixed_batch_latency_limits_ms: Sequence[
+            Optional[int]] = (None,),
 ) -> tuple[SSDHBFDesignSpec, ...]:
     if (
         not layouts
@@ -411,6 +449,7 @@ def build_design_grid(
         or not active_memories
         or not hbf_read_modes
         or not restore_execution_modes
+        or not mixed_batch_latency_limits_ms
     ):
         raise SSDHBFDesignSweepError(
             "layout, policy, and active-memory axes must be non-empty")
@@ -440,6 +479,22 @@ def build_design_grid(
         raise SSDHBFDesignSweepError(
             "restore execution modes must be unique members of "
             f"{SUPPORTED_RESTORE_EXECUTION_MODES!r}")
+    if (
+        len(mixed_batch_latency_limits_ms)
+        != len(set(mixed_batch_latency_limits_ms))
+        or any(
+            value is not None
+            and (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value <= 0
+            )
+            for value in mixed_batch_latency_limits_ms
+        )
+    ):
+        raise SSDHBFDesignSweepError(
+            "mixed-batch latency limits must be unique positive "
+            "integer milliseconds or None")
     specs = tuple(
         make_design_spec(
             hbf_layout=layout,
@@ -447,12 +502,14 @@ def build_design_grid(
             active_memory=memory,
             hbf_read_mode=read_mode,
             restore_execution_mode=restore_mode,
+            mixed_batch_latency_limit_ms=mixed_limit_ms,
         )
         for layout in layouts
         for policy in migration_policies
         for memory in active_memories
         for read_mode in hbf_read_modes
         for restore_mode in restore_execution_modes
+        for mixed_limit_ms in mixed_batch_latency_limits_ms
     )
     keys = [spec.key for spec in specs]
     if len(keys) != len(set(keys)):
@@ -552,6 +609,11 @@ def make_design_system(
         p_max_num_seqs=P_MAX_NUM_SEQS,
         d_max_num_seqs=D_MAX_NUM_SEQS,
         max_prefill_chunk_tokens=MAX_PREFILL_CHUNK_TOKENS,
+        hbf_mixed_batch_latency_limit_ns=(
+            None
+            if spec.mixed_batch_latency_limit_ms is None
+            else spec.mixed_batch_latency_limit_ms * 1_000_000
+        ),
         restore_execution_mode=spec.restore_execution_mode,
         validate_every_event=False,
     )
@@ -1764,6 +1826,7 @@ def _write_summary_csv(
         "migration_policy",
         "hbf_read_mode",
         "restore_execution_mode",
+        "mixed_batch_latency_limit_ms",
         "baseline_candidate_key",
         "active_memory_kind",
         "active_memory_gib_per_card",
@@ -1919,6 +1982,8 @@ def _write_summary_csv(
                 "hbf_read_mode": design["hbf_read_mode"],
                 "restore_execution_mode": (
                     design["restore_execution_mode"]),
+                "mixed_batch_latency_limit_ms": (
+                    design["mixed_batch_latency_limit_ms"]),
                 "baseline_candidate_key": baseline_key,
                 "active_memory_kind": memory["kind"],
                 "active_memory_gib_per_card": (
@@ -2308,6 +2373,17 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--hbf-mixed-batch-latency-limits-ms",
+        type=int,
+        nargs="+",
+        default=[0],
+        help=(
+            "causally cap mixed decode+prefill batches by modeled "
+            "latency; 0 preserves the unguarded scheduler, and multiple "
+            "values form a discovery axis"
+        ),
+    )
+    parser.add_argument(
         "--memory",
         action="append",
         default=None,
@@ -2371,6 +2447,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         hbf_read_modes=tuple(args.hbf_read_modes),
         restore_execution_modes=tuple(
             args.restore_execution_modes),
+        mixed_batch_latency_limits_ms=tuple(
+            None if value == 0 else value
+            for value in args.hbf_mixed_batch_latency_limits_ms
+        ),
     )
     for design in designs:
         validate_design_workspace(design)

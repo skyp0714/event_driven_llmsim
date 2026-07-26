@@ -4,6 +4,7 @@ import random
 import unittest
 
 from serving.core.hbf_full_model_latency import (
+    HBFModelBatchShape,
     HBFParallelLayout,
     HBFServerHardware,
     qwen_logical_kv_bytes_per_token,
@@ -30,6 +31,7 @@ class FullModelHBFServingPoolTests(unittest.TestCase):
     def make_pool(
             self, layout="tp4", *, hardware=None, calendar=None,
             max_tokens=256, max_seqs=16, chunk=64,
+            mixed_limit=None,
             validate_every_event=True,
             retain_detailed_history=True,
             execution_backend="analytical_calendar",
@@ -42,6 +44,7 @@ class FullModelHBFServingPoolTests(unittest.TestCase):
             max_num_batched_tokens=max_tokens,
             max_num_seqs=max_seqs,
             max_prefill_chunk_tokens=chunk,
+            mixed_batch_latency_limit_ns=mixed_limit,
             validate_every_event=validate_every_event,
             retain_detailed_history=retain_detailed_history,
             execution_backend=execution_backend,
@@ -420,6 +423,52 @@ class FullModelHBFServingPoolTests(unittest.TestCase):
             item.kind == "decode" for item in mixed.items))
         self.assertTrue(any(
             item.kind == "prefill" for item in mixed.items))
+        pool.run_until_idle()
+
+    def test_mixed_batch_latency_guard_causally_caps_prefill_chunk(self):
+        probe = self.make_pool(max_tokens=64, chunk=32)
+        model = probe.models[0]
+
+        def latency(chunk):
+            return model.batch_latency(HBFModelBatchShape(
+                total_tokens=1 + chunk,
+                prefill_q=(chunk,),
+                prefill_hbf_k=(100,),
+                prefill_lpddr_k=(0,),
+                decode_hbf_k=(99,),
+                decode_lpddr_k=(1,),
+                lm_head_sequences=2,
+            )).total_ns
+
+        minimum = latency(1)
+        maximum = latency(32)
+        self.assertLess(minimum, maximum)
+        limit = (minimum + maximum) // 2
+        pool = self.make_pool(
+            max_tokens=64, chunk=32, mixed_limit=limit)
+        long_output = self.request(
+            1, input_tokens=100, hbf=99, output_tokens=4)
+        pool.submit(long_output, now_ns=0)
+        first_done = pool.next_completion_ns()
+        pool.advance(first_done, defer_schedule=True)
+        newcomer = self.request(
+            2, arrival=first_done, input_tokens=120, hbf=100,
+            output_tokens=1)
+        pool.submit(newcomer, now_ns=first_done)
+
+        mixed = pool.batch_history[-1]
+        prefill = [
+            item for item in mixed.items if item.kind == "prefill"]
+        self.assertEqual(len(prefill), 1)
+        self.assertGreater(prefill[0].query_tokens, 0)
+        self.assertLess(prefill[0].query_tokens, 32)
+        self.assertLessEqual(mixed.latency.total_ns, limit)
+        self.assertEqual(
+            pool.metrics.mixed_prefill_guard_considered, 1)
+        self.assertEqual(
+            pool.metrics.mixed_prefill_guard_limited, 1)
+        self.assertGreater(
+            pool.metrics.mixed_prefill_guard_tokens_removed, 0)
         pool.run_until_idle()
 
     def test_dp8_groups_execute_on_disjoint_resources(self):
