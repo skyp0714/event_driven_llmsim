@@ -247,6 +247,8 @@ class SSDHBFDesignSweepTests(unittest.TestCase):
                 "delay_1s",
                 "composite",
                 "composite_adaptive",
+                "composite_ready",
+                "composite_ready_adaptive",
             },
         )
         self.assertIn("delay_1000ms", CANONICAL_MIGRATION_POLICIES)
@@ -254,6 +256,12 @@ class SSDHBFDesignSweepTests(unittest.TestCase):
         self.assertIn("composite", SUPPORTED_MIGRATION_POLICIES)
         self.assertIn(
             "composite_adaptive", SUPPORTED_MIGRATION_POLICIES)
+        self.assertIn(
+            "composite_ready", SUPPORTED_MIGRATION_POLICIES)
+        self.assertIn(
+            "composite_ready_adaptive",
+            SUPPORTED_MIGRATION_POLICIES,
+        )
         self.assertNotIn(
             "composite", DEFAULT_MIGRATION_POLICIES)
 

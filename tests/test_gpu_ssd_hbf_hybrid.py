@@ -578,6 +578,10 @@ class SSDStagedGPUHBFTests(unittest.TestCase):
         composite = SSDPromotionPolicy.for_key("composite")
         adaptive = SSDPromotionPolicy.for_key(
             "composite_adaptive")
+        ready = SSDPromotionPolicy.for_key(
+            "composite_ready")
+        ready_adaptive = SSDPromotionPolicy.for_key(
+            "composite_ready_adaptive")
 
         self.assertTrue(composite.direct_d_resume)
         self.assertEqual(
@@ -589,6 +593,11 @@ class SSDStagedGPUHBFTests(unittest.TestCase):
             adaptive.ssd_checkpoint_age_ns, 50_000_000)
         self.assertTrue(adaptive.human_gap_broadcast)
         self.assertTrue(adaptive.load_aware_admission)
+        self.assertEqual(ready.ssd_checkpoint_age_ns, 0)
+        self.assertFalse(ready.load_aware_admission)
+        self.assertEqual(
+            ready_adaptive.ssd_checkpoint_age_ns, 0)
+        self.assertTrue(ready_adaptive.load_aware_admission)
         self.assertTrue(
             SSDPromotionPolicy.for_key(
                 "load_aware").load_aware_admission)

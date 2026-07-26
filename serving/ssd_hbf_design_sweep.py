@@ -162,6 +162,8 @@ SUPPORTED_MIGRATION_POLICIES = (
     "never",
     "composite",
     "composite_adaptive",
+    "composite_ready",
+    "composite_ready_adaptive",
 )
 CANONICAL_MIGRATION_POLICIES = (
     "eager",

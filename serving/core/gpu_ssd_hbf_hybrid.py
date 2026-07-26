@@ -229,20 +229,27 @@ class SSDPromotionPolicy:
                 mode="load_aware",
                 retry_ns=50_000_000,
             )
-        if key in {"composite", "composite_adaptive"}:
+        if key in {
+            "composite",
+            "composite_adaptive",
+            "composite_ready",
+            "composite_ready_adaptive",
+        }:
+            adaptive = key.endswith("_adaptive")
+            promote_on_ssd_ready = key.startswith("composite_ready")
             return cls(
                 key=key,
                 mode="composite",
                 retry_ns=(
                     50_000_000
-                    if key == "composite_adaptive"
+                    if adaptive
                     else 1_000_000
                 ),
                 direct_d_resume=True,
-                ssd_checkpoint_age_ns=50_000_000,
+                ssd_checkpoint_age_ns=(
+                    0 if promote_on_ssd_ready else 50_000_000),
                 human_gap_broadcast=True,
-                load_aware_admission=(
-                    key == "composite_adaptive"),
+                load_aware_admission=adaptive,
             )
         if key == "never":
             return cls(key=key, mode="never")
