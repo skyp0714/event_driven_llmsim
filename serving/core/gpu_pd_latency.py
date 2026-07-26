@@ -34,6 +34,7 @@ from .online_latency_model import (
 SCHEMA_VERSION = 1
 MODEL_CONFIG = (
     "configs/model/Qwen/Qwen3-30B-A3B-Instruct-2507.json")
+P4D4_MODEL_LAYER_COUNT = QWEN_LAYERS
 
 
 def _strict_fields(
@@ -240,6 +241,27 @@ class GPUBatchLatency:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class GPUBatchPhaseLatency:
+    """Exact full-batch timing around identical transformer layers."""
+
+    prologue_ns: int
+    layer_ns: int
+    layer_count: int
+    epilogue_ns: int
+    total_ns: int
+
+    def layer_start_offset_ns(self, layer_index: int) -> int:
+        if (
+            isinstance(layer_index, bool)
+            or not isinstance(layer_index, int)
+            or not 0 <= layer_index < self.layer_count
+        ):
+            raise ValueError(
+                "layer_index must identify a modeled transformer layer")
+        return self.prologue_ns + layer_index * self.layer_ns
+
+
 class P4D4LatencyModel:
     """Full-model TP4 GPU batches plus pairwise P-to-D KV copies."""
 
@@ -382,6 +404,53 @@ class P4D4LatencyModel:
             collective_bytes_per_rank=collective_bytes_per_rank,
         )
 
+    @lru_cache(maxsize=262_144)
+    def batch_phase_latency(
+            self, shape: HBFModelBatchShape) -> GPUBatchPhaseLatency:
+        """Decompose a batch without changing its aggregate reservation."""
+
+        latency = self.batch_latency(shape)
+        provider_phases = self._provider.batch_kernel_phases(
+            self._online_shape(shape))
+        layer_count = provider_phases.layer_count
+        if layer_count != P4D4_MODEL_LAYER_COUNT:
+            raise AssertionError("provider transformer-layer count changed")
+        if provider_phases.total_ns != latency.provider_comp_ns:
+            raise AssertionError(
+                "provider phase decomposition changed aggregate compute")
+        layer_scaled_fields = (
+            latency.router_ns,
+            latency.tp_allreduce_ns,
+            latency.ep_allgather_ns,
+            latency.ep_reduce_scatter_ns,
+        )
+        if any(value % layer_count for value in layer_scaled_fields):
+            raise AssertionError(
+                "per-layer GPU timing no longer divides exactly")
+        layer_ns = (
+            provider_phases.layer_ns
+            + sum(
+                value // layer_count
+                for value in layer_scaled_fields
+            )
+        )
+        phases = GPUBatchPhaseLatency(
+            prologue_ns=provider_phases.prologue_ns,
+            layer_ns=layer_ns,
+            layer_count=layer_count,
+            epilogue_ns=provider_phases.epilogue_ns,
+            total_ns=latency.total_ns,
+        )
+        if (
+            phases.prologue_ns
+            + phases.layer_count * phases.layer_ns
+            + phases.epilogue_ns
+            != phases.total_ns
+        ):
+            raise AssertionError(
+                "GPU phase decomposition changed aggregate latency")
+        return phases
+
     def handoff_latency(self, token_count: int) -> PDHandoffLatency:
         if (
             isinstance(token_count, bool)
@@ -441,6 +510,8 @@ def load_p4d4_gpu_config(path: Path) -> P4D4GPUHardware:
 
 __all__ = [
     "GPUBatchLatency",
+    "GPUBatchPhaseLatency",
+    "P4D4_MODEL_LAYER_COUNT",
     "P4D4GPUHardware",
     "P4D4LatencyModel",
     "PDHandoffLatency",

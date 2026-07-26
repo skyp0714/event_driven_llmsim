@@ -10,6 +10,7 @@ from serving.core.gpu_pd_pool import (
     PDServingRequest,
 )
 from serving.core.hbf_full_model_lifecycle import ResourceCalendar
+from serving.core.hbf_full_model_latency import HBFModelBatchShape
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -48,7 +49,8 @@ class P4D4ServingPoolTests(unittest.TestCase):
     def request(
             request_id, *, session_id=None, arrival=0,
             input_tokens=100, output_tokens=4,
-            p_prefix=90, d_prefix=90, has_successor=True):
+            p_prefix=90, d_prefix=90, has_successor=True,
+            restore_layer_ready_ns=()):
         return PDServingRequest(
             request_id=request_id,
             session_id=session_id or f"s-{request_id}",
@@ -58,6 +60,7 @@ class P4D4ServingPoolTests(unittest.TestCase):
             p_prefix_tokens=p_prefix,
             d_prefix_tokens=d_prefix,
             has_successor=has_successor,
+            restore_layer_ready_ns=restore_layer_ready_ns,
         )
 
     def test_output_one_completes_at_ttft_while_handoff_continues(self):
@@ -166,6 +169,63 @@ class P4D4ServingPoolTests(unittest.TestCase):
         self.assertEqual(request.p_processed_tokens, 1)
         self.assertEqual(request.handoff_tokens, 0)
         self.assertEqual(pool.metrics.zero_byte_handoffs, 1)
+
+    def test_layer_ready_vector_overlaps_restore_with_one_p_batch(self):
+        pool = self.make_pool()
+        shape = HBFModelBatchShape(
+            total_tokens=1,
+            prefill_q=(1,),
+            prefill_hbf_k=(99,),
+            prefill_lpddr_k=(0,),
+            lm_head_sequences=1,
+        )
+        phases = pool.model.batch_phase_latency(shape)
+        target_start_ns = 1_000_000
+        layer_ready_ns = tuple(
+            target_start_ns
+            + phases.layer_start_offset_ns(layer_index)
+            for layer_index in range(phases.layer_count)
+        )
+        request = self.request(
+            1,
+            input_tokens=100,
+            output_tokens=1,
+            p_prefix=99,
+            d_prefix=0,
+            has_successor=False,
+            restore_layer_ready_ns=layer_ready_ns,
+        )
+
+        pool.submit(request, now_ns=0)
+        batch = pool.batch_history[0]
+
+        self.assertEqual(batch.restore_gate_ns, target_start_ns)
+        self.assertEqual(batch.start_ns, target_start_ns)
+        self.assertEqual(
+            batch.completion_ns,
+            target_start_ns + batch.latency.total_ns,
+        )
+        self.assertLess(batch.start_ns, layer_ready_ns[-1])
+        self.assertEqual(pool.metrics.streaming_restore_requests, 1)
+        self.assertEqual(pool.metrics.p_streaming_batches, 1)
+        self.assertEqual(
+            pool.metrics.p_restore_gate_delay_ns,
+            target_start_ns,
+        )
+        pool.run_until_idle()
+
+    def test_layer_ready_vector_validation_is_strict(self):
+        with self.assertRaisesRegex(ValueError, "one ready timestamp"):
+            self.request(
+                1,
+                restore_layer_ready_ns=(1, 2),
+            ).validate()
+        with self.assertRaisesRegex(ValueError, "nondecreasing"):
+            self.request(
+                2,
+                restore_layer_ready_ns=tuple(
+                    [10] * 47 + [9]),
+            ).validate()
 
     def test_chunked_prefill_emits_token_only_on_final_chunk(self):
         pool = self.make_pool(max_tokens=32, chunk=16)

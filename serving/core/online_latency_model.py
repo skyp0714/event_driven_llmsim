@@ -70,6 +70,24 @@ class OnlineLatencyModelError(ValueError):
     """Raised when an online analytical latency contract is violated."""
 
 
+@dataclass(frozen=True)
+class OnlineBatchKernelPhases:
+    """Exact serial compute decomposition around the transformer layers."""
+
+    prologue_ns: int
+    layer_ns: int
+    layer_count: int
+    epilogue_ns: int
+
+    @property
+    def total_ns(self) -> int:
+        return (
+            self.prologue_ns
+            + self.layer_count * self.layer_ns
+            + self.epilogue_ns
+        )
+
+
 def validate_runtime_context_contract(
         *, config: Mapping[str, Any], max_model_len: int,
         model: str | None = None) -> Mapping[str, Any] | None:
@@ -804,11 +822,17 @@ class H100Qwen3OnlineLatencyModel:
             self, shape: OnlineBatchShape) -> int:
         """Return modeled serial COMP time, excluding every collective."""
 
+        return self.batch_kernel_phases(shape).total_ns
+
+    def batch_kernel_phases(
+            self, shape: OnlineBatchShape) -> OnlineBatchKernelPhases:
+        """Return prologue, one layer, and epilogue compute durations."""
+
         self.validate_shape(shape)
-        total = self.dense_latency_ns(
+        prologue_ns = self.dense_latency_ns(
             "embedding", shape.total_tokens, shape.lm_head_sequences
         )
-        per_layer = sum((
+        layer_ns = sum((
             self.dense_latency_ns(
                 "layernorm", shape.total_tokens, shape.lm_head_sequences),
             self.dense_latency_ns(
@@ -834,17 +858,29 @@ class H100Qwen3OnlineLatencyModel:
                 ep_total=QWEN_EP,
             ),
         ))
-        total += QWEN_LAYERS * per_layer
-        total += self.dense_latency_ns(
-            "final_layernorm", shape.total_tokens, shape.lm_head_sequences
+        epilogue_ns = sum((
+            self.dense_latency_ns(
+                "final_layernorm",
+                shape.total_tokens,
+                shape.lm_head_sequences,
+            ),
+            self.dense_latency_ns(
+                "lm_head",
+                shape.total_tokens,
+                shape.lm_head_sequences,
+            ),
+            self.dense_latency_ns(
+                "sampler",
+                shape.total_tokens,
+                shape.lm_head_sequences,
+            ),
+        ))
+        return OnlineBatchKernelPhases(
+            prologue_ns=prologue_ns,
+            layer_ns=layer_ns,
+            layer_count=QWEN_LAYERS,
+            epilogue_ns=epilogue_ns,
         )
-        total += self.dense_latency_ns(
-            "lm_head", shape.total_tokens, shape.lm_head_sequences
-        )
-        total += self.dense_latency_ns(
-            "sampler", shape.total_tokens, shape.lm_head_sequences
-        )
-        return total
 
     def batch_kernel_comp_node_sum_ns(
             self, shape: OnlineBatchShape) -> int:
@@ -1203,6 +1239,7 @@ __all__ = [
     "H100_QWEN3_TP4_KERNEL_CALIBRATED",
     "H100Qwen3OnlineLatencyModel",
     "OnlineBatchShape",
+    "OnlineBatchKernelPhases",
     "OnlineLatencyModelError",
     "SUPPORTED_ONLINE_LATENCY_MODELS",
     "build_online_latency_model",

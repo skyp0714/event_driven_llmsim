@@ -112,6 +112,45 @@ class P4D4LatencyTests(unittest.TestCase):
             self.hardware.hbm_bandwidth_gbps_per_gpu, 3_350.0)
         self.assertLess(gpu.total_ns, hbf.total_ns)
 
+    def test_batch_phases_preserve_exact_aggregate_latency(self):
+        shapes = (
+            HBFModelBatchShape(
+                total_tokens=16,
+                prefill_q=(16,),
+                prefill_hbf_k=(125_000,),
+                prefill_lpddr_k=(0,),
+                lm_head_sequences=1,
+            ),
+            HBFModelBatchShape(
+                total_tokens=4,
+                decode_hbf_k=(1_000, 2_000, 3_000, 4_000),
+                decode_lpddr_k=(0, 0, 0, 0),
+                lm_head_sequences=4,
+            ),
+        )
+        for shape in shapes:
+            with self.subTest(shape=shape):
+                latency = self.model.batch_latency(shape)
+                phases = self.model.batch_phase_latency(shape)
+
+                self.assertEqual(phases.layer_count, 48)
+                self.assertEqual(
+                    phases.total_ns, latency.total_ns)
+                self.assertEqual(
+                    phases.prologue_ns
+                    + phases.layer_count * phases.layer_ns
+                    + phases.epilogue_ns,
+                    latency.total_ns,
+                )
+                self.assertEqual(
+                    phases.layer_start_offset_ns(0),
+                    phases.prologue_ns,
+                )
+                self.assertEqual(
+                    phases.layer_start_offset_ns(47),
+                    phases.prologue_ns + 47 * phases.layer_ns,
+                )
+
     def test_gpu_has_one_hbm_path_not_independent_media_roofs(self):
         hbf_prefix = HBFModelBatchShape(
             total_tokens=16,

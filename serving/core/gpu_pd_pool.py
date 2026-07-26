@@ -17,6 +17,7 @@ from typing import Any, Iterable, Optional
 
 from .gpu_pd_latency import (
     GPUBatchLatency,
+    P4D4_MODEL_LAYER_COUNT,
     P4D4GPUHardware,
     P4D4LatencyModel,
 )
@@ -48,6 +49,7 @@ class PDServingRequest:
     p_prefix_tokens: int
     d_prefix_tokens: int
     has_successor: bool = True
+    restore_layer_ready_ns: tuple[int, ...] = ()
     state: PDRequestState = PDRequestState.WAITING_P
     p_processed_tokens: int = 0
     generated_tokens: int = 0
@@ -89,6 +91,25 @@ class PDServingRequest:
             raise ValueError("session_id must be non-empty")
         if not isinstance(self.has_successor, bool):
             raise ValueError("has_successor must be a boolean")
+        if not isinstance(self.restore_layer_ready_ns, tuple):
+            raise ValueError(
+                "restore_layer_ready_ns must be a tuple")
+        if self.restore_layer_ready_ns:
+            if len(self.restore_layer_ready_ns) != P4D4_MODEL_LAYER_COUNT:
+                raise ValueError(
+                    "streaming restore must provide one ready timestamp "
+                    "per transformer layer")
+            previous = self.arrival_ns
+            for ready_ns in self.restore_layer_ready_ns:
+                if (
+                    isinstance(ready_ns, bool)
+                    or not isinstance(ready_ns, int)
+                    or ready_ns < previous
+                ):
+                    raise ValueError(
+                        "restore layer readiness must be nondecreasing "
+                        "integer timestamps at or after arrival")
+                previous = ready_ns
         if (
             self.state != PDRequestState.WAITING_P
             or self.p_processed_tokens
@@ -156,6 +177,7 @@ class PDServingBatch:
     batch_id: int
     stage: str
     ready_ns: int
+    restore_gate_ns: int
     start_ns: int
     completion_ns: int
     items: tuple[PDBatchItem, ...]
@@ -195,6 +217,9 @@ class PDPoolMetrics:
     p_modeled_ns: int = 0
     d_modeled_ns: int = 0
     p_resource_delay_ns: int = 0
+    streaming_restore_requests: int = 0
+    p_streaming_batches: int = 0
+    p_restore_gate_delay_ns: int = 0
     d_resource_delay_ns: int = 0
     handoff_jobs: int = 0
     zero_byte_handoffs: int = 0
@@ -370,6 +395,8 @@ class P4D4ServingPool:
                 request.request_id)
             self.p_worker.waiting.append(request.request_id)
             self.metrics.submitted_requests += 1
+            self.metrics.streaming_restore_requests += int(
+                bool(request.restore_layer_ready_ns))
         self.flush_scheduling(now_ns)
 
     def submit(self, request: PDServingRequest, *, now_ns: int) -> None:
@@ -454,6 +481,23 @@ class P4D4ServingPool:
         worker.pending_launch_ns = launch_ns
         heapq.heappush(self._launch_heap, (launch_ns, stage))
 
+    def _p_restore_gate_ns(
+            self, items: tuple[PDBatchItem, ...],
+            shape: HBFModelBatchShape, *,
+            now_ns: int) -> int:
+        phases = self.model.batch_phase_latency(shape)
+        gate_ns = now_ns
+        for item in items:
+            readiness = self.requests[
+                item.request_id].restore_layer_ready_ns
+            for layer_index, ready_ns in enumerate(readiness):
+                gate_ns = max(
+                    gate_ns,
+                    ready_ns
+                    - phases.layer_start_offset_ns(layer_index),
+                )
+        return gate_ns
+
     def _try_schedule(self, stage: str, now_ns: int) -> None:
         worker = self._worker(stage)
         if worker.inflight is not None:
@@ -476,6 +520,11 @@ class P4D4ServingPool:
             return
         items, shape = selected
         latency = self.model.batch_latency(shape)
+        restore_gate_ns = (
+            self._p_restore_gate_ns(
+                items, shape, now_ns=now_ns)
+            if stage == "p" else now_ns
+        )
         batch_id = self._next_batch_id
         self._next_batch_id += 1
         ready_values = [
@@ -486,7 +535,7 @@ class P4D4ServingPool:
             raise RuntimeError("scheduled P/D request lacks ready time")
         ready_ns = min(ready_values)
         start_ns, completion_ns = self.calendar.reserve_parallel(
-            arrival_ns=now_ns,
+            arrival_ns=restore_gate_ns,
             job_id=batch_id,
             kind=f"{stage}-model-batch",
             namespace=f"gpu-pd-node-{self.node_id}",
@@ -496,6 +545,7 @@ class P4D4ServingPool:
             batch_id=batch_id,
             stage=stage,
             ready_ns=ready_ns,
+            restore_gate_ns=restore_gate_ns,
             start_ns=start_ns,
             completion_ns=completion_ns,
             items=items,
@@ -522,6 +572,14 @@ class P4D4ServingPool:
             self.metrics.p_query_tokens += shape.real_query_tokens
             self.metrics.p_modeled_ns += latency.total_ns
             self.metrics.p_resource_delay_ns += start_ns - ready_ns
+            streaming = any(
+                self.requests[
+                    item.request_id].restore_layer_ready_ns
+                for item in items
+            )
+            self.metrics.p_streaming_batches += int(streaming)
+            self.metrics.p_restore_gate_delay_ns += (
+                restore_gate_ns - now_ns)
             self.metrics.max_p_batch_size = max(
                 self.metrics.max_p_batch_size, len(items))
         else:
