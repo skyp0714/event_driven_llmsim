@@ -209,6 +209,7 @@ class HBFServerHardware:
     hbf_capacity_bytes_per_card: int = 1_280_000_000_000
     hbf_read_bandwidth_gbps_per_card: float = 3_350.0
     hbf_read_latency_us: float = 5.0
+    hbf_read_prefetch_enabled: bool = False
     hbf_write_bandwidth_gbps_per_card: float = 335.0
     hbf_write_latency_us: float = 20.0
     npu_peak_tflops_per_card: float = 989.5
@@ -252,6 +253,9 @@ class HBFServerHardware:
         return value
 
     def validate(self) -> None:
+        if not isinstance(self.hbf_read_prefetch_enabled, bool):
+            raise ValueError(
+                "hardware.hbf_read_prefetch_enabled must be a boolean")
         for name in ("pcie_card_to_root", "pcie_nic_to_root"):
             if not isinstance(getattr(self, name), tuple):
                 raise ValueError(
@@ -703,6 +707,39 @@ class FullModelHBFLatencyModel:
                 f"invalid full-model HBF latency {seconds!r}")
         return max(1, int(math.ceil(seconds * 1e9)))
 
+    def _hbf_read_seconds(
+            self, byte_count: float, *,
+            include_fixed_latency: bool = True) -> float:
+        """Return HBF service while keeping fixed latency auditable.
+
+        Perfect prefetch hides only the configured first-access latency.
+        The byte transfer remains charged at the configured HBF bandwidth.
+        ``include_fixed_latency=False`` is used for the incremental half of
+        one fused mixed-attention kernel after its other half already paid
+        the single fixed access latency.
+        """
+
+        if byte_count < 0:
+            raise ValueError("HBF read bytes must be non-negative")
+        if byte_count == 0:
+            return 0.0
+        fixed_seconds = (
+            self.hardware.hbf_read_latency_us * 1e-6
+            if (
+                include_fixed_latency
+                and not self.hardware.hbf_read_prefetch_enabled
+            )
+            else 0.0
+        )
+        return (
+            fixed_seconds
+            + byte_count
+            / (
+                self.hardware.hbf_read_bandwidth_gbps_per_card
+                * 1e9
+            )
+        )
+
     def _kernel(
             self, family: str, *, flops: float,
             hbf_read_bytes: float = 0.0, lpddr_bytes: float = 0.0,
@@ -720,17 +757,7 @@ class FullModelHBFLatencyModel:
             / (self.hardware.gpu_peak_tflops_per_card * 1e12)
             * wave_penalty
         )
-        hbf_seconds = (
-            (
-                self.hardware.hbf_read_latency_us * 1e-6
-                + hbf_read_bytes
-                / (
-                    self.hardware.hbf_read_bandwidth_gbps_per_card
-                    * 1e9
-                )
-            )
-            if hbf_read_bytes > 0 else 0.0
-        )
+        hbf_seconds = self._hbf_read_seconds(hbf_read_bytes)
         lpddr_seconds = (
             lpddr_bytes
             / (self.hardware.lpddr_bandwidth_gbps_per_card * 1e9)
@@ -969,17 +996,7 @@ class FullModelHBFLatencyModel:
                 / (self.hardware.gpu_peak_tflops_per_card * 1e12)
                 * candidate_work[3]
             )
-            hbf_seconds = (
-                (
-                    self.hardware.hbf_read_latency_us * 1e-6
-                    + candidate_work[1]
-                    / (
-                        self.hardware.hbf_read_bandwidth_gbps_per_card
-                        * 1e9
-                    )
-                )
-                if candidate_work[1] > 0 else 0.0
-            )
+            hbf_seconds = self._hbf_read_seconds(candidate_work[1])
             lpddr_seconds = (
                 candidate_work[2]
                 / (self.hardware.lpddr_bandwidth_gbps_per_card * 1e9)
@@ -1041,16 +1058,9 @@ class FullModelHBFLatencyModel:
             / (self.hardware.gpu_peak_tflops_per_card * 1e12)
             * prefill_work[3]
         )
-        prefill_hbf_seconds = (
-            (
-                self.hardware.hbf_read_latency_us * 1e-6
-                + prefill_work[1]
-                / (
-                    self.hardware.hbf_read_bandwidth_gbps_per_card
-                    * 1e9
-                )
-            )
-            if prefill_work[1] > 0 else 0.0
+        prefill_hbf_seconds = self._hbf_read_seconds(
+            prefill_work[1],
+            include_fixed_latency=(decode.hbf_read_bytes == 0),
         )
         prefill_lpddr_seconds = (
             prefill_work[2]
@@ -1073,8 +1083,8 @@ class FullModelHBFLatencyModel:
         combined_lpddr_bytes = prefill.lpddr_bytes + decode.lpddr_bytes
         combined_compute_roof_ns = (
             prefill.compute_roof_ns + decode.compute_roof_ns)
-        combined_hbf_roof_ns = (
-            prefill.hbf_roof_ns + decode.hbf_roof_ns)
+        combined_hbf_roof_ns = int(math.ceil(
+            self._hbf_read_seconds(combined_hbf_bytes) * 1e9))
         combined_lpddr_roof_ns = (
             prefill.lpddr_roof_ns + decode.lpddr_roof_ns)
         return KernelLatency(
@@ -2146,6 +2156,23 @@ class FullModelHBFLatencyModel:
                 "peak_tflops_per_card": (
                     self.hardware.gpu_peak_tflops_per_card),
                 "calibration_source": "h100_tp4_kernel_families",
+            },
+            "hbf_read_access": {
+                "configured_fixed_latency_us": (
+                    self.hardware.hbf_read_latency_us),
+                "prefetch_enabled": (
+                    self.hardware.hbf_read_prefetch_enabled),
+                "exposed_fixed_latency_us_per_hbf_touching_kernel": (
+                    0.0
+                    if self.hardware.hbf_read_prefetch_enabled
+                    else self.hardware.hbf_read_latency_us
+                ),
+                "bandwidth_cost_retained_with_prefetch": True,
+                "semantics": (
+                    "perfect_prefetch_hides_fixed_latency"
+                    if self.hardware.hbf_read_prefetch_enabled
+                    else "demand_read_charges_fixed_latency_once"
+                ),
             },
             "weight_location": "hbf",
             "committed_kv_location": "hbf",

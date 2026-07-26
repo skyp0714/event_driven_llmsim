@@ -296,6 +296,61 @@ class FullModelHBFLatencyTests(unittest.TestCase):
         zero_latency = zero_latency_model.batch_latency(shape)
         self.assertGreater(normal.total_ns, zero_latency.total_ns)
 
+    def test_perfect_prefetch_hides_only_fixed_hbf_read_latency(self):
+        demand_model = self.models["tp4"]
+        prefetch_hardware = dataclasses.replace(
+            self.hardware,
+            hbf_read_prefetch_enabled=True,
+        )
+        prefetch_model = build_full_model_hbf_latency(
+            repo_root=REPO_ROOT,
+            hardware=prefetch_hardware,
+            layout=self.layouts["tp4"],
+        )
+        byte_count = 128 * 1024 ** 2
+        demand = demand_model._kernel(
+            "router", flops=0, hbf_read_bytes=byte_count)
+        prefetched = prefetch_model._kernel(
+            "router", flops=0, hbf_read_bytes=byte_count)
+
+        self.assertEqual(demand.hbf_read_bytes, prefetched.hbf_read_bytes)
+        self.assertEqual(
+            demand.hbf_roof_ns - prefetched.hbf_roof_ns,
+            round(self.hardware.hbf_read_latency_us * 1_000),
+        )
+        self.assertGreater(demand.latency_ns, prefetched.latency_ns)
+        self.assertEqual(
+            demand_model._hbf_read_seconds(0),
+            prefetch_model._hbf_read_seconds(0),
+        )
+
+    def test_prefetch_mode_is_explicit_in_latency_metadata(self):
+        demand = self.models["tp4"].metadata()["hbf_read_access"]
+        prefetch_hardware = dataclasses.replace(
+            self.hardware,
+            hbf_read_prefetch_enabled=True,
+        )
+        prefetch_model = build_full_model_hbf_latency(
+            repo_root=REPO_ROOT,
+            hardware=prefetch_hardware,
+            layout=self.layouts["tp4"],
+        )
+        prefetched = prefetch_model.metadata()["hbf_read_access"]
+
+        self.assertFalse(demand["prefetch_enabled"])
+        self.assertEqual(
+            demand["exposed_fixed_latency_us_per_hbf_touching_kernel"],
+            5.0,
+        )
+        self.assertTrue(prefetched["prefetch_enabled"])
+        self.assertEqual(
+            prefetched[
+                "exposed_fixed_latency_us_per_hbf_touching_kernel"],
+            0.0,
+        )
+        self.assertTrue(
+            prefetched["bandwidth_cost_retained_with_prefetch"])
+
     def test_decode_envelope_charges_hbf_read_latency(self):
         shape = HBFModelBatchShape(
             total_tokens=8,
@@ -384,6 +439,50 @@ class FullModelHBFLatencyTests(unittest.TestCase):
         self.assertEqual(
             mixed.hbf_roof_ns,
             prefill.hbf_roof_ns + decode.hbf_roof_ns,
+        )
+
+    def test_mixed_attention_charges_one_fixed_hbf_read_latency(self):
+        shape = HBFModelBatchShape(
+            total_tokens=17,
+            prefill_q=(16,),
+            prefill_hbf_k=(100_000,),
+            prefill_lpddr_k=(0,),
+            decode_hbf_k=(100_000,),
+            decode_lpddr_k=(0,),
+            lm_head_sequences=2,
+        )
+        demand = self.models["tp4"]._attention(shape)
+        prefetch_hardware = dataclasses.replace(
+            self.hardware,
+            hbf_read_prefetch_enabled=True,
+        )
+        prefetch_model = build_full_model_hbf_latency(
+            repo_root=REPO_ROOT,
+            hardware=prefetch_hardware,
+            layout=self.layouts["tp4"],
+        )
+        prefetched = prefetch_model._attention(shape)
+        expected_bandwidth_ns = math.ceil(
+            demand.hbf_read_bytes
+            / self.hardware.hbf_read_bandwidth_gbps_per_card
+        )
+
+        self.assertEqual(
+            prefetched.hbf_roof_ns,
+            expected_bandwidth_ns,
+        )
+        self.assertEqual(
+            demand.hbf_roof_ns - prefetched.hbf_roof_ns,
+            round(self.hardware.hbf_read_latency_us * 1_000),
+        )
+        pure_prefill = self.models["tp4"]._prefill_attention(shape)
+        pure_decode = self.models["tp4"]._decode_kernel_for_batch(
+            hbf_k=shape.decode_hbf_k,
+            lpddr_k=shape.decode_lpddr_k,
+        )
+        self.assertLess(
+            demand.hbf_roof_ns,
+            pure_prefill.hbf_roof_ns + pure_decode.hbf_roof_ns,
         )
 
     def test_mixed_attention_residual_dominated_matches_pure_sum(self):
