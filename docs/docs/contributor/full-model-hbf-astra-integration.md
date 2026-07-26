@@ -594,6 +594,23 @@ This opt-in does not change the stored gate outcome. The selection manifest,
 CSV, PNG names, and plot titles are all marked as an ineligible-reference
 audit and must not be reported as eligible final results.
 
+The direct GPU-HBM-to-HBF campaign uses a different scenario and therefore
+has a separate appendix plotter:
+
+```bash
+python -m serving.hbf_direct_policy_plots \
+  results/hbf-direct/aggregate.json \
+  --output-dir results/hbf-direct/appendix
+```
+
+This loader fails closed unless the aggregate contains all eleven direct
+migration policies crossed with both HBF read modes, three paired seeds, the
+CPU+SSD baseline, and the infinite-HBM Oracle. It preserves every policy in
+the JSON and CSV audit exports, excludes the future-looking `jit_oracle` from
+causal selection, and plots the highest-mean causal policy for each read
+mode. Direct-campaign absolute metrics must not be merged with the
+SSD-staged campaign.
+
 ## Validation
 
 Run the focused semantic tests before an end-to-end simulation:
