@@ -18,7 +18,7 @@ new component-price anchors.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 import json
 import math
 from typing import Any, Optional
@@ -42,7 +42,7 @@ from .hbf_design_tco import (
 )
 
 
-SSD_HBF_REPORT_SCHEMA = "two-gpu-vs-one-gpu-one-hbf-ssd-tco-v3"
+SSD_HBF_REPORT_SCHEMA = "two-gpu-vs-one-gpu-one-hbf-ssd-tco-v4"
 SSD_BASELINE_SYSTEM_KEY = "two_gpu_local_ssd_baseline"
 SSD_HBF_PROPOSED_SYSTEM_KEY = "one_gpu_local_ssd_plus_one_hbf"
 ORACLE_SYSTEM_KEY = "two_gpu_infinite_hbm_oracle"
@@ -820,6 +820,41 @@ class PowerEnergyComparison:
 
 
 @dataclass(frozen=True)
+class CostBasisSensitivityCase:
+    """One purchase-accounting case with a complete finite-system result."""
+
+    case_key: str
+    hbm_capex_accounting_basis: str
+    hbm_credit_usd_per_h100_card: float
+    hbm_credit_share_of_h100_purchase_price: float
+    hbf_media_controller_capex_usd_per_card: float
+    baseline_capex_usd: float
+    proposed_capex_usd: float
+    proposed_minus_baseline_capex_usd: float
+    baseline_five_year_tco_usd: float
+    proposed_five_year_tco_usd: float
+    proposed_minus_baseline_five_year_tco_usd: float
+    proposed_tco_ratio_to_baseline: float
+    proposed_is_cheaper: bool
+    assumption: str
+
+
+@dataclass(frozen=True)
+class CostBasisSensitivityAudit:
+    """Expose the HBM-credit and independent-HBF-price assumptions."""
+
+    central_case_key: str
+    cases: tuple[CostBasisSensitivityCase, ...]
+    break_even_hbf_media_controller_capex_usd_per_card: float
+    central_hbf_media_controller_capex_usd_per_card: float
+    central_hbf_price_margin_to_break_even_usd_per_card: float
+    h100_purchase_price_source_url: str
+    hbm_component_cost_source_url: str
+    hbf_capex_source_semantics: str
+    semantics: str
+
+
+@dataclass(frozen=True)
 class SSDHBFTCOReport:
     report_schema: str
     goodput_semantics: str
@@ -828,6 +863,7 @@ class SSDHBFTCOReport:
     proposed_cost: SSDHBFSystemCost
     cost_delta_proposed_minus_baseline: SSDHBFCostDelta
     power_energy_comparison: PowerEnergyComparison
+    cost_basis_sensitivity_audit: CostBasisSensitivityAudit
     baseline_token_economics: FiveYearTokenEconomics
     proposed_token_economics: FiveYearTokenEconomics
     oracle_reference: PerformanceOnlyOracle
@@ -842,6 +878,167 @@ class SSDHBFTCOReport:
         value = asdict(self)
         json.dumps(value, allow_nan=False)
         return value
+
+
+def _cost_basis_sensitivity_audit(
+        *,
+        hbf_layout: HBFServerLayout,
+        active_memory: ActiveMemorySpec,
+        sensitivity_point: SensitivityPoint,
+        anchors: HardwareAnchors,
+        evaluation: EvaluationAssumptions,
+) -> CostBasisSensitivityAudit:
+    central_credit = anchors.hbm_avoided_capex_usd_per_card
+    independent_hbf_capex = (
+        anchors.hbf_media_controller_capex_usd_per_card)
+    case_specs = (
+        (
+            "purchase_credit_low_0p8x",
+            "absolute_avoided_purchase_credit",
+            central_credit * 0.8,
+            independent_hbf_capex,
+            "Analyst HBM component-cost estimate reduced by 20%.",
+        ),
+        (
+            "purchase_credit_central",
+            "absolute_avoided_purchase_credit",
+            central_credit,
+            independent_hbf_capex,
+            "Central analyst HBM estimate and independent HBF assumption.",
+        ),
+        (
+            "purchase_credit_high_1p2x",
+            "absolute_avoided_purchase_credit",
+            central_credit * 1.2,
+            independent_hbf_capex,
+            "Analyst HBM component-cost estimate increased by 20%.",
+        ),
+        (
+            "optimistic_hbf_price_equals_hbm_credit",
+            "absolute_avoided_purchase_credit",
+            central_credit,
+            central_credit,
+            (
+                "Optimistic counterfactual: one 16x-capacity HBF subsystem "
+                "costs the same as the removed HBM component."
+            ),
+        ),
+        (
+            "legacy_30pct_purchase_price_credit",
+            "legacy_fraction_of_purchase_price",
+            central_credit,
+            independent_hbf_capex,
+            (
+                "Aggressive legacy counterfactual: the manufacturing HBM "
+                "share is applied to the accelerator purchase price."
+            ),
+        ),
+    )
+    cases = []
+    for (
+        case_key,
+        accounting_basis,
+        avoided_hbm_capex,
+        hbf_capex,
+        assumption,
+    ) in case_specs:
+        case_anchors = replace(
+            anchors,
+            hbm_capex_accounting_basis=accounting_basis,
+            hbm_avoided_capex_usd_per_card=avoided_hbm_capex,
+            hbf_media_controller_capex_usd_per_card=hbf_capex,
+        )
+        baseline = two_gpu_local_ssd_baseline_cost(
+            anchors=case_anchors,
+            evaluation=evaluation,
+        )
+        proposed = one_gpu_one_hbf_cost(
+            hbf_layout=hbf_layout,
+            active_memory=active_memory,
+            sensitivity_point=sensitivity_point,
+            anchors=case_anchors,
+            evaluation=evaluation,
+        )
+        hbf_unit_capex = proposed.component(
+            "hbf_media_controller_subsystem").unit_capex_usd
+        cases.append(CostBasisSensitivityCase(
+            case_key=case_key,
+            hbm_capex_accounting_basis=accounting_basis,
+            hbm_credit_usd_per_h100_card=(
+                case_anchors.hbm_stack_capex_usd_per_card),
+            hbm_credit_share_of_h100_purchase_price=(
+                case_anchors.hbm_capex_share_of_h100_purchase_price),
+            hbf_media_controller_capex_usd_per_card=hbf_unit_capex,
+            baseline_capex_usd=baseline.capex_usd,
+            proposed_capex_usd=proposed.capex_usd,
+            proposed_minus_baseline_capex_usd=(
+                proposed.capex_usd - baseline.capex_usd),
+            baseline_five_year_tco_usd=baseline.five_year_tco_usd,
+            proposed_five_year_tco_usd=proposed.five_year_tco_usd,
+            proposed_minus_baseline_five_year_tco_usd=(
+                proposed.five_year_tco_usd
+                - baseline.five_year_tco_usd),
+            proposed_tco_ratio_to_baseline=(
+                proposed.five_year_tco_usd
+                / baseline.five_year_tco_usd),
+            proposed_is_cheaper=(
+                proposed.five_year_tco_usd
+                < baseline.five_year_tco_usd),
+            assumption=assumption,
+        ))
+
+    central_anchors = replace(
+        anchors,
+        hbm_capex_accounting_basis=(
+            "absolute_avoided_purchase_credit"),
+    )
+    central_baseline = two_gpu_local_ssd_baseline_cost(
+        anchors=central_anchors,
+        evaluation=evaluation,
+    )
+    zero_hbf_anchors = replace(
+        central_anchors,
+        hbf_media_controller_capex_usd_per_card=0.0,
+    )
+    zero_hbf_proposed = one_gpu_one_hbf_cost(
+        hbf_layout=hbf_layout,
+        active_memory=active_memory,
+        sensitivity_point=sensitivity_point,
+        anchors=zero_hbf_anchors,
+        evaluation=evaluation,
+    )
+    break_even_hbf_capex = max(
+        0.0,
+        (
+            central_baseline.five_year_tco_usd
+            - zero_hbf_proposed.five_year_tco_usd
+        ) / HBF_CARD_COUNT,
+    )
+    central_hbf_capex = (
+        independent_hbf_capex
+        * sensitivity_point.hbf_media_controller_capex_multiplier
+    )
+    return CostBasisSensitivityAudit(
+        central_case_key="purchase_credit_central",
+        cases=tuple(cases),
+        break_even_hbf_media_controller_capex_usd_per_card=(
+            break_even_hbf_capex),
+        central_hbf_media_controller_capex_usd_per_card=central_hbf_capex,
+        central_hbf_price_margin_to_break_even_usd_per_card=(
+            central_hbf_capex - break_even_hbf_capex),
+        h100_purchase_price_source_url=(
+            anchors.h100_purchase_price_source_url),
+        hbm_component_cost_source_url=(
+            anchors.hbm_component_cost_source_url),
+        hbf_capex_source_semantics=(
+            "Explicit exploratory assumption; no HBF vendor quote."),
+        semantics=(
+            "Baseline H100 cards remain at full purchase price. HBM credit "
+            "only changes the H100-class logic price assigned to an HBF card; "
+            "HBF media/controller CAPEX is an independent assumption. "
+            "Break-even holds all power and other BOM lines fixed."
+        ),
+    )
 
 
 def evaluate_ssd_hbf_tco(
@@ -966,6 +1163,13 @@ def evaluate_ssd_hbf_tco(
                 / baseline.five_year_facility_energy_kwh
             ),
         ),
+        cost_basis_sensitivity_audit=_cost_basis_sensitivity_audit(
+            hbf_layout=topology.hbf_layout,
+            active_memory=active_memory,
+            sensitivity_point=sensitivity_point,
+            anchors=anchors,
+            evaluation=evaluation,
+        ),
         baseline_token_economics=_token_economics(
             baseline, baseline_goodput),
         proposed_token_economics=_token_economics(
@@ -993,6 +1197,8 @@ __all__ = [
     "SSD_HBF_PROPOSED_SYSTEM_KEY",
     "SSD_HBF_REPORT_SCHEMA",
     "HBFServerLayout",
+    "CostBasisSensitivityAudit",
+    "CostBasisSensitivityCase",
     "TwoGPUOneHBFComparisonTopology",
     "PerformanceOnlyOracle",
     "PhysicalComponentCounts",

@@ -324,6 +324,61 @@ class SSDHBFComponentCostTests(unittest.TestCase):
 
 
 class SSDHBFEconomicsTests(unittest.TestCase):
+    def test_cost_basis_audit_separates_hbm_credit_and_hbf_price(self):
+        report = evaluate_ssd_hbf_tco(
+            hbf_layout="tp4x2",
+            active_memory=lpddr_active_memory(),
+            baseline_slo_good_output_tokens_per_second=100.0,
+            proposed_slo_good_output_tokens_per_second=100.0,
+        )
+        audit = report.cost_basis_sensitivity_audit
+        cases = {case.case_key: case for case in audit.cases}
+
+        self.assertEqual(len(cases), 5)
+        central = cases["purchase_credit_central"]
+        self.assertEqual(
+            central.hbm_capex_accounting_basis,
+            "absolute_avoided_purchase_credit",
+        )
+        self.assertEqual(
+            central.hbm_credit_usd_per_h100_card, 1_350.0)
+        self.assertAlmostEqual(
+            central.hbm_credit_share_of_h100_purchase_price, 0.045)
+        self.assertEqual(
+            central.hbf_media_controller_capex_usd_per_card,
+            4_500.0,
+        )
+        self.assertFalse(central.proposed_is_cheaper)
+
+        legacy = cases["legacy_30pct_purchase_price_credit"]
+        self.assertEqual(
+            legacy.hbm_credit_usd_per_h100_card, 9_000.0)
+        self.assertEqual(
+            legacy.hbm_credit_share_of_h100_purchase_price, 0.30)
+        self.assertEqual(
+            legacy.hbf_media_controller_capex_usd_per_card,
+            central.hbf_media_controller_capex_usd_per_card,
+        )
+        self.assertTrue(legacy.proposed_is_cheaper)
+
+        optimistic = cases[
+            "optimistic_hbf_price_equals_hbm_credit"]
+        self.assertTrue(optimistic.proposed_is_cheaper)
+        self.assertGreater(
+            audit.central_hbf_media_controller_capex_usd_per_card,
+            audit.break_even_hbf_media_controller_capex_usd_per_card,
+        )
+        self.assertAlmostEqual(
+            audit.central_hbf_price_margin_to_break_even_usd_per_card,
+            (
+                audit.central_hbf_media_controller_capex_usd_per_card
+                - audit
+                .break_even_hbf_media_controller_capex_usd_per_card
+            ),
+        )
+        self.assertIn(
+            "no HBF vendor quote", audit.hbf_capex_source_semantics)
+
     def test_delta_and_required_goodput_break_even_are_auditable(self):
         baseline_goodput = 100.0
         baseline = two_gpu_local_ssd_baseline_cost()
