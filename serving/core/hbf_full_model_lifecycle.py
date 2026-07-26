@@ -854,8 +854,10 @@ class LifecycleMetrics:
     hbf_resumes: int = 0
     append_jobs_started: int = 0
     append_jobs_committed: int = 0
+    append_jobs_stale: int = 0
     append_logical_bytes: int = 0
     append_physical_bytes: int = 0
+    append_wasted_physical_bytes: int = 0
     active_prefill_drain_candidates: int = 0
     active_prefill_drain_started: int = 0
     active_prefill_drain_satisfied: int = 0
@@ -1036,6 +1038,32 @@ class FullModelHBFLifecycle:
             )
             for index in range(layout.replicas)
         )
+        card_ids = tuple(
+            card_id
+            for group in self.groups
+            for card_id in group.card_ids
+        )
+        self._hbf_kv_write_bytes_by_card = {
+            card_id: 0 for card_id in card_ids
+        }
+        self._hbf_migration_write_bytes_by_card = {
+            card_id: 0 for card_id in card_ids
+        }
+        self._hbf_append_write_bytes_by_card = {
+            card_id: 0 for card_id in card_ids
+        }
+        self._hbf_ssd_import_write_bytes_by_card = {
+            card_id: 0 for card_id in card_ids
+        }
+        self._hbf_migration_wasted_write_bytes_by_card = {
+            card_id: 0 for card_id in card_ids
+        }
+        self._hbf_append_wasted_write_bytes_by_card = {
+            card_id: 0 for card_id in card_ids
+        }
+        self._hbf_ssd_import_wasted_write_bytes_by_card = {
+            card_id: 0 for card_id in card_ids
+        }
         self.lpddr_ledger = (
             lpddr_ledger
             if lpddr_ledger is not None
@@ -1185,6 +1213,249 @@ class FullModelHBFLifecycle:
             token_start=job.token_start,
             token_count=job.token_count,
         )
+
+    def _record_hbf_kv_write(
+            self, job: MigrationJob | AppendJob) -> None:
+        """Charge every admitted KV media write, including stale jobs."""
+
+        card_bytes = self._job_card_bytes(job)
+        if sum(card_bytes.values()) != job.physical_bytes:
+            raise AssertionError(
+                "HBF per-card write vector changed physical byte count")
+        if isinstance(job, MigrationJob):
+            operation = self._hbf_migration_write_bytes_by_card
+            if job.source_kind == MigrationSourceKind.SSD:
+                for card_id, byte_count in card_bytes.items():
+                    self._hbf_ssd_import_write_bytes_by_card[
+                        card_id] += byte_count
+        else:
+            operation = self._hbf_append_write_bytes_by_card
+        for card_id, byte_count in card_bytes.items():
+            self._hbf_kv_write_bytes_by_card[card_id] += byte_count
+            operation[card_id] += byte_count
+
+    def _record_hbf_wasted_write(
+            self, job: MigrationJob | AppendJob) -> None:
+        card_bytes = self._job_card_bytes(job)
+        if isinstance(job, MigrationJob):
+            operation = (
+                self._hbf_migration_wasted_write_bytes_by_card)
+            if job.source_kind == MigrationSourceKind.SSD:
+                for card_id, byte_count in card_bytes.items():
+                    self._hbf_ssd_import_wasted_write_bytes_by_card[
+                        card_id] += byte_count
+        else:
+            operation = self._hbf_append_wasted_write_bytes_by_card
+        for card_id, byte_count in card_bytes.items():
+            operation[card_id] += byte_count
+
+    def _hbf_write_accounting_report(self) -> dict[str, Any]:
+        card_ids = tuple(sorted(self._hbf_kv_write_bytes_by_card))
+        values = tuple(
+            self._hbf_kv_write_bytes_by_card[card_id]
+            for card_id in card_ids
+        )
+        total = sum(values)
+        mean = total / len(values) if values else 0.0
+        variance = (
+            sum((value - mean) ** 2 for value in values)
+            / len(values)
+            if values else 0.0
+        )
+        stddev = math.sqrt(variance)
+        maximum = max(values, default=0)
+        minimum = min(values, default=0)
+        hottest_card_ids = [
+            card_id
+            for card_id in card_ids
+            if maximum > 0
+            and self._hbf_kv_write_bytes_by_card[card_id] == maximum
+        ]
+        wasted = (
+            sum(self._hbf_migration_wasted_write_bytes_by_card.values())
+            + sum(self._hbf_append_wasted_write_bytes_by_card.values())
+        )
+        return {
+            "schema_version": 1,
+            "accounting_basis": (
+                "physical_media_payload_of_admitted_jobs"),
+            "complete_for_endurance_projection": not self._jobs,
+            "accounting_semantics": (
+                "recurring KV payload bytes charged when migration or "
+                "append jobs are admitted; stale jobs remain physical "
+                "writes; SSD imports are a migration subset; payload "
+                "bytes exclude any assumed flash write amplification"
+            ),
+            "total_physical_write_bytes": total,
+            "migration_physical_write_bytes": sum(
+                self._hbf_migration_write_bytes_by_card.values()),
+            "append_physical_write_bytes": sum(
+                self._hbf_append_write_bytes_by_card.values()),
+            "ssd_import_physical_write_bytes_subset": sum(
+                self._hbf_ssd_import_write_bytes_by_card.values()),
+            "wasted_physical_write_bytes": wasted,
+            "wasted_write_fraction": (
+                wasted / total if total else None),
+            "static_model_weight": {
+                "bytes_per_card": self.weight_bytes_per_rank,
+                "write_count": 1,
+                "included_in_recurring_kv_wear": False,
+            },
+            "cards": [
+                {
+                    "server_id": self.server_id,
+                    "card_id": card_id,
+                    "device_id": (
+                        f"hbf-server-{self.server_id}-card-{card_id}"),
+                    "kv_region_capacity_bytes": (
+                        self.usable_bytes_per_card),
+                    "migration_write_bytes": (
+                        self._hbf_migration_write_bytes_by_card[
+                            card_id]),
+                    "ssd_import_write_bytes_subset": (
+                        self._hbf_ssd_import_write_bytes_by_card[
+                            card_id]),
+                    "append_write_bytes": (
+                        self._hbf_append_write_bytes_by_card[card_id]),
+                    "total_write_bytes": (
+                        self._hbf_kv_write_bytes_by_card[card_id]),
+                    "migration_wasted_write_bytes": (
+                        self._hbf_migration_wasted_write_bytes_by_card[
+                            card_id]),
+                    "ssd_import_wasted_write_bytes_subset": (
+                        self._hbf_ssd_import_wasted_write_bytes_by_card[
+                            card_id]),
+                    "append_wasted_write_bytes": (
+                        self._hbf_append_wasted_write_bytes_by_card[
+                            card_id]),
+                    "wasted_write_bytes": (
+                        self._hbf_migration_wasted_write_bytes_by_card[
+                            card_id]
+                        + self._hbf_append_wasted_write_bytes_by_card[
+                            card_id]),
+                }
+                for card_id in card_ids
+            ],
+            "hotness": {
+                "scope": (
+                    "exact across cards; within each card, KV writes are "
+                    "assumed randomly and uniformly spread over the "
+                    "writable KV region; cell/page/block hotness is not "
+                    "modeled"
+                ),
+                "card_count": len(values),
+                "minimum_write_bytes": minimum,
+                "mean_write_bytes": mean,
+                "maximum_write_bytes": maximum,
+                "population_stddev_write_bytes": stddev,
+                "coefficient_of_variation": (
+                    stddev / mean if mean else None),
+                "maximum_to_mean": (
+                    maximum / mean if mean else None),
+                "hottest_card_share": (
+                    maximum / total if total else None),
+                "hottest_card_ids": hottest_card_ids,
+            },
+        }
+
+    def _assert_hbf_write_accounting(self) -> None:
+        expected_cards = set(self._hbf_kv_write_bytes_by_card)
+        ledgers = (
+            self._hbf_kv_write_bytes_by_card,
+            self._hbf_migration_write_bytes_by_card,
+            self._hbf_append_write_bytes_by_card,
+            self._hbf_ssd_import_write_bytes_by_card,
+            self._hbf_migration_wasted_write_bytes_by_card,
+            self._hbf_append_wasted_write_bytes_by_card,
+            self._hbf_ssd_import_wasted_write_bytes_by_card,
+        )
+        if any(set(ledger) != expected_cards for ledger in ledgers):
+            raise AssertionError(
+                "HBF write ledgers cover different physical cards")
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 0
+            for ledger in ledgers
+            for value in ledger.values()
+        ):
+            raise AssertionError(
+                "HBF write ledger contains invalid bytes")
+        for card_id in expected_cards:
+            migration = self._hbf_migration_write_bytes_by_card[
+                card_id]
+            append = self._hbf_append_write_bytes_by_card[card_id]
+            ssd_import = self._hbf_ssd_import_write_bytes_by_card[
+                card_id]
+            migration_wasted = (
+                self._hbf_migration_wasted_write_bytes_by_card[
+                    card_id])
+            append_wasted = (
+                self._hbf_append_wasted_write_bytes_by_card[
+                    card_id])
+            ssd_import_wasted = (
+                self._hbf_ssd_import_wasted_write_bytes_by_card[
+                    card_id])
+            if (
+                self._hbf_kv_write_bytes_by_card[card_id]
+                != migration + append
+                or ssd_import > migration
+                or migration_wasted > migration
+                or append_wasted > append
+                or ssd_import_wasted > ssd_import
+                or ssd_import_wasted > migration_wasted
+            ):
+                raise AssertionError(
+                    "HBF per-card write accounting is inconsistent")
+        expected_totals = (
+            (
+                self._hbf_migration_write_bytes_by_card,
+                self.metrics.migration_physical_bytes,
+            ),
+            (
+                self._hbf_append_write_bytes_by_card,
+                self.metrics.append_physical_bytes,
+            ),
+            (
+                self._hbf_ssd_import_write_bytes_by_card,
+                self.metrics.ssd_import_physical_bytes,
+            ),
+            (
+                self._hbf_migration_wasted_write_bytes_by_card,
+                self.metrics.migration_wasted_physical_bytes,
+            ),
+            (
+                self._hbf_append_wasted_write_bytes_by_card,
+                self.metrics.append_wasted_physical_bytes,
+            ),
+            (
+                self._hbf_ssd_import_wasted_write_bytes_by_card,
+                self.metrics.ssd_import_wasted_physical_bytes,
+            ),
+        )
+        if any(
+            sum(ledger.values()) != expected
+            for ledger, expected in expected_totals
+        ):
+            raise AssertionError(
+                "HBF per-card and aggregate write accounting diverged")
+        if sum(self._hbf_kv_write_bytes_by_card.values()) != (
+            self.metrics.migration_physical_bytes
+            + self.metrics.append_physical_bytes
+        ):
+            raise AssertionError(
+                "HBF total write accounting double-counted a component")
+        pending_appends = sum(
+            isinstance(job, AppendJob)
+            for job in self._jobs.values()
+        )
+        if self.metrics.append_jobs_started != sum((
+            self.metrics.append_jobs_committed,
+            self.metrics.append_jobs_stale,
+            pending_appends,
+        )):
+            raise AssertionError(
+                "append completion accounting mismatch")
 
     @staticmethod
     def _peak_card_bytes(card_bytes: Mapping[int, int]) -> int:
@@ -1895,6 +2166,7 @@ class FullModelHBFLifecycle:
         self.metrics.migrations_started += 1
         self.metrics.migration_logical_bytes += logical_bytes
         self.metrics.migration_physical_bytes += physical_bytes
+        self._record_hbf_kv_write(job)
         if source_kind == MigrationSourceKind.SSD:
             self.metrics.ssd_imports_started += 1
             self.metrics.ssd_import_logical_bytes += logical_bytes
@@ -2391,6 +2663,7 @@ class FullModelHBFLifecycle:
         self.metrics.append_jobs_started += 1
         self.metrics.append_logical_bytes += logical_bytes
         self.metrics.append_physical_bytes += physical_bytes
+        self._record_hbf_kv_write(job)
         return job
 
     def start_active_prefill_drain(
@@ -2659,6 +2932,7 @@ class FullModelHBFLifecycle:
             self.metrics.migrations_stale += 1
             self.metrics.migration_wasted_physical_bytes += (
                 job.physical_bytes)
+            self._record_hbf_wasted_write(job)
             if job.source_kind == MigrationSourceKind.SSD:
                 self.metrics.ssd_imports_stale += 1
                 self.metrics.ssd_import_wasted_physical_bytes += (
@@ -2703,6 +2977,10 @@ class FullModelHBFLifecycle:
             # speculative HBF reservation is lossless and a later turn can
             # retry the append.
             self._release_group(job.group_id, job_card_bytes)
+            self.metrics.append_jobs_stale += 1
+            self.metrics.append_wasted_physical_bytes += (
+                job.physical_bytes)
+            self._record_hbf_wasted_write(job)
             if active_prefill_drain:
                 self.metrics.active_prefill_drain_stale += 1
 
@@ -2926,6 +3204,7 @@ class FullModelHBFLifecycle:
 
     def assert_invariants(self) -> None:
         self.lpddr_ledger.assert_invariants()
+        self._assert_hbf_write_accounting()
         try:
             validate_hbf_astra_timing_metrics(self.metrics)
         except HBFModelAstraProjectionError as exc:
@@ -3315,6 +3594,8 @@ class FullModelHBFLifecycle:
             "weight_bytes_per_rank": self.weight_bytes_per_rank,
             "usable_bytes_per_card": self.usable_bytes_per_card,
             "metrics": asdict(self.metrics),
+            "hbf_write_accounting": (
+                self._hbf_write_accounting_report()),
             "group_reserved_per_card_bytes": dict(
                 self._reserved_per_card_by_group),
             "group_reserved_bytes_by_card": {

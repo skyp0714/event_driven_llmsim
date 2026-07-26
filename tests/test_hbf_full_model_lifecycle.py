@@ -134,6 +134,22 @@ class FullModelHBFLifecycleTests(unittest.TestCase):
         self.assertEqual(record.committed_hbf_tokens, 0)
         self.assertEqual(manager.metrics.migrations_stale, 1)
         self.assertEqual(manager.metrics.migrations_committed, 0)
+        write_report = manager.report()["hbf_write_accounting"]
+        self.assertEqual(
+            write_report["total_physical_write_bytes"],
+            job.physical_bytes,
+        )
+        self.assertEqual(
+            write_report["wasted_physical_write_bytes"],
+            job.physical_bytes,
+        )
+        self.assertEqual(
+            sum(
+                card["wasted_write_bytes"]
+                for card in write_report["cards"]
+            ),
+            job.physical_bytes,
+        )
 
     def test_deferred_migration_reserves_nothing_until_explicit_start(self):
         manager = self.make_manager()
@@ -733,6 +749,16 @@ class FullModelHBFLifecycleTests(unittest.TestCase):
         self.assertEqual(record.committed_hbf_tokens, 900)
         self.assertEqual(record.lpddr_tokens, 0)
         self.assertEqual(manager.metrics.append_jobs_committed, 0)
+        self.assertEqual(manager.metrics.append_jobs_stale, 1)
+        self.assertEqual(
+            manager.metrics.append_wasted_physical_bytes,
+            append.physical_bytes,
+        )
+        self.assertEqual(
+            manager.report()["hbf_write_accounting"][
+                "wasted_physical_write_bytes"],
+            append.physical_bytes,
+        )
         self.assertEqual(manager.report()["pending_job_count"], 0)
         manager.assert_invariants()
 
@@ -942,6 +968,166 @@ class FullModelHBFLifecycleTests(unittest.TestCase):
             {card_id: per_head for card_id in range(8)},
         )
         manager.assert_invariants()
+
+    def test_write_accounting_reports_exact_card_hotness(self):
+        per_token = qwen_logical_kv_bytes_per_token()
+        per_head = per_token // 4
+        manager = self.make_manager("tp8_context")
+        zero = manager.report()["hbf_write_accounting"]
+        self.assertEqual(zero["schema_version"], 1)
+        self.assertTrue(zero["complete_for_endurance_projection"])
+        self.assertEqual(zero["total_physical_write_bytes"], 0)
+        self.assertEqual(len(zero["cards"]), 8)
+        self.assertIsNone(
+            zero["hotness"]["coefficient_of_variation"])
+        self.assertEqual(zero["hotness"]["hottest_card_ids"], [])
+        self.assertFalse(
+            zero["static_model_weight"][
+                "included_in_recurring_kv_wear"])
+
+        manager.register_session("s")
+        migration = manager.complete_gpu_turn(
+            "s", now_ns=0, total_tokens=1,
+            has_successor=True)
+        pending = manager.report()["hbf_write_accounting"]
+        self.assertFalse(
+            pending["complete_for_endurance_projection"])
+        by_card = {
+            card["card_id"]: card
+            for card in pending["cards"]
+        }
+        self.assertEqual(
+            {
+                card_id: row["total_write_bytes"]
+                for card_id, row in by_card.items()
+            },
+            {
+                0: per_head, 1: 0,
+                2: per_head, 3: 0,
+                4: per_head, 5: 0,
+                6: per_head, 7: 0,
+            },
+        )
+        self.assertEqual(
+            pending["hotness"]["coefficient_of_variation"],
+            1.0,
+        )
+        self.assertEqual(
+            pending["hotness"]["hottest_card_share"],
+            0.25,
+        )
+        self.assertEqual(
+            pending["hotness"]["hottest_card_ids"],
+            [0, 2, 4, 6],
+        )
+
+        manager.advance(migration.completion_ns)
+        manager.route_resume(
+            "s", now_ns=migration.completion_ns, request_id=1)
+        append = manager.complete_hbf_turn(
+            "s",
+            now_ns=migration.completion_ns + 1,
+            total_tokens=2,
+            has_successor=True,
+        )
+        manager.advance(append.completion_ns)
+        balanced = manager.report()["hbf_write_accounting"]
+        self.assertTrue(
+            balanced["complete_for_endurance_projection"])
+        self.assertEqual(
+            balanced["total_physical_write_bytes"],
+            migration.physical_bytes + append.physical_bytes,
+        )
+        self.assertEqual(
+            balanced["migration_physical_write_bytes"],
+            migration.physical_bytes,
+        )
+        self.assertEqual(
+            balanced["append_physical_write_bytes"],
+            append.physical_bytes,
+        )
+        self.assertEqual(
+            balanced["hotness"]["coefficient_of_variation"],
+            0.0,
+        )
+        self.assertEqual(
+            balanced["hotness"]["maximum_to_mean"],
+            1.0,
+        )
+        self.assertEqual(
+            balanced["hotness"]["hottest_card_share"],
+            0.125,
+        )
+        self.assertTrue(all(
+            card["total_write_bytes"] == per_head
+            for card in balanced["cards"]
+        ))
+
+    def test_ssd_import_write_is_a_migration_subset(self):
+        manager = self.make_manager("tp4")
+        record = manager.register_session("s")
+        manager.complete_gpu_turn(
+            "s",
+            now_ns=0,
+            total_tokens=32,
+            has_successor=True,
+            start_migration=False,
+        )
+        self.assertTrue(manager.publish_ssd_checkpoint(
+            "s",
+            now_ns=1,
+            snapshot_version=record.version,
+        ))
+        job = manager.start_import_from_ssd("s", now_ns=2)
+        self.assertIsNotNone(job)
+
+        report = manager.report()["hbf_write_accounting"]
+        self.assertEqual(
+            report["migration_physical_write_bytes"],
+            job.physical_bytes,
+        )
+        self.assertEqual(
+            report[
+                "ssd_import_physical_write_bytes_subset"],
+            job.physical_bytes,
+        )
+        self.assertEqual(
+            report["total_physical_write_bytes"],
+            job.physical_bytes,
+        )
+        self.assertTrue(all(
+            card["ssd_import_write_bytes_subset"]
+            == card["migration_write_bytes"]
+            for card in report["cards"]
+        ))
+        manager.advance(job.completion_ns)
+        manager.assert_invariants()
+
+    def test_write_accounting_honors_tp8_physical_replication(self):
+        for layout_key, expected_factor in (
+                ("tp4", 1), ("tp8", 2)):
+            with self.subTest(layout=layout_key):
+                manager = self.make_manager(
+                    layout_key, kv_bytes_per_token=8)
+                manager.register_session("s")
+                job = manager.complete_gpu_turn(
+                    "s", now_ns=0, total_tokens=1,
+                    has_successor=True)
+                report = manager.report()[
+                    "hbf_write_accounting"]
+                self.assertEqual(
+                    report["total_physical_write_bytes"],
+                    8 * expected_factor,
+                )
+                self.assertEqual(
+                    sum(
+                        card["total_write_bytes"]
+                        for card in report["cards"]
+                    ),
+                    job.physical_bytes,
+                )
+                manager.advance(job.completion_ns)
+                manager.assert_invariants()
 
     def test_dp8_migrations_to_disjoint_cards_still_share_rdma(self):
         manager = self.make_manager("dp8", kv_bytes_per_token=1)
