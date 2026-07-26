@@ -487,6 +487,26 @@ class SSDHBFFinalPlotsTests(unittest.TestCase):
         digest = selection.pop("policy_selection_sha256")
         self.assertEqual(digest, stable_json_sha256(selection))
 
+    def test_zero_goodput_policy_remains_audited_but_is_not_selected(self):
+        aggregate = _aggregate()
+        target = aggregate["rates"][0]["designs"][0]
+        target["metrics"] = _metrics(0.0)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            loaded = load_staged_aggregate(
+                _write_aggregate(root, aggregate))
+            selection = select_meaningful_policies(loaded)
+
+        audit = next(
+            row for row in selection["candidate_audit"]
+            if row["candidate_key"] == target["design"]["key"]
+        )
+        self.assertFalse(audit["selected"])
+        self.assertIn(
+            "zero_slo_goodput_ineligible_for_final_selection",
+            audit["exclusion_reasons"],
+        )
+
     def test_incomplete_policy_roster_fails_closed(self):
         aggregate = _aggregate()
         missing_policy = "delay_300s"

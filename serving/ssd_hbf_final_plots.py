@@ -612,8 +612,10 @@ def _candidate_from_row(
         metrics,
         "slo_good_output_tokens_per_second",
         f"{path}.metrics",
-        positive=True,
     )
+    if goodput < 0.0:
+        raise SSDHBFFinalResultsError(
+            f"{path} has negative SLO-good output-token goodput")
     _stat_mean(
         metrics,
         "joint_slo_pass_fraction",
@@ -1126,8 +1128,15 @@ def select_meaningful_policies(
         for read_mode, restore_mode in sorted(_REQUIRED_OPTIONS):
             option_candidates = [
                 candidate for candidate in group_candidates
-                if candidate.option == (read_mode, restore_mode)
+                if (
+                    candidate.option == (read_mode, restore_mode)
+                    and candidate.goodput_mean > 0.0
+                )
             ]
+            if not option_candidates:
+                raise SSDHBFFinalResultsError(
+                    "no positive-goodput policy remains for option "
+                    f"{read_mode}|{restore_mode} in {group_id}")
             maximum = max(
                 candidate.goodput_mean
                 for candidate in option_candidates
@@ -1145,11 +1154,15 @@ def select_meaningful_policies(
         dominators: dict[str, list[str]] = {}
         frontier = []
         for candidate in group_candidates:
+            if candidate.goodput_mean <= 0.0:
+                dominators[candidate.key] = []
+                continue
             dominating_keys = sorted(
                 other.key
                 for other in group_candidates
                 if (
                     other.key != candidate.key
+                    and other.goodput_mean > 0.0
                     and _dominates(
                         other,
                         candidate,
@@ -1172,13 +1185,18 @@ def select_meaningful_policies(
                 f"{candidate.hbf_read_mode}|"
                 f"{candidate.restore_execution_mode}"
             )
-            if candidate.key in best_keys:
+            if candidate.goodput_mean <= 0.0:
+                exclusion_reasons.append(
+                    "zero_slo_goodput_ineligible_for_final_selection")
+            elif candidate.key in best_keys:
                 selection_reasons.append(
                     f"best_goodput_for_option:{option_key}")
             else:
                 exclusion_reasons.append(
                     f"not_best_goodput_for_option:{option_key}")
-            if candidate.key in frontier:
+            if candidate.goodput_mean <= 0.0:
+                pass
+            elif candidate.key in frontier:
                 selection_reasons.append(
                     "nondominated_on_declared_objectives")
             else:
@@ -1271,7 +1289,9 @@ def select_meaningful_policies(
             ),
             "retention_rule": (
                 "union of all tied best-goodput candidates per "
-                "read/restore option and all nondominated candidates"),
+                "read/restore option and all nondominated candidates; "
+                "zero SLO-goodput candidates remain in the audit but are "
+                "ineligible for final selection"),
             "oracle_semantics": (
                 "performance-only upper reference; excluded from "
                 "power, energy, TCO, endurance, and Pareto selection"),
