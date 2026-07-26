@@ -456,11 +456,15 @@ The default campaign evaluates every distinct causal policy:
 | Immediate | `eager`; or `tool_immediate`, `human_immediate`, and `tool_or_human_immediate`, filtered only by gap metadata known at completion |
 | Fixed delay | `delay_25ms`, `delay_50ms`, `delay_100ms`, `delay_200ms`, `delay_500ms`, `delay_1000ms`, `delay_5s`, `delay_30s`, and `delay_300s` |
 | Load-aware | `load_aware`, using only visible GPU/HBF queue and resource-calendar pressure plus GPU-HBM occupancy; a deferred decision retries after 50 ms |
+| Composite | `composite_ready` and `composite_ready_adaptive`: send a stable resumed D-HBM snapshot directly through RDMA at turn-internal completion, promote ordinary SSD checkpoints as soon as publication completes, and make every durable checkpoint immediately due when a human-gap event is observed |
 | Controls | `never` disables promotion |
 
 `delay_1s` remains accepted as a compatibility alias for
 `delay_1000ms`, but it is not part of the default roster because it is an
-exact duplicate.
+exact duplicate. `composite_ready_adaptive` applies the same three triggers
+but can defer an admission using only causally visible GPU/HBF queues,
+resource-calendar backlog, and GPU-HBM occupancy. It retries rather than
+dropping the durable SSD checkpoint.
 
 Every canonical policy is crossed with both HBF read modes and both
 lower-tier restore modes:
@@ -493,15 +497,22 @@ intra-server fabrics, RDMA NICs, and the external fabric. The configured
 80 GB/s proposed link requires two 400-Gbit/s-class NICs at each endpoint, so
 the proposed BOM contains four NICs; the baseline contains two.
 
-The central purchase accounting uses a $30,000 whole-H100 anchor and a
-$1,350 absolute avoided-HBM credit per HBF card. The latter is 4.5% of the
-purchase anchor, not 30%. It comes from an
-[analyst manufacturing-component estimate](https://siliconanalysts.com/data/ai-chip-costs);
-applying a manufacturing percentage to accelerator selling price is retained
-only as the explicitly labeled `legacy_30pct_purchase_price_credit`
-sensitivity. HBF media/controller CAPEX is a separate $4,500-per-card
-exploratory assumption, not a vendor quote. The report includes ±20% HBM
-credit cases, an optimistic HBF-price-equals-HBM-credit case, and the
+The central purchase accounting uses a $30,000 whole-H100 anchor and transfers
+the HBM share of estimated manufacturing cost to that purchase price. The
+[analyst manufacturing-component estimate](https://siliconanalysts.com/data/ai-chip-costs)
+assigns $1,350 of a $3,320 H100 manufacturing cost to HBM, or
+`1,350 / 3,320 = 40.6627%`. Applying that fraction to the $30,000 purchase
+anchor gives the central avoided-HBM credit of `$12,198.80` per replaced
+card. This is an analytical purchase-price allocation, not a vendor HBM
+price quote.
+
+The absolute `$1,350` component estimate remains only as the explicitly
+labeled `absolute_1350_purchase_credit` sensitivity. The older assumption
+that HBM is 30% of H100 purchase price remains only as
+`legacy_30pct_purchase_price_credit`, equal to `$9,000` per card. Neither is
+the central case. HBF media/controller CAPEX is a separate $4,500-per-card
+exploratory assumption, not a vendor quote. The report includes ±20% central
+HBM-credit cases, an optimistic HBF-price-equals-HBM-credit case, and the
 per-card HBF break-even price.
 
 All TCO results use a fixed five-year horizon. Static BOM power includes the
@@ -563,21 +574,52 @@ python -m serving.ssd_hbf_design_sweep \
   --output results/ssd-hbf-staged
 
 python -m serving.ssd_hbf_final_plots \
-  results/ssd-hbf-staged/aggregate.json \
-  --output-dir results/ssd-hbf-staged/final
+  results/hbf-evaluation/staged-composite-heldout-v1/aggregate.json \
+  --selection-config configs/experiments/ssd_hbf_final_selection.json \
+  --output-dir \
+    results/hbf-evaluation/staged-composite-heldout-v1/final-audit \
+  --allow-ineligible-reference-audit
 ```
 
-The final plotter fails closed unless every layout/memory group contains the
-complete canonical policy × read-mode × restore-mode roster and complete
-runtime accounting. It collapses the one-second alias and evaluates
-migration policies across all four read/restore combinations as one policy
-unit. A policy is graph-eligible only when every combination meets its
-matched two-GPU baseline. The graph retains at most three auditable policy
-anchors per layout: highest mean goodput, the normalized
-goodput/runtime-TCO/wear knee, and minimum wear. Exact metric-equivalent
-policies use canonical policy order as a deterministic representative.
-`policy_selection.json` records every inclusion and exclusion;
-`plot_source.csv` is the exact source for the graphs.
+The final plotter fails closed unless the held-out aggregate and the
+pre-held-out selection manifest agree on rate, disjoint discovery/held-out
+seeds, migration policies, and the complete rectangular
+policy × layout × read-mode × restore-mode roster. The selected restore mode
+is read only from the frozen discovery manifest; held-out metrics never
+reselect a winner. The rendered design comparison contains exactly eight
+cells:
+
+```text
+{composite_ready, composite_ready_adaptive}
+× {demand, prefetch}
+× {tp4x2, tp8_context}
+× {the bulk or layerwise_streaming winner frozen during discovery}
+```
+
+The unselected restore sibling remains in `policy_selection.json` and
+`plot_source.csv` with the explicit reason
+`restore_mode_not_frozen_from_discovery`; it is not silently deleted. Both
+the bulk and streaming two-GPU finite-SSD baselines are rendered, and each
+design remains paired to the baseline with the same restore implementation.
+The infinite-HBM Oracle remains a performance-only reference.
+
+The plot source carries the original seven comparison metrics. Each is
+rendered as a separate PNG:
+
+1. first-turn TTFT p95;
+2. resume TTFT p95;
+3. TPOT p95;
+4. joint SLO pass fraction;
+5. SLO-good request goodput;
+6. SLO-good output-token goodput; and
+7. observed request throughput.
+
+First-turn TTFT has no eligible sample in the resume-only measurement roster,
+so its graph explicitly says `N/A` instead of imputing a value. Three
+additional PNGs report event-derived power/five-year facility energy,
+five-year TCO, and HBF endurance. `policy_selection.json` records every
+inclusion and exclusion, and `plot_source.csv` is the exact source for all
+ten graphs.
 
 Reference eligibility remains a separate fail-closed gate. If a completed
 campaign intentionally set `reference_eligibility_required=false`, its data
@@ -593,6 +635,48 @@ python -m serving.ssd_hbf_final_plots \
 This opt-in does not change the stored gate outcome. The selection manifest,
 CSV, PNG names, and plot titles are all marked as an ineligible-reference
 audit and must not be reported as eligible final results.
+
+### Frozen composite held-out result
+
+The frozen selection used discovery seeds 101 and 102, then evaluated seeds
+201, 202, and 203 without changing a restore choice. The strongest frozen
+output-token result was
+`composite_ready_adaptive / tp8_context / prefetch /
+layerwise_streaming`: 3,199.86 SLO-good output tokens/s, or 97.69% of the
+3,275.40-token/s infinite-HBM Oracle. The Oracle passes the joint SLO for
+every offered request, so offered-load-normalized SLO goodput is already at
+its mathematical maximum; a finite design cannot exceed it on that metric.
+The proposed design can still beat an Oracle latency coordinate: the
+`composite_ready / tp4x2 / prefetch / layerwise_streaming` resume-TTFT p95 is
+3.94 s versus 6.56 s for the Oracle, but its TPOT and total SLO goodput do not
+simultaneously beat the Oracle.
+
+The best held-out HBF TP8 cells keep the shared HBF execution group at about
+99.4% utilization while HBF media utilization is only about 11%. A causal
+275-ms mixed-batch guard reduced one diagnostic TPOT p95 from about 281 ms to
+254 ms, but starved prefill and raised resume-TTFT p95 to about 1,421 s.
+The evaluated composite timing, SSD fallback, and guard configurations
+therefore do not close both latency axes on the fixed
+one-GPU-plus-one-HBF topology. Stage-aware HBF P/D, equivalent dedicated
+prefill capacity, and additional HBF execution replicas remain untested
+follow-up candidates for removing this shared execution-slot bottleneck;
+these results identify the need for stage isolation, but do not establish
+that HBF P/D is the only or a sufficient implementation.
+
+For the strongest frozen output-token cell, event-derived average IT power is
+8.96 kW versus 10.10 kW for its matched two-GPU streaming baseline. Five-year
+facility energy at PUE 1.2 is 470.87 versus 530.81 MWh, and five-year TCO is
+$554.95K versus $632.90K. The static fully-active BOM sensitivity goes in the
+opposite power direction, 15.66 versus 14.72 kW; runtime electricity is the
+primary accounting path and replaces rather than adds to static electricity.
+
+Its recurring HBF writes are 56.15 TB/day server-wide and about 7.02 TB/day
+on the hottest card. Cross-card placement is nearly uniform, but within-card
+random-uniform spreading is an assumption. The conservative SSD proxy gives
+0.91 years for random 4-KiB and 3.80 years for sequential 128-KiB writes,
+whereas the raw-HBF 100K-P/E sensitivities give 49.7 years at WAF=1 and
+24.8 years at WAF=2. Report both proxy families; the model does not resolve
+cell-, page-, or erase-block-level wear.
 
 The direct GPU-HBM-to-HBF campaign uses a different scenario and therefore
 has a separate appendix plotter:
