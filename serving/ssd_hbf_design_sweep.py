@@ -36,6 +36,10 @@ from .core.gpu_pd_dual_oracle import (
     DualStrictInfiniteHBMOracle,
 )
 from .core.gpu_pd_dual_tiered import DualFiniteHBMTieredBaseline
+from .core.gpu_pd_tier_lifecycle import (
+    RESTORE_EXECUTION_BULK,
+    RESTORE_EXECUTION_LAYERWISE,
+)
 from .core.hbf_comparison_cell import (
     DEFAULT_FIRST_TTFT_SECONDS,
     DEFAULT_RESUME_TTFT_SECONDS,
@@ -84,12 +88,28 @@ from .hbf_comparison_sweep import (
 )
 
 
-SSD_HBF_SWEEP_SCHEMA_VERSION = 4
-SSD_HBF_CELL_SCHEMA_VERSION = 3
-SSD_HBF_CONTRACT_KEY = "two-gpu-local-ssd-vs-one-gpu-one-hbf-staged-v2"
+SSD_HBF_SWEEP_SCHEMA_VERSION = 5
+SSD_HBF_CELL_SCHEMA_VERSION = 4
+SSD_HBF_CONTRACT_KEY = "two-gpu-local-ssd-vs-one-gpu-one-hbf-staged-v3"
 REQUIRED_SESSION_RATE = 3.0
 
 BASELINE_CANDIDATE_KEY = "baseline_two_gpu_local_ssd"
+STREAMING_BASELINE_CANDIDATE_KEY = (
+    "baseline_two_gpu_local_ssd_layerwise_streaming"
+)
+SUPPORTED_RESTORE_EXECUTION_MODES = (
+    RESTORE_EXECUTION_BULK,
+    RESTORE_EXECUTION_LAYERWISE,
+)
+DEFAULT_RESTORE_EXECUTION_MODES = SUPPORTED_RESTORE_EXECUTION_MODES
+BASELINE_CANDIDATE_KEYS = {
+    RESTORE_EXECUTION_BULK: BASELINE_CANDIDATE_KEY,
+    RESTORE_EXECUTION_LAYERWISE: STREAMING_BASELINE_CANDIDATE_KEY,
+}
+BASELINE_RESTORE_MODES = {
+    candidate_key: restore_mode
+    for restore_mode, candidate_key in BASELINE_CANDIDATE_KEYS.items()
+}
 ORACLE_CANDIDATE_KEY = "oracle_two_gpu_infinite_hbm"
 BASELINE_SYSTEM_KEY = "two_gpu_local_ssd_baseline"
 ORACLE_SYSTEM_KEY = "two_gpu_infinite_hbm_oracle"
@@ -245,6 +265,7 @@ class SSDHBFDesignSpec:
     migration_policy: str
     active_memory: ActiveMemorySpec
     hbf_read_mode: str = "demand"
+    restore_execution_mode: str = RESTORE_EXECUTION_BULK
     gpu_host_count: int = 1
     hbf_host_count: int = 1
     hbf_card_count: int = 8
@@ -267,6 +288,13 @@ class SSDHBFDesignSpec:
             raise SSDHBFDesignSweepError(
                 "hbf_read_mode must be one of "
                 f"{SUPPORTED_HBF_READ_MODES!r}")
+        if (
+            self.restore_execution_mode
+            not in SUPPORTED_RESTORE_EXECUTION_MODES
+        ):
+            raise SSDHBFDesignSweepError(
+                "restore_execution_mode must be one of "
+                f"{SUPPORTED_RESTORE_EXECUTION_MODES!r}")
         if (
             self.gpu_host_count != 1
             or self.hbf_host_count != 1
@@ -296,6 +324,7 @@ def make_design_spec(
         migration_policy: str,
         active_memory: ActiveMemorySpec,
         hbf_read_mode: str = "demand",
+        restore_execution_mode: str = RESTORE_EXECUTION_BULK,
 ) -> SSDHBFDesignSpec:
     if hbf_layout not in SUPPORTED_LAYOUTS:
         raise SSDHBFDesignSweepError(
@@ -306,6 +335,10 @@ def make_design_spec(
     if hbf_read_mode not in SUPPORTED_HBF_READ_MODES:
         raise SSDHBFDesignSweepError(
             f"unsupported HBF read mode {hbf_read_mode!r}")
+    if restore_execution_mode not in SUPPORTED_RESTORE_EXECUTION_MODES:
+        raise SSDHBFDesignSweepError(
+            "unsupported restore execution mode "
+            f"{restore_execution_mode!r}")
     memory_key = (
         f"{active_memory.kind}-"
         f"{active_memory.capacity_gib_per_card:g}gib-"
@@ -316,11 +349,12 @@ def make_design_spec(
     return SSDHBFDesignSpec(
         key=_slug(
             f"ssd-hbf-{hbf_layout}-{migration_policy}-"
-            f"{hbf_read_mode}-{memory_key}"),
+            f"{hbf_read_mode}-{restore_execution_mode}-{memory_key}"),
         hbf_layout=hbf_layout,
         migration_policy=migration_policy,
         active_memory=active_memory,
         hbf_read_mode=hbf_read_mode,
+        restore_execution_mode=restore_execution_mode,
     )
 
 
@@ -330,12 +364,16 @@ def build_design_grid(
         migration_policies: Sequence[str],
         active_memories: Sequence[ActiveMemorySpec],
         hbf_read_modes: Sequence[str] = ("demand",),
+        restore_execution_modes: Sequence[str] = (
+            RESTORE_EXECUTION_BULK,
+        ),
 ) -> tuple[SSDHBFDesignSpec, ...]:
     if (
         not layouts
         or not migration_policies
         or not active_memories
         or not hbf_read_modes
+        or not restore_execution_modes
     ):
         raise SSDHBFDesignSweepError(
             "layout, policy, and active-memory axes must be non-empty")
@@ -354,17 +392,30 @@ def build_design_grid(
         raise SSDHBFDesignSweepError(
             "HBF read modes must be unique members of "
             f"{SUPPORTED_HBF_READ_MODES!r}")
+    if (
+        len(restore_execution_modes)
+        != len(set(restore_execution_modes))
+        or any(
+            mode not in SUPPORTED_RESTORE_EXECUTION_MODES
+            for mode in restore_execution_modes
+        )
+    ):
+        raise SSDHBFDesignSweepError(
+            "restore execution modes must be unique members of "
+            f"{SUPPORTED_RESTORE_EXECUTION_MODES!r}")
     specs = tuple(
         make_design_spec(
             hbf_layout=layout,
             migration_policy=policy,
             active_memory=memory,
             hbf_read_mode=read_mode,
+            restore_execution_mode=restore_mode,
         )
         for layout in layouts
         for policy in migration_policies
         for memory in active_memories
         for read_mode in hbf_read_modes
+        for restore_mode in restore_execution_modes
     )
     keys = [spec.key for spec in specs]
     if len(keys) != len(set(keys)):
@@ -464,6 +515,7 @@ def make_design_system(
         p_max_num_seqs=P_MAX_NUM_SEQS,
         d_max_num_seqs=D_MAX_NUM_SEQS,
         max_prefill_chunk_tokens=MAX_PREFILL_CHUNK_TOKENS,
+        restore_execution_mode=spec.restore_execution_mode,
         validate_every_event=False,
     )
 
@@ -472,7 +524,12 @@ def make_reference_system(
         *,
         repo_root: Path,
         candidate_kind: str,
+        restore_execution_mode: str = RESTORE_EXECUTION_BULK,
 ):
+    if restore_execution_mode not in SUPPORTED_RESTORE_EXECUTION_MODES:
+        raise SSDHBFDesignSweepError(
+            "unsupported restore execution mode "
+            f"{restore_execution_mode!r}")
     root = Path(repo_root)
     hardware = load_p4d4_gpu_config(root / PINNED_GPU_CONFIG)
     common = {
@@ -489,9 +546,13 @@ def make_reference_system(
         return DualFiniteHBMTieredBaseline(
             policy="ssd_direct",
             route_policy=ROUTE_BALANCED_TRACE_WORK,
+            restore_execution_mode=restore_execution_mode,
             **common,
         )
     if candidate_kind == "oracle":
+        if restore_execution_mode != RESTORE_EXECUTION_BULK:
+            raise SSDHBFDesignSweepError(
+                "the infinite-HBM Oracle has no restore execution mode")
         return DualStrictInfiniteHBMOracle(
             route_policy=ROUTE_BALANCED_TRACE_WORK,
             **common,
@@ -537,6 +598,7 @@ def _run_cell_system(
         measurement_identities: Sequence[str],
         thresholds,
         design: Optional[SSDHBFDesignSpec],
+        restore_execution_mode: Optional[str],
 ) -> dict[str, object]:
     start = time.perf_counter_ns()
     completed = tuple(system.run(scheduled_sessions))
@@ -575,6 +637,7 @@ def _run_cell_system(
         "comparison_contract": SSD_HBF_CONTRACT_KEY,
         "candidate_kind": candidate_kind,
         "candidate_key": candidate_key,
+        "restore_execution_mode": restore_execution_mode,
         "system_key": (
             BASELINE_SYSTEM_KEY
             if candidate_kind == "baseline"
@@ -616,10 +679,22 @@ def run_reference_cell(
         first_ttft_seconds: float = DEFAULT_FIRST_TTFT_SECONDS,
         resume_ttft_seconds: float = DEFAULT_RESUME_TTFT_SECONDS,
         tpot_milliseconds: float = DEFAULT_TPOT_MILLISECONDS,
+        restore_execution_mode: str = RESTORE_EXECUTION_BULK,
 ) -> dict[str, object]:
     if candidate_kind not in {"baseline", "oracle"}:
         raise SSDHBFDesignSweepError(
             "reference kind must be baseline or oracle")
+    if candidate_kind == "oracle":
+        if restore_execution_mode != RESTORE_EXECUTION_BULK:
+            raise SSDHBFDesignSweepError(
+                "the infinite-HBM Oracle has no restore execution mode")
+        reference_restore_mode = None
+    else:
+        if restore_execution_mode not in SUPPORTED_RESTORE_EXECUTION_MODES:
+            raise SSDHBFDesignSweepError(
+                "unsupported restore execution mode "
+                f"{restore_execution_mode!r}")
+        reference_restore_mode = restore_execution_mode
     rate = _finite_positive("session_rate", session_rate)
     if rate != REQUIRED_SESSION_RATE:
         raise SSDHBFDesignSweepError(
@@ -633,10 +708,11 @@ def run_reference_cell(
         system=make_reference_system(
             repo_root=repo_root,
             candidate_kind=candidate_kind,
+            restore_execution_mode=restore_execution_mode,
         ),
         candidate_kind=candidate_kind,
         candidate_key=(
-            BASELINE_CANDIDATE_KEY
+            BASELINE_CANDIDATE_KEYS[restore_execution_mode]
             if candidate_kind == "baseline"
             else ORACLE_CANDIDATE_KEY
         ),
@@ -646,6 +722,7 @@ def run_reference_cell(
         measurement_identities=measurement_identities,
         thresholds=thresholds,
         design=None,
+        restore_execution_mode=reference_restore_mode,
     )
 
 
@@ -680,6 +757,7 @@ def run_design_cell(
         measurement_identities=measurement_identities,
         thresholds=thresholds,
         design=spec,
+        restore_execution_mode=spec.restore_execution_mode,
     )
 
 
@@ -738,6 +816,14 @@ def build_tasks(
         raise SSDHBFDesignSweepError("design keys contain duplicates")
     for design in design_values:
         validate_design_workspace(design)
+    restore_modes = tuple(
+        mode
+        for mode in SUPPORTED_RESTORE_EXECUTION_MODES
+        if any(
+            design.restore_execution_mode == mode
+            for design in design_values
+        )
+    )
     seed_values = tuple(seeds)
     if len(seed_values) < 2:
         raise SSDHBFDesignSweepError(
@@ -772,20 +858,23 @@ def build_tasks(
             "scenario_contract_sha256": scenario_hash,
             "execution_inputs_sha256": execution_hash,
         }
-        tasks.extend((
+        tasks.extend(
             _CellTask(
                 candidate_kind="baseline",
-                candidate_key=BASELINE_CANDIDATE_KEY,
+                candidate_key=BASELINE_CANDIDATE_KEYS[restore_mode],
                 design=None,
                 **common,
-            ),
+            )
+            for restore_mode in restore_modes
+        )
+        tasks.append(
             _CellTask(
                 candidate_kind="oracle",
                 candidate_key=ORACLE_CANDIDATE_KEY,
                 design=None,
                 **common,
-            ),
-        ))
+            )
+        )
         tasks.extend(
             _CellTask(
                 candidate_kind="design",
@@ -798,12 +887,36 @@ def build_tasks(
     return tuple(tasks)
 
 
+def _task_restore_execution_mode(
+        task: _CellTask) -> Optional[str]:
+    if task.candidate_kind == "baseline":
+        try:
+            return BASELINE_RESTORE_MODES[task.candidate_key]
+        except KeyError as exc:
+            raise SSDHBFDesignSweepError(
+                "baseline task has an unknown restore-mode key "
+                f"{task.candidate_key!r}") from exc
+    if task.candidate_kind == "design":
+        if task.design is None:
+            raise SSDHBFDesignSweepError(
+                "design task lacks a design spec")
+        if task.candidate_key != task.design.key:
+            raise SSDHBFDesignSweepError(
+                "design task key disagrees with its design spec")
+        return task.design.restore_execution_mode
+    if task.candidate_kind == "oracle":
+        return None
+    raise SSDHBFDesignSweepError(
+        f"unknown task candidate kind {task.candidate_kind!r}")
+
+
 def _task_contract(task: _CellTask) -> dict[str, object]:
     normalized = json_safe({
         "schema_version": SSD_HBF_CELL_SCHEMA_VERSION,
         "comparison_contract": SSD_HBF_CONTRACT_KEY,
         "candidate_kind": task.candidate_kind,
         "candidate_key": task.candidate_key,
+        "restore_execution_mode": _task_restore_execution_mode(task),
         "seed": task.seed,
         "session_rate": task.session_rate,
         "schedule_sha256": stable_json_sha256([
@@ -857,8 +970,16 @@ def _execute_task(task: _CellTask) -> dict[str, object]:
             raise AssertionError("design task lacks a design spec")
         result = run_design_cell(spec=task.design, **common)
     else:
+        task_restore_mode = _task_restore_execution_mode(task)
+        restore_execution_mode = (
+            RESTORE_EXECUTION_BULK
+            if task_restore_mode is None else task_restore_mode
+        )
         result = run_reference_cell(
-            candidate_kind=task.candidate_kind, **common)
+            candidate_kind=task.candidate_kind,
+            restore_execution_mode=restore_execution_mode,
+            **common,
+        )
     return _seal_record(task, result)
 
 
@@ -1016,8 +1137,20 @@ def aggregate_cell_records(
     design_by_key = {design.key: design for design in designs}
     if not design_by_key:
         raise SSDHBFDesignSweepError("designs cannot be empty")
+    restore_modes = tuple(
+        mode
+        for mode in SUPPORTED_RESTORE_EXECUTION_MODES
+        if any(
+            design.restore_execution_mode == mode
+            for design in design_by_key.values()
+        )
+    )
+    baseline_keys = {
+        BASELINE_CANDIDATE_KEYS[mode]
+        for mode in restore_modes
+    }
     expected_candidates = {
-        BASELINE_CANDIDATE_KEY,
+        *baseline_keys,
         ORACLE_CANDIDATE_KEY,
         *design_by_key,
     }
@@ -1032,6 +1165,29 @@ def aggregate_cell_records(
                 f"unexpected session rate {rate}")
         key = str(record["candidate_key"])
         seed = int(record["seed"])
+        if key in BASELINE_RESTORE_MODES:
+            expected_kind = "baseline"
+            expected_restore_mode = BASELINE_RESTORE_MODES[key]
+        elif key == ORACLE_CANDIDATE_KEY:
+            expected_kind = "oracle"
+            expected_restore_mode = None
+        elif key in design_by_key:
+            expected_kind = "design"
+            expected_restore_mode = design_by_key[
+                key].restore_execution_mode
+        else:
+            raise SSDHBFDesignSweepError(
+                f"cell has unknown candidate key {key!r}")
+        if record.get("candidate_kind") != expected_kind:
+            raise SSDHBFDesignSweepError(
+                f"cell candidate kind disagrees with key {key!r}")
+        if (
+            record.get("restore_execution_mode")
+            != expected_restore_mode
+        ):
+            raise SSDHBFDesignSweepError(
+                "cell restore execution mode disagrees with candidate "
+                f"{key!r}")
         by_seed = grouped.setdefault(
             rate, {}).setdefault(key, {})
         if seed in by_seed:
@@ -1066,7 +1222,9 @@ def aggregate_cell_records(
                 f"incomplete candidate cohort for rate={rate}: "
                 f"missing={sorted(expected_candidates - set(candidates))}, "
                 f"extra={sorted(set(candidates) - expected_candidates)}")
-        seeds = set(candidates[BASELINE_CANDIDATE_KEY])
+        first_baseline_key = BASELINE_CANDIDATE_KEYS[
+            restore_modes[0]]
+        seeds = set(candidates[first_baseline_key])
         if len(seeds) < 2:
             raise SSDHBFDesignSweepError(
                 "eligibility CI requires at least two paired seeds")
@@ -1091,10 +1249,6 @@ def aggregate_cell_records(
                 result[seed] = value
             return result
 
-        baseline_goodput = seed_values(
-            BASELINE_CANDIDATE_KEY,
-            "slo_good_output_tokens_per_second",
-        )
         oracle_goodput = seed_values(
             ORACLE_CANDIDATE_KEY,
             "slo_good_output_tokens_per_second",
@@ -1103,31 +1257,69 @@ def aggregate_cell_records(
             ORACLE_CANDIDATE_KEY,
             "joint_slo_pass_fraction",
         )
-        eligibility = evaluate_reference_eligibility(
-            baseline_goodput_by_seed=baseline_goodput,
-            oracle_goodput_by_seed=oracle_goodput,
-            oracle_joint_slo_by_seed=oracle_joint,
-        )
-        if require_eligibility and not eligibility["eligible"]:
+        eligibility_by_restore_mode = {}
+        baseline_goodput_by_restore_mode = {}
+        for restore_mode in restore_modes:
+            baseline_key = BASELINE_CANDIDATE_KEYS[restore_mode]
+            baseline_goodput = seed_values(
+                baseline_key,
+                "slo_good_output_tokens_per_second",
+            )
+            baseline_goodput_by_restore_mode[
+                restore_mode] = baseline_goodput
+            eligibility_by_restore_mode[restore_mode] = (
+                evaluate_reference_eligibility(
+                    baseline_goodput_by_seed=baseline_goodput,
+                    oracle_goodput_by_seed=oracle_goodput,
+                    oracle_joint_slo_by_seed=oracle_joint,
+                )
+            )
+        eligibility_failures = [
+            f"{restore_mode}:{failure}"
+            for restore_mode, eligibility
+            in eligibility_by_restore_mode.items()
+            for failure in eligibility["failures"]
+        ]
+        reference_eligibility = {
+            "eligible": not eligibility_failures,
+            "failures": eligibility_failures,
+            "by_restore_execution_mode": (
+                eligibility_by_restore_mode),
+            "semantics": (
+                "each design is paired only with the two-GPU baseline "
+                "using the same lower-tier restore execution mode; the "
+                "infinite-HBM Oracle is shared because it never restores"
+            ),
+        }
+        if (
+            require_eligibility
+            and not reference_eligibility["eligible"]
+        ):
             raise SSDHBFDesignSweepError(
                 "reference eligibility gate failed: "
-                + ", ".join(eligibility["failures"]))
+                + ", ".join(eligibility_failures))
 
-        baseline_mean = aggregates[BASELINE_CANDIDATE_KEY][
-            "slo_good_output_tokens_per_second"]["mean"]
         oracle_mean = aggregates[ORACLE_CANDIDATE_KEY][
             "slo_good_output_tokens_per_second"]["mean"]
         design_rows = []
         pareto_points = {}
         for key in sorted(design_by_key):
             spec = design_by_key[key]
+            baseline_key = BASELINE_CANDIDATE_KEYS[
+                spec.restore_execution_mode]
+            baseline_goodput = baseline_goodput_by_restore_mode[
+                spec.restore_execution_mode]
+            matched_eligibility = eligibility_by_restore_mode[
+                spec.restore_execution_mode]
+            baseline_mean = aggregates[baseline_key][
+                "slo_good_output_tokens_per_second"]["mean"]
             values = seed_values(
                 key, "slo_good_output_tokens_per_second")
             paired_baseline = asdict(aggregate_paired_seed_values(
                 baseline_goodput, values))
             paired_oracle = asdict(aggregate_paired_seed_values(
                 oracle_goodput, values))
-            if eligibility["eligible"] and baseline_mean > 0.0:
+            if matched_eligibility["eligible"] and baseline_mean > 0.0:
                 try:
                     tco = evaluate_ssd_hbf_tco(
                         hbf_layout=spec.tco_layout,
@@ -1150,6 +1342,9 @@ def aggregate_cell_records(
             row = {
                 "design": spec.to_json_dict(),
                 "metrics": aggregates[key],
+                "baseline_candidate_key": baseline_key,
+                "matched_reference_eligibility": (
+                    matched_eligibility),
                 "paired_vs_baseline_goodput": paired_baseline,
                 "paired_vs_oracle_goodput": paired_oracle,
                 "tco": tco,
@@ -1169,10 +1364,12 @@ def aggregate_cell_records(
                 row["design"]["key"] in frontier)
         rate_rows.append({
             "session_rate": rate,
-            "reference_eligibility": eligibility,
+            "reference_eligibility": reference_eligibility,
             "references": {
-                BASELINE_CANDIDATE_KEY: aggregates[
-                    BASELINE_CANDIDATE_KEY],
+                **{
+                    baseline_key: aggregates[baseline_key]
+                    for baseline_key in sorted(baseline_keys)
+                },
                 ORACLE_CANDIDATE_KEY: aggregates[
                     ORACLE_CANDIDATE_KEY],
             },
@@ -1280,6 +1477,8 @@ def _write_summary_csv(
         "hbf_host_count",
         "migration_policy",
         "hbf_read_mode",
+        "restore_execution_mode",
+        "baseline_candidate_key",
         "active_memory_kind",
         "active_memory_gib_per_card",
         "active_memory_gbps_per_card",
@@ -1306,12 +1505,13 @@ def _write_summary_csv(
     )
     rows = []
     for rate_row in aggregate["rates"]:
-        baseline = rate_row["references"][BASELINE_CANDIDATE_KEY][
-            "slo_good_output_tokens_per_second"]["mean"]
         oracle = rate_row["references"][ORACLE_CANDIDATE_KEY][
             "slo_good_output_tokens_per_second"]["mean"]
         for row in rate_row["designs"]:
             design = row["design"]
+            baseline_key = row["baseline_candidate_key"]
+            baseline = rate_row["references"][baseline_key][
+                "slo_good_output_tokens_per_second"]["mean"]
             memory = design["active_memory"]
             goodput = row["metrics"][
                 "slo_good_output_tokens_per_second"]
@@ -1328,6 +1528,9 @@ def _write_summary_csv(
                 "hbf_host_count": design["hbf_host_count"],
                 "migration_policy": design["migration_policy"],
                 "hbf_read_mode": design["hbf_read_mode"],
+                "restore_execution_mode": (
+                    design["restore_execution_mode"]),
+                "baseline_candidate_key": baseline_key,
                 "active_memory_kind": memory["kind"],
                 "active_memory_gib_per_card": (
                     memory["capacity_gib_per_card"]),
@@ -1517,6 +1720,10 @@ def run_design_space(
         raise SSDHBFDesignSweepError(
             "execution source or hardware config changed during sweep")
     aggregate = aggregate_cell_records(records, designs)
+    restore_mode_count = len({
+        design.restore_execution_mode
+        for design in designs
+    })
     manifest = {
         **aggregate,
         "scenario": scenario_contract,
@@ -1524,7 +1731,7 @@ def run_design_space(
             "session_rate": session_rate,
             "seeds": list(seeds),
             "design_count": len(designs),
-            "reference_count": 2,
+            "reference_count": restore_mode_count + 1,
             "cell_count": len(tasks),
             "resumed_cell_count": len(tasks) - len(pending),
             "executed_cell_count": len(pending),
@@ -1576,6 +1783,17 @@ def _parser() -> argparse.ArgumentParser:
         help=(
             "demand exposes one configured fixed latency per HBF-touching "
             "kernel; prefetch hides only that fixed latency"
+        ),
+    )
+    parser.add_argument(
+        "--restore-execution-modes",
+        nargs="+",
+        choices=SUPPORTED_RESTORE_EXECUTION_MODES,
+        default=list(DEFAULT_RESTORE_EXECUTION_MODES),
+        help=(
+            "bulk waits for the full CPU/SSD restore; "
+            "layerwise_streaming gates GPU layer starts on matching "
+            "layer-major restore completions"
         ),
     )
     parser.add_argument(
@@ -1632,6 +1850,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         migration_policies=policies,
         active_memories=memories,
         hbf_read_modes=tuple(args.hbf_read_modes),
+        restore_execution_modes=tuple(
+            args.restore_execution_modes),
     )
     for design in designs:
         validate_design_workspace(design)
@@ -1662,6 +1882,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "session_rate": args.rate,
             "seeds": list(seeds),
             "design_count": len(designs),
+            "reference_count": (
+                len({
+                    design.restore_execution_mode
+                    for design in designs
+                })
+                + 1
+            ),
             "cell_count": len(tasks),
             "designs": [
                 design.to_json_dict() for design in designs],
@@ -1706,7 +1933,10 @@ if __name__ == "__main__":
 
 __all__ = [
     "BASELINE_CANDIDATE_KEY",
+    "BASELINE_CANDIDATE_KEYS",
     "BASELINE_OVER_ORACLE_GOODPUT_CI95_UPPER_MAX",
+    "BASELINE_RESTORE_MODES",
+    "DEFAULT_RESTORE_EXECUTION_MODES",
     "DEFAULT_SSD_HBF_SEEDS",
     "ORACLE_CANDIDATE_KEY",
     "ORACLE_EVERY_SEED_JOINT_MIN",
@@ -1720,6 +1950,8 @@ __all__ = [
     "SSD_HBF_SWEEP_SCHEMA_VERSION",
     "SUPPORTED_LAYOUTS",
     "SUPPORTED_MIGRATION_POLICIES",
+    "SUPPORTED_RESTORE_EXECUTION_MODES",
+    "STREAMING_BASELINE_CANDIDATE_KEY",
     "_CellTask",
     "_load_resumable_cell",
     "_seal_record",

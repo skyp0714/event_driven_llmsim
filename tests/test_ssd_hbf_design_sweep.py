@@ -24,10 +24,13 @@ from serving.core.hbf_comparison_workload import (
 )
 from serving.ssd_hbf_design_sweep import (
     BASELINE_CANDIDATE_KEY,
+    BASELINE_CANDIDATE_KEYS,
+    BASELINE_RESTORE_MODES,
     ORACLE_CANDIDATE_KEY,
     REQUIRED_SESSION_RATE,
     SSDHBFDesignSweepError,
     SSD_HBF_CONTRACT_KEY,
+    STREAMING_BASELINE_CANDIDATE_KEY,
     _CellTask,
     _execute_task,
     _load_resumable_cell,
@@ -110,15 +113,27 @@ def _record(
         *,
         joint: float,
 ) -> dict[str, object]:
+    restore_execution_mode = (
+        BASELINE_RESTORE_MODES[candidate_key]
+        if candidate_key in BASELINE_RESTORE_MODES
+        else None
+        if candidate_key == ORACLE_CANDIDATE_KEY
+        else (
+            "layerwise_streaming"
+            if "layerwise-streaming" in candidate_key
+            else "bulk"
+        )
+    )
     return {
         "candidate_kind": (
             "baseline"
-            if candidate_key == BASELINE_CANDIDATE_KEY
+            if candidate_key in BASELINE_CANDIDATE_KEYS.values()
             else "oracle"
             if candidate_key == ORACLE_CANDIDATE_KEY
             else "design"
         ),
         "candidate_key": candidate_key,
+        "restore_execution_mode": restore_execution_mode,
         "seed": seed,
         "session_rate": REQUIRED_SESSION_RATE,
         "measurement_roster": {
@@ -292,6 +307,168 @@ class SSDHBFDesignSweepTests(unittest.TestCase):
                 system.node.hbf_hardware.hbf_read_prefetch_enabled,
                 design.hbf_read_mode == "prefetch",
             )
+
+    def test_restore_mode_is_propagated_and_gets_a_matched_baseline(self):
+        grid = build_design_grid(
+            layouts=("tp8_context",),
+            migration_policies=("eager",),
+            active_memories=(self.memory16,),
+            restore_execution_modes=(
+                "bulk", "layerwise_streaming"),
+        )
+
+        self.assertEqual(len(grid), 2)
+        self.assertEqual(
+            {design.restore_execution_mode for design in grid},
+            {"bulk", "layerwise_streaming"},
+        )
+        self.assertEqual(len({design.key for design in grid}), 2)
+        for design in grid:
+            system = make_design_system(
+                repo_root=REPO_ROOT,
+                spec=design,
+            )
+            self.assertEqual(
+                system.node.restore_execution_mode,
+                design.restore_execution_mode,
+            )
+        streaming_baseline = make_reference_system(
+            repo_root=REPO_ROOT,
+            candidate_kind="baseline",
+            restore_execution_mode="layerwise_streaming",
+        )
+        self.assertEqual(
+            streaming_baseline.restore_execution_mode,
+            "layerwise_streaming",
+        )
+        self.assertTrue(all(
+            node.restore_execution_mode == "layerwise_streaming"
+            for node in streaming_baseline.nodes
+        ))
+
+    def test_tasks_share_oracle_but_match_each_restore_mode(self):
+        scenario = _FakeScenario()
+        streaming = make_design_spec(
+            hbf_layout="tp4x2",
+            migration_policy="delay_1000ms",
+            active_memory=self.memory12,
+            restore_execution_mode="layerwise_streaming",
+        )
+        contract = {
+            "manifest_sha256": "a" * 64,
+            "measurement_roster_sha256": ROSTER_HASH,
+        }
+        with (
+            patch(
+                "serving.ssd_hbf_design_sweep."
+                "validate_scenario_contract",
+                return_value=contract,
+            ),
+            patch(
+                "serving.ssd_hbf_design_sweep."
+                "_execution_inputs_sha256",
+                return_value="b" * 64,
+            ),
+        ):
+            tasks = build_tasks(
+                repo_root=REPO_ROOT,
+                scenario=scenario,
+                designs=(self.tp4, streaming),
+                seeds=(7, 11),
+            )
+
+        self.assertEqual(len(tasks), 10)
+        for seed in (7, 11):
+            cohort = [
+                task for task in tasks if task.seed == seed]
+            self.assertEqual(
+                [task.candidate_key for task in cohort],
+                [
+                    BASELINE_CANDIDATE_KEY,
+                    STREAMING_BASELINE_CANDIDATE_KEY,
+                    ORACLE_CANDIDATE_KEY,
+                    self.tp4.key,
+                    streaming.key,
+                ],
+            )
+            self.assertEqual(
+                {
+                    _task_contract(task)[
+                        "restore_execution_mode"]
+                    for task in cohort
+                },
+                {None, "bulk", "layerwise_streaming"},
+            )
+
+    def test_aggregation_pairs_designs_to_matching_restore_baselines(self):
+        streaming = make_design_spec(
+            hbf_layout="tp4x2",
+            migration_policy="delay_1000ms",
+            active_memory=self.memory12,
+            restore_execution_mode="layerwise_streaming",
+        )
+        records = []
+        for seed in (7, 11, 13):
+            records.extend((
+                _record(
+                    BASELINE_CANDIDATE_KEY,
+                    seed, 5.0, joint=0.05,
+                ),
+                _record(
+                    STREAMING_BASELINE_CANDIDATE_KEY,
+                    seed, 8.0, joint=0.08,
+                ),
+                _record(
+                    ORACLE_CANDIDATE_KEY,
+                    seed, 100.0, joint=0.98,
+                ),
+                _record(
+                    self.tp4.key,
+                    seed, 60.0, joint=0.60,
+                ),
+                _record(
+                    streaming.key,
+                    seed, 64.0, joint=0.64,
+                ),
+            ))
+
+        aggregate = aggregate_cell_records(
+            records, (self.tp4, streaming))
+        rate = aggregate["rates"][0]
+        self.assertTrue(
+            rate["reference_eligibility"]["eligible"])
+        self.assertEqual(
+            set(rate["references"]),
+            {
+                BASELINE_CANDIDATE_KEY,
+                STREAMING_BASELINE_CANDIDATE_KEY,
+                ORACLE_CANDIDATE_KEY,
+            },
+        )
+        rows = {
+            row["design"]["restore_execution_mode"]: row
+            for row in rate["designs"]
+        }
+        self.assertEqual(
+            rows["bulk"]["baseline_candidate_key"],
+            BASELINE_CANDIDATE_KEY,
+        )
+        self.assertEqual(
+            rows["layerwise_streaming"][
+                "baseline_candidate_key"],
+            STREAMING_BASELINE_CANDIDATE_KEY,
+        )
+        self.assertEqual(
+            rows["bulk"]["paired_vs_baseline_goodput"][
+                "candidate_over_reference"]["mean"],
+            12.0,
+        )
+        self.assertEqual(
+            rows["layerwise_streaming"][
+                "paired_vs_baseline_goodput"][
+                    "candidate_over_reference"]["mean"],
+            8.0,
+        )
 
     def test_tasks_share_one_schedule_object_and_hash_per_seed(self):
         scenario = _FakeScenario()
