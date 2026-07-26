@@ -38,6 +38,7 @@ from serving.ssd_hbf_design_sweep import (
     _design_runtime_energy_tco,
     _execute_task,
     _load_resumable_cell,
+    _parser,
     _seal_record,
     _task_contract,
     aggregate_cell_records,
@@ -246,6 +247,16 @@ class SSDHBFDesignSweepTests(unittest.TestCase):
         )
         self.assertIn("delay_1000ms", CANONICAL_MIGRATION_POLICIES)
         self.assertNotIn("delay_1s", CANONICAL_MIGRATION_POLICIES)
+
+    def test_ineligible_reference_audit_is_explicit_opt_in(self):
+        default = _parser().parse_args(["--output", "/tmp/out"])
+        audit = _parser().parse_args([
+            "--output", "/tmp/out",
+            "--allow-ineligible-reference-audit",
+        ])
+
+        self.assertFalse(default.allow_ineligible_reference_audit)
+        self.assertTrue(audit.allow_ineligible_reference_audit)
 
     def test_grid_distinguishes_layouts_but_keeps_one_physical_host(self):
         grid = build_design_grid(

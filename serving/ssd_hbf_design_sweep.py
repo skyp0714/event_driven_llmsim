@@ -2334,6 +2334,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--allow-ineligible-reference-audit",
+        action="store_true",
+        help=(
+            "finish and label the aggregate as diagnostic when the "
+            "baseline/Oracle reference eligibility gate fails"
+        ),
+    )
     return parser
 
 
@@ -2420,7 +2428,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         resume_ttft_seconds=args.resume_ttft_seconds,
         tpot_milliseconds=args.tpot_milliseconds,
         resume=args.resume,
-        require_eligibility=not args.smoke,
+        require_eligibility=(
+            not args.smoke
+            and not args.allow_ineligible_reference_audit
+        ),
         progress=progress,
     )
     print(json.dumps({
