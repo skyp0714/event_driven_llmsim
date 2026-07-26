@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "selection_status": "frozen_before_heldout",
+  "session_rate": 3.0,
+  "discovery": {
+    "seeds": [
+      101,
+      102
+    ],
+    "aggregate_path": "results/hbf-evaluation/staged-composite-ready-discovery-v2/aggregate.json",
+    "aggregate_sha256": "851f3df742e2ce8fbf557c8aa2ea7db4c582660e59a7ffb7ca776edb98a3d97b",
+    "selection_metric": "slo_good_output_tokens_per_second",
+    "selection_direction": "maximize"
+  },
+  "heldout": {
+    "seeds": [
+      201,
+      202,
+      203
+    ],
+    "output_path": "results/hbf-evaluation/staged-composite-heldout-v1"
+  },
+  "migration_policies": [
+    "composite_ready",
+    "composite_ready_adaptive"
+  ],
+  "mixed_batch_latency_limit_ms": null,
+  "mixed_batch_guard_diagnostic": {
+    "status": "excluded_prefill_starvation",
+    "target_ms": 275,
+    "seed": 102,
+    "cell_path": "results/hbf-evaluation/staged-mixed-feedback-discovery-v4/cells/rate-3/seed-102/ssd-hbf-tp8-context-composite-ready-demand-layerwise-streaming-lpddr-16gib-409-6gbps-5usdpgib-0-08wpgib-mixed-guard-275ms.json",
+    "cell_sha256": "db4e19d3ac5e8cc8d9897cb1125c9c2d2068bcc5ac48b7c86598efae32a1cf05",
+    "resume_ttft_p95_seconds": 1420.959754595,
+    "tpot_p95_milliseconds": 253.77311602976192,
+    "slo_good_output_tokens_per_second": 2677.35
+  },
+  "restore_by_coordinate": [
+    {
+      "migration_policy": "composite_ready",
+      "hbf_layout": "tp4x2",
+      "hbf_read_mode": "demand",
+      "restore_execution_mode": "layerwise_streaming"
+    },
+    {
+      "migration_policy": "composite_ready",
+      "hbf_layout": "tp4x2",
+      "hbf_read_mode": "prefetch",
+      "restore_execution_mode": "layerwise_streaming"
+    },
+    {
+      "migration_policy": "composite_ready",
+      "hbf_layout": "tp8_context",
+      "hbf_read_mode": "demand",
+      "restore_execution_mode": "layerwise_streaming"
+    },
+    {
+      "migration_policy": "composite_ready",
+      "hbf_layout": "tp8_context",
+      "hbf_read_mode": "prefetch",
+      "restore_execution_mode": "bulk"
+    },
+    {
+      "migration_policy": "composite_ready_adaptive",
+      "hbf_layout": "tp4x2",
+      "hbf_read_mode": "demand",
+      "restore_execution_mode": "layerwise_streaming"
+    },
+    {
+      "migration_policy": "composite_ready_adaptive",
+      "hbf_layout": "tp4x2",
+      "hbf_read_mode": "prefetch",
+      "restore_execution_mode": "bulk"
+    },
+    {
+      "migration_policy": "composite_ready_adaptive",
+      "hbf_layout": "tp8_context",
+      "hbf_read_mode": "demand",
+      "restore_execution_mode": "layerwise_streaming"
+    },
+    {
+      "migration_policy": "composite_ready_adaptive",
+      "hbf_layout": "tp8_context",
+      "hbf_read_mode": "prefetch",
+      "restore_execution_mode": "layerwise_streaming"
+    }
+  ]
+}
