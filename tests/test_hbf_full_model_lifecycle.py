@@ -23,13 +23,16 @@ class FullModelHBFLifecycleTests(unittest.TestCase):
     def make_manager(
             self, layout="tp4", *, hardware=None,
             kv_bytes_per_token=None, validate_every_event=True,
-            execution_backend="analytical_calendar"):
+            execution_backend="analytical_calendar", calendar=None,
+            analytical_resource_prefix=""):
         return FullModelHBFLifecycle(
             hardware=hardware or HBFServerHardware(),
             layout=HBFParallelLayout.for_key(layout),
+            resource_calendar=calendar,
             kv_bytes_per_token=kv_bytes_per_token,
             validate_every_event=validate_every_event,
             execution_backend=execution_backend,
+            analytical_resource_prefix=analytical_resource_prefix,
         )
 
     def complete_one_external_dispatch(self, manager):
@@ -131,6 +134,136 @@ class FullModelHBFLifecycleTests(unittest.TestCase):
         self.assertEqual(record.committed_hbf_tokens, 0)
         self.assertEqual(manager.metrics.migrations_stale, 1)
         self.assertEqual(manager.metrics.migrations_committed, 0)
+
+    def test_deferred_migration_reserves_nothing_until_explicit_start(self):
+        manager = self.make_manager()
+        record = manager.register_session("s")
+
+        job = manager.complete_gpu_turn(
+            "s",
+            now_ns=100,
+            total_tokens=10_000,
+            has_successor=True,
+            start_migration=False,
+        )
+
+        self.assertIsNone(job)
+        self.assertEqual(record.state, PlacementState.GPU_READY)
+        self.assertGreater(record.gpu_retained_bytes, 0)
+        self.assertEqual(record.migration_job_ids, set())
+        self.assertEqual(manager.calendar.reservations, [])
+        self.assertEqual(manager.next_completion_ns(), None)
+
+        migration = manager.start_migration("s", now_ns=1_000)
+        self.assertIsNotNone(migration)
+        self.assertEqual(record.state, PlacementState.MIGRATING)
+        self.assertEqual(migration.start_ns, 1_000)
+        self.assertGreater(len(manager.calendar.reservations), 0)
+        manager.advance(migration.completion_ns)
+        self.assertEqual(record.state, PlacementState.HBF_READY)
+
+    def test_resume_cancels_deferred_migration_before_trigger(self):
+        manager = self.make_manager()
+        record = manager.register_session("s")
+        manager.complete_gpu_turn(
+            "s",
+            now_ns=100,
+            total_tokens=10_000,
+            has_successor=True,
+            start_migration=False,
+        )
+
+        route = manager.route_resume(
+            "s",
+            now_ns=999,
+            request_id=7,
+            prefix_reuse_tokens=10_000,
+            input_tokens=10_001,
+        )
+
+        self.assertEqual(route.execution, ResumeExecution.GPU)
+        self.assertEqual(record.state, PlacementState.GPU_ACTIVE)
+        self.assertEqual(manager.calendar.reservations, [])
+        with self.assertRaisesRegex(RuntimeError, "GPU_READY"):
+            manager.start_migration("s", now_ns=1_000)
+        self.assertEqual(manager.calendar.reservations, [])
+
+    def test_start_migration_option_is_strictly_boolean(self):
+        manager = self.make_manager()
+        manager.register_session("s")
+        with self.assertRaisesRegex(ValueError, "boolean"):
+            manager.complete_gpu_turn(
+                "s",
+                now_ns=0,
+                total_tokens=10,
+                has_successor=True,
+                start_migration=1,
+            )
+        self.assertEqual(manager.current_ns, 0)
+        self.assertEqual(
+            manager.sessions["s"].state,
+            PlacementState.GPU_ACTIVE,
+        )
+
+    def test_analytical_prefix_is_local_but_source_and_rdma_are_shared(self):
+        calendar = ResourceCalendar()
+        first = self.make_manager(
+            calendar=calendar,
+            analytical_resource_prefix="server-0:",
+        )
+        second = self.make_manager(
+            calendar=calendar,
+            analytical_resource_prefix="server-1:",
+        )
+        first.register_session("first")
+        second.register_session("second")
+
+        first_job = first.complete_gpu_turn(
+            "first", now_ns=0, total_tokens=10_000,
+            has_successor=True)
+        second_job = second.complete_gpu_turn(
+            "second", now_ns=0, total_tokens=10_000,
+            has_successor=True)
+
+        self.assertIsNotNone(first_job)
+        self.assertIsNotNone(second_job)
+        self.assertGreater(second_job.start_ns, first_job.start_ns)
+        resources = set(calendar.available_ns)
+        self.assertIn("gpu-source-pcie-root", resources)
+        self.assertIn("rdma-network", resources)
+        self.assertIn("server-0:hbf-pcie-root-0", resources)
+        self.assertIn("server-1:hbf-pcie-root-0", resources)
+        self.assertIn("server-0:hbf-card-0-media", resources)
+        self.assertIn("server-1:hbf-card-0-media", resources)
+        self.assertNotIn("server-0:gpu-source-pcie-root", resources)
+        self.assertNotIn("server-1:rdma-network", resources)
+        self.assertNotIn("hbf-card-0-media", resources)
+        self.assertEqual(
+            first.report()["analytical_resource_prefix"],
+            "server-0:",
+        )
+
+    def test_empty_analytical_prefix_preserves_report_and_resource_names(self):
+        manager = self.make_manager(analytical_resource_prefix="")
+        manager.register_session("s")
+        manager.complete_gpu_turn(
+            "s", now_ns=0, total_tokens=10,
+            has_successor=True)
+        self.assertNotIn("analytical_resource_prefix", manager.report())
+        resources = set(manager.calendar.available_ns)
+        self.assertIn("hbf-card-0-media", resources)
+        self.assertFalse(any(
+            resource.startswith("server-")
+            for resource in resources
+        ))
+
+    def test_external_astra_rejects_analytical_resource_prefix(self):
+        with self.assertRaisesRegex(
+                ValueError, "analytical_resource_prefix"):
+            self.make_manager(
+                execution_backend="external_astra",
+                analytical_resource_prefix="server-0:",
+            )
 
     def test_exact_completion_tie_routes_to_hbf(self):
         manager = self.make_manager()

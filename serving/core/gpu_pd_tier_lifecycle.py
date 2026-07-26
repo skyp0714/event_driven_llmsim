@@ -48,6 +48,7 @@ class TierSessionState(str, Enum):
 class TierJobKind(str, Enum):
     DEMOTION = "demotion"
     PREPARE = "prepare"
+    SSD_EXPORT = "ssd_export"
 
 
 class TierJobStatus(str, Enum):
@@ -55,6 +56,14 @@ class TierJobStatus(str, Enum):
     COMMITTED = "committed"
     STALE = "stale"
     COMPLETE = "complete"
+
+
+class SSDExportStatus(str, Enum):
+    RUNNING = "running"
+    READY = "ready"
+    ABORT_PENDING = "abort_pending"
+    FINISHED = "finished"
+    ABORTED = "aborted"
 
 
 @dataclass
@@ -205,12 +214,17 @@ class TierCopy:
     ledger_owner: str
     demotion_pins: int = 0
     foreground_pins: int = 0
+    export_pins: int = 0
     retired: bool = False
     shadow: bool = False
 
     @property
     def pins(self) -> int:
-        return self.demotion_pins + self.foreground_pins
+        return (
+            self.demotion_pins
+            + self.foreground_pins
+            + self.export_pins
+        )
 
 
 @dataclass
@@ -294,6 +308,43 @@ class PrepareTicket:
         return tuple(stage.stage.kind for stage in self.stages)
 
 
+@dataclass
+class SSDExportTicket:
+    """Pinned SSD snapshot staged into CPU memory for an external importer.
+
+    The ticket owns the source pin and CPU bounce until ``finish`` or
+    ``abort``.  Aborting an in-flight read is logical only: the physical
+    calendar reservation completes before those owners are released.
+    """
+
+    export_id: int
+    job_id: int
+    session_id: str
+    snapshot_version: int
+    snapshot_generation: int
+    source_copy_id: int
+    token_count: int
+    byte_count: int
+    bounce_owner: str
+    stages: tuple[ScheduledTierStage, ...]
+    start_ns: int
+    completion_ns: int
+    status: SSDExportStatus = SSDExportStatus.RUNNING
+    resources_released: bool = False
+
+    @property
+    def transfer_kinds(self) -> tuple[str, ...]:
+        return tuple(stage.stage.kind for stage in self.stages)
+
+    @property
+    def physical_complete(self) -> bool:
+        return self.status in {
+            SSDExportStatus.READY,
+            SSDExportStatus.FINISHED,
+            SSDExportStatus.ABORTED,
+        }
+
+
 @dataclass(frozen=True)
 class ResumeSource:
     session_id: str
@@ -307,6 +358,7 @@ class ResumeSource:
 
 @dataclass
 class TierLifecycleMetrics:
+    session_restarts: int = 0
     d_drops: int = 0
     d_to_cpu_started: int = 0
     d_to_ssd_started: int = 0
@@ -333,6 +385,12 @@ class TierLifecycleMetrics:
     transfer_bytes: int = 0
     stale_transfer_bytes: int = 0
     d_source_bytes_released_early: int = 0
+    ssd_export_started: int = 0
+    ssd_export_completed: int = 0
+    ssd_export_finished: int = 0
+    ssd_export_aborted: int = 0
+    ssd_export_capacity_deferrals: int = 0
+    ssd_export_bytes: int = 0
 
 
 class TieredPDKVLifecycle:
@@ -398,13 +456,16 @@ class TieredPDKVLifecycle:
         self.copies: dict[int, TierCopy] = {}
         self.jobs: dict[int, TierTransferJob] = {}
         self.prepares: dict[int, PrepareTicket] = {}
+        self.ssd_exports: dict[int, SSDExportTicket] = {}
         self.metrics = TierLifecycleMetrics()
         self.current_ns = 0
         self._next_copy_id = 1
         self._next_job_id = 1
         self._next_prepare_id = 1
+        self._next_export_id = 1
         self._completion_heap: list[tuple[int, int]] = []
         self._completed_prepares: list[PrepareTicket] = []
+        self._export_id_by_job: dict[int, int] = {}
         self._seen_request_ids: set[int] = set()
 
     @staticmethod
@@ -586,8 +647,10 @@ class TieredPDKVLifecycle:
                 raise AssertionError("completed job remained on heap")
             if job.kind == TierJobKind.DEMOTION:
                 self._complete_demotion(job)
-            else:
+            elif job.kind == TierJobKind.PREPARE:
                 self._complete_prepare(job)
+            else:
+                self._complete_ssd_export(job)
         self.current_ns = now_ns
         self._maybe_assert_invariants()
 
@@ -648,6 +711,197 @@ class TieredPDKVLifecycle:
         if record.primary_copy_id is None:
             return None
         return self.copies[record.primary_copy_id]
+
+    def begin_ssd_export(
+            self, session_id: str, *,
+            now_ns: int) -> Optional[SSDExportTicket]:
+        """Stage one authoritative SSD snapshot into pinned CPU memory.
+
+        ``None`` is a pure CPU-capacity deferral.  The session state,
+        generation, source pins, job indexes, and resource calendar are
+        unchanged in that case.  A successful ticket retains both its SSD
+        source and CPU bounce until :meth:`finish_ssd_export` or
+        :meth:`abort_ssd_export`.
+        """
+
+        self._validate_session(session_id)
+        self._validate_time(now_ns)
+        self.advance(now_ns)
+        try:
+            record = self.sessions[session_id]
+        except KeyError as exc:
+            raise KeyError(
+                f"unknown SSD export session {session_id!r}") from exc
+        source = self._primary_copy(record)
+        if (
+            record.state != TierSessionState.SSD_READY
+            or record.active_request_id is not None
+            or source is None
+            or source.tier != Tier.SSD
+            or source.retired
+            or source.shadow
+        ):
+            raise RuntimeError(
+                "SSD export requires an idle authoritative SSD copy")
+        if source.export_pins:
+            raise RuntimeError(
+                f"session {session_id!r} already has an SSD export")
+        byte_count = source.byte_count
+        if byte_count > self.cpu_ledger.capacity_bytes:
+            raise RuntimeError(
+                "SSD export object exceeds node CPU bounce capacity")
+        if self.cpu_ledger.free_bytes < byte_count:
+            self.metrics.ssd_export_capacity_deferrals += 1
+            return None
+
+        export_id = self._next_export_id
+        bounce_owner = (
+            f"node-{self.node_id}:cpu:ssd-export:{export_id}")
+        if not self.cpu_ledger.reserve(bounce_owner, byte_count):
+            raise AssertionError(
+                "SSD export CPU capacity precheck diverged")
+        source.export_pins += 1
+        stage = self.resources.ssd_stage(
+            source.tokens, direction="ssd_to_cpu")
+        job = self._schedule(
+            kind=TierJobKind.SSD_EXPORT,
+            record=record,
+            request_id=None,
+            source_copy=source,
+            destination=None,
+            destination_owner=None,
+            bounce_owner=bounce_owner,
+            stages=(stage,),
+            ready_ns=now_ns,
+        )
+        self._next_export_id += 1
+        ticket = SSDExportTicket(
+            export_id=export_id,
+            job_id=job.job_id,
+            session_id=session_id,
+            snapshot_version=record.version,
+            snapshot_generation=record.generation,
+            source_copy_id=source.copy_id,
+            token_count=source.tokens,
+            byte_count=byte_count,
+            bounce_owner=bounce_owner,
+            stages=job.stages,
+            start_ns=job.start_ns,
+            completion_ns=job.completion_ns,
+        )
+        self.ssd_exports[export_id] = ticket
+        self._export_id_by_job[job.job_id] = export_id
+        self.metrics.ssd_export_started += 1
+        self.metrics.ssd_export_bytes += byte_count
+        self._maybe_assert_invariants()
+        return ticket
+
+    def ssd_export_publication_valid(
+            self, ticket: SSDExportTicket, *,
+            now_ns: Optional[int] = None) -> bool:
+        """Return whether a ticket still names the authoritative snapshot."""
+
+        if now_ns is not None:
+            self._validate_time(now_ns)
+            self.advance(now_ns)
+        stored = self.ssd_exports.get(ticket.export_id)
+        if stored is not ticket:
+            raise RuntimeError("unknown or stale SSD export ticket")
+        if ticket.status not in {
+            SSDExportStatus.RUNNING,
+            SSDExportStatus.READY,
+        }:
+            return False
+        record = self.sessions.get(ticket.session_id)
+        source = self.copies.get(ticket.source_copy_id)
+        return bool(
+            record is not None
+            and source is not None
+            and record.state == TierSessionState.SSD_READY
+            and record.active_request_id is None
+            and record.version == ticket.snapshot_version
+            and record.generation == ticket.snapshot_generation
+            and record.primary == Tier.SSD
+            and record.primary_copy_id == source.copy_id
+            and source.tier == Tier.SSD
+            and source.version == ticket.snapshot_version
+            and source.generation == ticket.snapshot_generation
+            and source.tokens == ticket.token_count
+            and source.byte_count == ticket.byte_count
+            and not source.retired
+            and not source.shadow
+        )
+
+    def _release_ssd_export_resources(
+            self, ticket: SSDExportTicket) -> None:
+        if ticket.resources_released:
+            raise RuntimeError(
+                "SSD export resources were already released")
+        source = self.copies.get(ticket.source_copy_id)
+        if source is None or source.export_pins <= 0:
+            raise AssertionError("SSD export source pin is missing")
+        released = self.cpu_ledger.release(ticket.bounce_owner)
+        if released != ticket.byte_count:
+            raise AssertionError(
+                "SSD export CPU bounce ownership mismatch")
+        source.export_pins -= 1
+        ticket.resources_released = True
+        self._maybe_release_retired(source)
+
+    def finish_ssd_export(
+            self, ticket: SSDExportTicket, *,
+            now_ns: int) -> None:
+        """Release a valid staged snapshot after its importer is finished."""
+
+        self._validate_time(now_ns)
+        self.advance(now_ns)
+        stored = self.ssd_exports.get(ticket.export_id)
+        if stored is not ticket:
+            raise RuntimeError("unknown or stale SSD export ticket")
+        if ticket.status != SSDExportStatus.READY:
+            raise RuntimeError(
+                "SSD export must be physically ready before finish")
+        if not self.ssd_export_publication_valid(ticket):
+            raise RuntimeError(
+                "invalid SSD export must be aborted, not finished")
+        self._release_ssd_export_resources(ticket)
+        ticket.status = SSDExportStatus.FINISHED
+        self.metrics.ssd_export_finished += 1
+        self._maybe_assert_invariants()
+
+    def abort_ssd_export(
+            self, ticket: SSDExportTicket, *,
+            now_ns: int) -> bool:
+        """Logically abort an export and release owners when physically safe.
+
+        The return value is true when the source pin and CPU bounce have
+        already been released.  An in-flight SSD read returns false and
+        performs that release at its immutable calendar completion.
+        """
+
+        self._validate_time(now_ns)
+        self.advance(now_ns)
+        stored = self.ssd_exports.get(ticket.export_id)
+        if stored is not ticket:
+            raise RuntimeError("unknown or stale SSD export ticket")
+        if ticket.status == SSDExportStatus.RUNNING:
+            ticket.status = SSDExportStatus.ABORT_PENDING
+            self._maybe_assert_invariants()
+            return False
+        if ticket.status == SSDExportStatus.ABORT_PENDING:
+            return False
+        if ticket.status == SSDExportStatus.ABORTED:
+            return True
+        if ticket.status == SSDExportStatus.FINISHED:
+            raise RuntimeError("finished SSD export cannot be aborted")
+        if ticket.status != SSDExportStatus.READY:
+            raise AssertionError(
+                f"unexpected SSD export status {ticket.status}")
+        self._release_ssd_export_resources(ticket)
+        ticket.status = SSDExportStatus.ABORTED
+        self.metrics.ssd_export_aborted += 1
+        self._maybe_assert_invariants()
+        return True
 
     def _eligible_lru(
             self, tier: Tier, *,
@@ -1281,6 +1535,32 @@ class TieredPDKVLifecycle:
         self._maybe_assert_invariants()
         return ticket
 
+    def _complete_ssd_export(self, job: TierTransferJob) -> None:
+        record = self.sessions[job.session_id]
+        record.pending_job_ids.discard(job.job_id)
+        try:
+            export_id = self._export_id_by_job[job.job_id]
+            ticket = self.ssd_exports[export_id]
+        except KeyError as exc:
+            raise AssertionError(
+                "SSD export job lacks its public ticket") from exc
+        if ticket.job_id != job.job_id:
+            raise AssertionError("SSD export job/ticket index mismatch")
+        if ticket.status not in {
+            SSDExportStatus.RUNNING,
+            SSDExportStatus.ABORT_PENDING,
+        }:
+            raise AssertionError(
+                "physically completing SSD export has invalid status")
+        job.status = TierJobStatus.COMPLETE
+        self.metrics.ssd_export_completed += 1
+        if ticket.status == SSDExportStatus.ABORT_PENDING:
+            self._release_ssd_export_resources(ticket)
+            ticket.status = SSDExportStatus.ABORTED
+            self.metrics.ssd_export_aborted += 1
+        else:
+            ticket.status = SSDExportStatus.READY
+
     def _complete_prepare(self, job: TierTransferJob) -> None:
         record = self.sessions[job.session_id]
         record.pending_job_ids.discard(job.job_id)
@@ -1578,6 +1858,38 @@ class TieredPDKVLifecycle:
                 self._maybe_release_retired(copy)
         self._maybe_assert_invariants()
 
+    def restart_ended(
+            self, session_id: str, *, now_ns: int) -> None:
+        """Atomically reopen a fully drained moved-away session as LOST.
+
+        This is a lineage restart, not a restore: an ended tier session has
+        no authoritative local KV.  The next prepare therefore recomputes
+        unless a new copy is explicitly published later.
+        """
+
+        self._validate_session(session_id)
+        self._validate_time(now_ns)
+        self.advance(now_ns)
+        record = self.sessions[session_id]
+        if record.state != TierSessionState.ENDED:
+            raise RuntimeError(
+                "only an ended tier session can be restarted")
+        if (
+            record.active_request_id is not None
+            or record.primary is not None
+            or record.primary_copy_id is not None
+            or record.tokens
+            or record.pending_job_ids
+            or record.copy_ids
+        ):
+            raise RuntimeError(
+                "ended tier session must be fully drained before restart")
+        record.generation += 1
+        record.state = TierSessionState.LOST
+        record.last_access_ns = now_ns
+        self.metrics.session_restarts += 1
+        self._maybe_assert_invariants()
+
     def run_until_idle(self) -> None:
         while self._completion_heap:
             event_ns = self.next_event_ns()
@@ -1638,7 +1950,44 @@ class TieredPDKVLifecycle:
                 elif destination_bytes or bounce_bytes:
                     raise AssertionError(
                         "completed demotion retains destination capacity")
-            elif job.bounce_owner is not None:
+            elif job.kind == TierJobKind.SSD_EXPORT:
+                try:
+                    ticket = self.ssd_exports[
+                        self._export_id_by_job[job.job_id]]
+                except KeyError as exc:
+                    raise AssertionError(
+                        "SSD export job lacks a ticket index") from exc
+                if destination_bytes:
+                    raise AssertionError(
+                        "SSD export unexpectedly owns tier capacity")
+                expected_running = ticket.status in {
+                    SSDExportStatus.RUNNING,
+                    SSDExportStatus.ABORT_PENDING,
+                }
+                if expected_running != (
+                        job.status == TierJobStatus.RUNNING):
+                    raise AssertionError(
+                        "SSD export physical/ticket status mismatch")
+                expected_bounce = (
+                    0 if ticket.resources_released
+                    else ticket.byte_count
+                )
+                if bounce_bytes != expected_bounce:
+                    raise AssertionError(
+                        "SSD export CPU bounce ownership mismatch")
+                source = self.copies.get(ticket.source_copy_id)
+                if (
+                    not ticket.resources_released
+                    and (
+                        source is None
+                        or source.export_pins <= 0
+                    )
+                ):
+                    raise AssertionError(
+                        "SSD export ticket lost its source pin")
+            elif (
+                    job.kind == TierJobKind.PREPARE
+                    and job.bounce_owner is not None):
                 if (
                     job.status == TierJobStatus.RUNNING
                     and bounce_bytes <= 0
@@ -1657,7 +2006,11 @@ class TieredPDKVLifecycle:
             record = self.sessions.get(copy.session_id)
             if record is None or copy_id not in record.copy_ids:
                 raise AssertionError("copy has no session owner")
-            if copy.pins < 0:
+            if (
+                copy.demotion_pins < 0
+                or copy.foreground_pins < 0
+                or copy.export_pins < 0
+            ):
                 raise AssertionError("copy pin underflow")
             if self._ledger(copy.tier).owner_bytes(
                     copy.ledger_owner) != copy.byte_count:
@@ -1713,6 +2066,45 @@ class TieredPDKVLifecycle:
                 if self.d_ledger.owner_bytes(ticket.d_owner):
                     raise AssertionError(
                         "committed ticket retains D destination")
+        unresolved_export_pins: dict[int, int] = {}
+        for export_id, ticket in self.ssd_exports.items():
+            if ticket.export_id != export_id:
+                raise AssertionError("SSD export ticket index mismatch")
+            job = self.jobs.get(ticket.job_id)
+            if (
+                job is None
+                or job.kind != TierJobKind.SSD_EXPORT
+                or self._export_id_by_job.get(job.job_id) != export_id
+            ):
+                raise AssertionError(
+                    "SSD export ticket lacks its physical job")
+            if ticket.resources_released:
+                if self.cpu_ledger.owner_bytes(ticket.bounce_owner):
+                    raise AssertionError(
+                        "released SSD export retains CPU bounce")
+                if ticket.status not in {
+                    SSDExportStatus.FINISHED,
+                    SSDExportStatus.ABORTED,
+                }:
+                    raise AssertionError(
+                        "live SSD export released its owners")
+            else:
+                if (
+                    self.cpu_ledger.owner_bytes(ticket.bounce_owner)
+                    != ticket.byte_count
+                ):
+                    raise AssertionError(
+                        "live SSD export lost CPU bounce ownership")
+                unresolved_export_pins[ticket.source_copy_id] = (
+                    unresolved_export_pins.get(
+                        ticket.source_copy_id, 0)
+                    + 1
+                )
+        for copy_id, copy in self.copies.items():
+            if copy.export_pins != unresolved_export_pins.get(
+                    copy_id, 0):
+                raise AssertionError(
+                    "SSD export source pin index mismatch")
 
     def report(self) -> Mapping[str, Any]:
         return {
@@ -1773,6 +2165,18 @@ class TieredPDKVLifecycle:
                 }
                 for job_id, job in sorted(self.jobs.items())
             },
+            "ssd_exports": {
+                export_id: {
+                    **asdict(ticket),
+                    "status": ticket.status.value,
+                    "transfer_kinds": ticket.transfer_kinds,
+                    "publication_valid": (
+                        self.ssd_export_publication_valid(ticket)
+                    ),
+                }
+                for export_id, ticket in sorted(
+                    self.ssd_exports.items())
+            },
         }
 
 
@@ -1780,6 +2184,8 @@ __all__ = [
     "MAX_CONTEXT_TOKENS",
     "PrepareTicket",
     "ResumeSource",
+    "SSDExportStatus",
+    "SSDExportTicket",
     "SUPPORTED_TIER_POLICIES",
     "ScheduledTierStage",
     "SharedByteLedger",

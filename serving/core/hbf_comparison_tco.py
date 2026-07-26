@@ -5,8 +5,8 @@ systems:
 
 * ``tiering_baseline``: two CPU hosts, sixteen H100 cards, host DRAM, and an
   SSD tier.
-* ``hbf_proposed``: one CPU/H100 host and one CPU/HBF-NPU host connected by
-  RDMA, with LPDDR on every HBF-NPU card and no SSD tier.
+* ``hbf_proposed``: one CPU/H100 host and one CPU/HBF-GPU host connected by
+  RDMA, with LPDDR on every HBF-GPU card and no SSD tier.
 
 The infinite-HBM Oracle may be carried alongside the comparison as a
 performance reference.  It is never assigned a TCO because its infinite
@@ -14,8 +14,9 @@ capacity is not a physical bill of materials.
 
 All dollar and power values are analytical assumptions, not measured vendor
 prices.  In particular, an H100 card is decomposed into GPU logic and its HBM
-stack before the NPU and HBF sensitivity ratios are applied.  This prevents a
-ratio intended for one component from accidentally pricing an entire card.
+stack before the HBF-GPU and HBF-media sensitivity ratios are applied.  The
+default HBF-GPU logic ratio is 1.0 for H100-class compute; legacy ``npu_*``
+field names remain only for artifact compatibility.
 """
 
 from __future__ import annotations
@@ -466,7 +467,7 @@ class DeploymentTopology(JSONSafeDataclass):
 
 @dataclass(frozen=True)
 class EvaluationAssumptions(JSONSafeDataclass):
-    lifetime_years: float = 3.0
+    lifetime_years: float = 5.0
     average_utilization: float = 0.70
     idle_power_fraction_of_active: float = 0.0
     pue: float = 1.20
@@ -525,6 +526,7 @@ class EvaluationAssumptions(JSONSafeDataclass):
 def _validated_axis(
         name: str, values: Sequence[float], *,
         cheaper_than_one: bool = False,
+        at_most_one: bool = False,
         greater_than_one: bool = False) -> tuple[float, ...]:
     if isinstance(values, (str, bytes)) or not values:
         raise HBFComparisonTCOError(f"{name} must be a non-empty sequence")
@@ -537,6 +539,9 @@ def _validated_axis(
     if cheaper_than_one and any(value >= 1.0 for value in converted):
         raise HBFComparisonTCOError(
             f"every {name} value must be below 1")
+    if at_most_one and any(value > 1.0 for value in converted):
+        raise HBFComparisonTCOError(
+            f"every {name} value must be at most 1")
     if greater_than_one and any(value <= 1.0 for value in converted):
         raise HBFComparisonTCOError(
             f"every {name} value must be above 1")
@@ -545,14 +550,18 @@ def _validated_axis(
 
 @dataclass(frozen=True)
 class SensitivityAxes(JSONSafeDataclass):
-    """Cartesian component-ratio sensitivity axes."""
+    """Cartesian component-ratio sensitivity axes.
+
+    The ``npu_logic_*`` names are retained for report compatibility.  Their
+    default singleton value is the full H100 GPU-logic anchor.
+    """
 
     npu_logic_capex_ratios_to_gpu_logic: tuple[float, ...] = (
-        0.25, 0.50, 0.75)
+        1.00,)
     hbf_subsystem_capex_ratios_to_hbm_stack: tuple[float, ...] = (
         0.25, 0.50, 0.75)
     npu_logic_power_ratios_to_gpu_logic: tuple[float, ...] = (
-        0.25, 0.50, 0.75)
+        1.00,)
     hbf_subsystem_power_ratios_to_hbm_stack: tuple[float, ...] = (
         3.0, 3.5, 4.0)
 
@@ -563,7 +572,7 @@ class SensitivityAxes(JSONSafeDataclass):
             _validated_axis(
                 "npu_logic_capex_ratios_to_gpu_logic",
                 self.npu_logic_capex_ratios_to_gpu_logic,
-                cheaper_than_one=True,
+                at_most_one=True,
             ),
         )
         object.__setattr__(
@@ -581,7 +590,7 @@ class SensitivityAxes(JSONSafeDataclass):
             _validated_axis(
                 "npu_logic_power_ratios_to_gpu_logic",
                 self.npu_logic_power_ratios_to_gpu_logic,
-                cheaper_than_one=True,
+                at_most_one=True,
             ),
         )
         object.__setattr__(
@@ -615,7 +624,7 @@ class SensitivityPoint(JSONSafeDataclass):
         _validated_axis(
             "npu_logic_capex_ratio_to_gpu_logic",
             (self.npu_logic_capex_ratio_to_gpu_logic,),
-            cheaper_than_one=True,
+            at_most_one=True,
         )
         _validated_axis(
             "hbf_subsystem_capex_ratio_to_hbm_stack",
@@ -625,7 +634,7 @@ class SensitivityPoint(JSONSafeDataclass):
         _validated_axis(
             "npu_logic_power_ratio_to_gpu_logic",
             (self.npu_logic_power_ratio_to_gpu_logic,),
-            cheaper_than_one=True,
+            at_most_one=True,
         )
         _validated_axis(
             "hbf_subsystem_power_ratio_to_hbm_stack",
@@ -1097,7 +1106,7 @@ def proposed_hbf_cost(
         hbf_hardware_variant: HBFHardwareVariant = (
             DEFAULT_HBF_HARDWARE_VARIANT),
 ) -> SystemCost:
-    """Price one H100 host plus one eight-card HBF-NPU host."""
+    """Price one H100 host plus one eight-card HBF-GPU host."""
 
     if not isinstance(point, SensitivityPoint):
         raise HBFComparisonTCOError(
@@ -1131,7 +1140,7 @@ def proposed_hbf_cost(
             abs_tol=1e-12):
         raise HBFComparisonTCOError(
             "HBF capacity ratio mismatches HBF and HBM capacities")
-    npu_logic_capex = (
+    hbf_gpu_logic_capex = (
         anchors.gpu_logic_capex_usd_per_card
         * point.npu_logic_capex_ratio_to_gpu_logic
     )
@@ -1139,7 +1148,7 @@ def proposed_hbf_cost(
         anchors.hbm_stack_capex_usd_per_card
         * point.hbf_subsystem_capex_ratio_to_hbm_stack
     )
-    npu_logic_power = (
+    hbf_gpu_logic_power = (
         anchors.gpu_logic_power_w_per_card
         * point.npu_logic_power_ratio_to_gpu_logic
     )
@@ -1198,7 +1207,7 @@ def proposed_hbf_cost(
             topology.proposed_cpu_hosts,
             anchors.cpu_host_base_capex_usd,
             anchors.cpu_host_base_power_w,
-            "One GPU host and one HBF-NPU host use the same host anchor.",
+            "One GPU host and one HBF-GPU host use the same host anchor.",
         ),
         _bom_line(
             "host_dram",
@@ -1249,14 +1258,16 @@ def proposed_hbf_cost(
         ),
         _bom_line(
             "hbf_npu_logic",
-            "HBF-NPU logic excluding HBF and LPDDR",
+            "H100-class HBF-card GPU logic excluding HBF and LPDDR",
             "card",
             topology.proposed_hbf_npu_cards,
-            npu_logic_capex,
-            npu_logic_power,
+            hbf_gpu_logic_capex,
+            hbf_gpu_logic_power,
             (
-                "Component ratio is applied to GPU logic, not to the "
-                "complete H100 card."
+                "The default component ratio is 1.0x H100 GPU logic. "
+                "The legacy hbf_npu_logic key and npu_logic ratio field "
+                "names are retained for artifact compatibility; HBM is "
+                "excluded because HBF media is priced separately."
             ),
         ),
         _bom_line(
@@ -1279,7 +1290,7 @@ def proposed_hbf_cost(
         _bom_line(
             "hbf_npu_intraserver_fabric",
             (
-                "HBF-NPU-host "
+                "HBF-GPU-host "
                 f"{hbf_hardware_variant.intra_fabric_kind.upper()} fabric"
             ),
             "host fabric unit",
@@ -1303,7 +1314,7 @@ def proposed_hbf_cost(
             lpddr_capex_per_gib,
             lpddr_power_per_gib,
             (
-                f"{topology.lpddr_gib_per_hbf_card:g} GiB per HBF-NPU "
+                f"{topology.lpddr_gib_per_hbf_card:g} GiB per HBF-GPU "
                 "card at "
                 f"{hbf_hardware_variant.lpddr_effective_bandwidth_gbps_per_card:g}"
                 " GB/s per card "
@@ -1356,14 +1367,14 @@ def proposed_hbf_cost(
     )
     return _finalize_cost(
         PROPOSED_SYSTEM_KEY,
-        "One 4P4D GPU server plus one eight-card HBF-NPU server",
+        "One 4P4D GPU server plus one eight-card HBF-GPU server",
         (
             f"{topology.proposed_cpu_hosts} CPU hosts "
-            "(one GPU and one HBF-NPU), "
+            "(one GPU and one HBF-GPU), "
             f"{topology.proposed_h100_cards} H100 cards, "
-            f"{topology.proposed_hbf_npu_cards} HBF-NPU cards, "
+            f"{topology.proposed_hbf_npu_cards} HBF-GPU cards, "
             f"{topology.proposed_lpddr_gib:g} GiB LPDDR, one GPU fabric, "
-            f"one {hbf_hardware_variant.intra_fabric_kind.upper()} HBF-NPU "
+            f"one {hbf_hardware_variant.intra_fabric_kind.upper()} HBF-GPU "
             "fabric, RDMA NIC pair and fabric, no SSD"
         ),
         bom,

@@ -31,7 +31,9 @@ class FullModelHBFServingPoolTests(unittest.TestCase):
             self, layout="tp4", *, hardware=None, calendar=None,
             max_tokens=256, max_seqs=16, chunk=64,
             validate_every_event=True,
-            retain_detailed_history=True):
+            retain_detailed_history=True,
+            execution_backend="analytical_calendar",
+            analytical_resource_prefix=""):
         return FullModelHBFServingPool(
             repo_root=REPO_ROOT,
             hardware=hardware or HBFServerHardware(),
@@ -42,6 +44,8 @@ class FullModelHBFServingPoolTests(unittest.TestCase):
             max_prefill_chunk_tokens=chunk,
             validate_every_event=validate_every_event,
             retain_detailed_history=retain_detailed_history,
+            execution_backend=execution_backend,
+            analytical_resource_prefix=analytical_resource_prefix,
         )
 
     @staticmethod
@@ -84,6 +88,19 @@ class FullModelHBFServingPoolTests(unittest.TestCase):
         self.assertGreater(request.ttft_ns, 0)
         self.assertIsNone(request.tpot_ns)
         self.assertEqual(len(request.token_completion_ns), 1)
+
+    def test_logical_arrival_may_precede_internal_submit_time(self):
+        pool = self.make_pool()
+        request = self.request(
+            1, arrival=10, output_tokens=1)
+        pool.submit(request, now_ns=25)
+        completed = pool.run_until_idle()
+        self.assertEqual(completed, [request])
+        self.assertGreater(request.first_token_ns, 25)
+        self.assertEqual(
+            request.ttft_ns,
+            request.first_token_ns - request.arrival_ns,
+        )
 
     def test_fully_cached_request_executes_first_decode_iteration(self):
         pool = self.make_pool()
@@ -479,6 +496,87 @@ class FullModelHBFServingPoolTests(unittest.TestCase):
         batch = pool.batch_history[0]
         self.assertEqual(batch.start_ns, 1_000_000)
         self.assertEqual(pool.metrics.resource_delay_ns, 1_000_000)
+
+    def test_prefixed_pools_share_calendar_but_not_server_local_resources(self):
+        calendar = ResourceCalendar()
+        first = self.make_pool(
+            "tp4",
+            calendar=calendar,
+            analytical_resource_prefix="server-0:",
+        )
+        second = self.make_pool(
+            "tp4",
+            calendar=calendar,
+            analytical_resource_prefix="server-1:",
+        )
+
+        first.submit(self.request(1), now_ns=0)
+        second.submit(self.request(1), now_ns=0)
+
+        self.assertEqual(first.batch_history[0].start_ns, 0)
+        self.assertEqual(second.batch_history[0].start_ns, 0)
+        resources = set(calendar.available_ns)
+        self.assertIn("server-0:hbf-group-0-npu", resources)
+        self.assertIn("server-1:hbf-group-0-npu", resources)
+        self.assertIn("server-0:hbf-card-0-media", resources)
+        self.assertIn("server-1:hbf-card-0-media", resources)
+        self.assertNotIn("hbf-group-0-npu", resources)
+        self.assertEqual(
+            first.report()["analytical_resource_prefix"],
+            "server-0:",
+        )
+        telemetry = first.report()["group_telemetry"][0]
+        self.assertEqual(telemetry["compute_device"], "h100_class_gpu")
+        self.assertEqual(telemetry["gpu_busy_ns"], telemetry["npu_busy_ns"])
+        self.assertEqual(
+            telemetry["gpu_utilization"], telemetry["npu_utilization"])
+        self.assertGreater(telemetry["gpu_busy_ns"], 0)
+
+    def test_prefixed_lifecycle_write_blocks_only_matching_pool(self):
+        calendar = ResourceCalendar()
+        calendar.reserve_parallel(
+            arrival_ns=0,
+            job_id=999,
+            kind="append",
+            demands={
+                f"server-0:hbf-card-{card}-media": (1_000_000, 100)
+                for card in range(4)
+            },
+        )
+        blocked = self.make_pool(
+            "tp4",
+            calendar=calendar,
+            analytical_resource_prefix="server-0:",
+        )
+        independent = self.make_pool(
+            "tp4",
+            calendar=calendar,
+            analytical_resource_prefix="server-1:",
+        )
+
+        blocked.submit(self.request(1), now_ns=0)
+        independent.submit(self.request(1), now_ns=0)
+
+        self.assertEqual(blocked.batch_history, [])
+        self.assertEqual(blocked.next_event_ns(), 1_000_000)
+        self.assertEqual(independent.batch_history[0].start_ns, 0)
+
+    def test_empty_analytical_prefix_preserves_pool_report_and_names(self):
+        pool = self.make_pool(analytical_resource_prefix="")
+        pool.submit(self.request(1), now_ns=0)
+        report = pool.report()
+        self.assertNotIn("analytical_resource_prefix", report)
+        self.assertIn("hbf-group-0-npu", pool.calendar.available_ns)
+        self.assertNotIn("server-0:hbf-group-0-npu",
+                         pool.calendar.available_ns)
+
+    def test_external_pool_rejects_analytical_resource_prefix(self):
+        with self.assertRaisesRegex(
+                ValueError, "analytical_resource_prefix"):
+            self.make_pool(
+                execution_backend="external_astra",
+                analytical_resource_prefix="server-0:",
+            )
 
     def test_arrival_before_delayed_launch_joins_batch(self):
         calendar = ResourceCalendar()

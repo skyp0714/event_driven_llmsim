@@ -2828,7 +2828,7 @@ def main():
                         "adapter"]["lifecycle"]["metrics"]),
                 "compute_accounting_semantics": (
                     "online_model_compute covers only GPU-server model "
-                    "batches; HBF NPU kernels, collectives, media, LPDDR, "
+                    "batches; HBF-GPU kernels, collectives, media, LPDDR, "
                     "PCIe, and RDMA timing are callback-owned by ASTRA and "
                     "reported in this HBF summary/runtime report. They are "
                     "not added because GPU and HBF work may overlap."

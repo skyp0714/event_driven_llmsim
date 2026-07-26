@@ -13,8 +13,9 @@ from collections import Counter, deque
 from dataclasses import asdict, dataclass
 from enum import Enum
 import heapq
+import math
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from .comparison_cutoff import ResumableCutoffEventLoopMixin
 from .gpu_pd_hbm import AtomicPDHBM, PDHBMAdmission
@@ -27,7 +28,11 @@ from .hbf_comparison_workload import (
     full_drain_hashes,
     stable_json_sha256,
 )
-from .hbf_full_model_latency import HBFParallelLayout, HBFServerHardware
+from .hbf_full_model_latency import (
+    HBFParallelLayout,
+    HBFServerHardware,
+    qwen_logical_kv_bytes_per_token,
+)
 from .hbf_full_model_lifecycle import (
     FullModelHBFLifecycle,
     HBFLifecycleExternalDispatch,
@@ -55,6 +60,101 @@ SUPPORTED_HBF_EXECUTION_BACKENDS = frozenset({
     "analytical_calendar",
     "external_astra",
 })
+SUPPORTED_MIGRATION_POLICY_MODES = frozenset({
+    "eager",
+    "idle_delay",
+    "after_first_tool",
+    "load_aware",
+    "jit_oracle",
+    "never",
+})
+
+
+@dataclass(frozen=True)
+class MigrationPolicy:
+    """Causal migration policy, plus one explicit future-aware upper bound."""
+
+    key: str = "eager"
+    mode: str = "eager"
+    idle_delay_ns: int = 0
+    load_retry_ns: int = 50_000_000
+    load_hysteresis: float = 0.10
+    gpu_hbm_high_watermark: float = 0.80
+    max_load_deferrals: int = 20
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.key, str) or not self.key:
+            raise ValueError("migration policy key must be non-empty")
+        if self.mode not in SUPPORTED_MIGRATION_POLICY_MODES:
+            raise ValueError(
+                "migration policy mode must be one of "
+                f"{sorted(SUPPORTED_MIGRATION_POLICY_MODES)}")
+        for name in (
+            "idle_delay_ns",
+            "load_retry_ns",
+            "max_load_deferrals",
+        ):
+            value = getattr(self, name)
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 0
+            ):
+                raise ValueError(
+                    f"migration policy {name} must be non-negative")
+        for name in (
+            "load_hysteresis",
+            "gpu_hbm_high_watermark",
+        ):
+            value = getattr(self, name)
+            if (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(float(value))
+                or not 0.0 <= float(value) <= 1.0
+            ):
+                raise ValueError(
+                    f"migration policy {name} must be in [0, 1]")
+        if self.mode == "eager" and self.idle_delay_ns:
+            raise ValueError("eager migration cannot have an idle delay")
+        if self.mode == "idle_delay" and self.idle_delay_ns <= 0:
+            raise ValueError(
+                "idle-delay migration requires a positive delay")
+        if self.mode == "load_aware" and self.load_retry_ns <= 0:
+            raise ValueError(
+                "load-aware migration requires a positive retry interval")
+
+    @classmethod
+    def for_key(cls, key: str) -> "MigrationPolicy":
+        fixed_delays = {
+            "delay_25ms": 25_000_000,
+            "delay_50ms": 50_000_000,
+            "delay_100ms": 100_000_000,
+            "delay_200ms": 200_000_000,
+            "delay_500ms": 500_000_000,
+            "delay_1000ms": 1_000_000_000,
+        }
+        if key == "eager":
+            return cls()
+        if key in fixed_delays:
+            return cls(
+                key=key,
+                mode="idle_delay",
+                idle_delay_ns=fixed_delays[key],
+            )
+        if key == "after_first_tool":
+            return cls(key=key, mode="after_first_tool")
+        if key == "load_aware":
+            return cls(
+                key=key,
+                mode="load_aware",
+                idle_delay_ns=100_000_000,
+            )
+        if key == "jit_oracle":
+            return cls(key=key, mode="jit_oracle")
+        if key == "never":
+            return cls(key=key, mode="never")
+        raise ValueError(f"unsupported migration policy key {key!r}")
 
 
 class HybridDeadlockError(RuntimeError):
@@ -89,6 +189,7 @@ class HybridCall:
     output_tokens: int
     prefix_reuse_tokens: int
     has_successor: bool
+    tool_duration_ns: int = 0
     state: HybridCallState = HybridCallState.PENDING
     execution: Optional[HybridExecution] = None
     route_reason: Optional[str] = None
@@ -102,6 +203,7 @@ class HybridCall:
     hbf_request: Optional[HBFServingRequest] = None
     user_completion_ns: Optional[int] = None
     internal_completion_ns: Optional[int] = None
+    hbf_server_index: Optional[int] = None
 
     def validate(self) -> None:
         for name in (
@@ -111,13 +213,20 @@ class HybridCall:
             "input_tokens",
             "output_tokens",
             "prefix_reuse_tokens",
+            "tool_duration_ns",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int):
                 raise ValueError(f"{name} must be an integer")
-        if self.request_id < 0 or self.call_index < 0 or self.release_ns < 0:
+        if (
+            self.request_id < 0
+            or self.call_index < 0
+            or self.release_ns < 0
+            or self.tool_duration_ns < 0
+        ):
             raise ValueError(
-                "request_id/call_index/release_ns must be non-negative")
+                "request_id/call_index/release/tool duration must be "
+                "non-negative")
         if self.input_tokens <= 0 or self.output_tokens <= 0:
             raise ValueError("input/output tokens must be positive")
         if not 0 <= self.prefix_reuse_tokens <= self.input_tokens:
@@ -146,6 +255,7 @@ class HybridCall:
             or self.hbf_request is not None
             or self.user_completion_ns is not None
             or self.internal_completion_ns is not None
+            or self.hbf_server_index is not None
         ):
             raise ValueError("submitted hybrid call must be pristine")
 
@@ -249,6 +359,12 @@ class HybridNodeMetrics:
     user_completed_calls: int = 0
     internal_completed_calls: int = 0
     migration_hbm_releases: int = 0
+    migration_triggers_scheduled: int = 0
+    migration_triggers_launched: int = 0
+    migration_triggers_canceled: int = 0
+    migration_load_deferrals: int = 0
+    gpu_hbm_pressure_migration_starts: int = 0
+    gpu_hbm_pressure_evictions: int = 0
     max_pending_calls: int = 0
 
 
@@ -260,6 +376,8 @@ class GPUHBFHybridNode:
             gpu_hardware: P4D4GPUHardware,
             hbf_hardware: HBFServerHardware,
             hbf_layout: str | HBFParallelLayout = "tp4",
+            hbf_server_layouts: Optional[
+                Sequence[str | HBFParallelLayout]] = None,
             gpu_node_id: int = 0,
             max_num_batched_tokens: int = 8_192,
             max_num_seqs: int = 128,
@@ -271,7 +389,8 @@ class GPUHBFHybridNode:
             hbf_execution_backend: str = (
                 "analytical_calendar"),
             hbf_server_id: Optional[int] = None,
-            hbf_astra_chunk_bytes: int = 64 * 1024 ** 2) -> None:
+            hbf_astra_chunk_bytes: int = 64 * 1024 ** 2,
+            migration_policy: str | MigrationPolicy = "eager") -> None:
         if not isinstance(validate_every_event, bool):
             raise ValueError("validate_every_event must be a boolean")
         if (
@@ -300,28 +419,67 @@ class GPUHBFHybridNode:
         ):
             raise ValueError(
                 "hbf_astra_chunk_bytes must be a positive integer")
-        layout = (
+        primary_layout = (
             HBFParallelLayout.for_key(hbf_layout)
             if isinstance(hbf_layout, str) else hbf_layout
         )
-        if not isinstance(layout, HBFParallelLayout):
+        if not isinstance(primary_layout, HBFParallelLayout):
             raise TypeError(
                 "hbf_layout must be a layout key or HBFParallelLayout")
+        if hbf_server_layouts is None:
+            layouts = (primary_layout,)
+        else:
+            if (
+                isinstance(hbf_server_layouts, (str, bytes))
+                or not hbf_server_layouts
+            ):
+                raise ValueError(
+                    "hbf_server_layouts must be a non-empty sequence")
+            layouts = tuple(
+                HBFParallelLayout.for_key(value)
+                if isinstance(value, str) else value
+                for value in hbf_server_layouts
+            )
+            if any(
+                    not isinstance(value, HBFParallelLayout)
+                    for value in layouts):
+                raise TypeError(
+                    "hbf_server_layouts must contain layout keys or "
+                    "HBFParallelLayout values")
+        policy = (
+            MigrationPolicy.for_key(migration_policy)
+            if isinstance(migration_policy, str)
+            else migration_policy
+        )
+        if not isinstance(policy, MigrationPolicy):
+            raise TypeError(
+                "migration_policy must be a key or MigrationPolicy")
         gpu_hardware.validate()
         hbf_hardware.validate()
-        layout.validate(hbf_hardware.card_count)
-        if layout.key not in SUPPORTED_HBF_LAYOUTS:
+        for layout in layouts:
+            layout.validate(hbf_hardware.card_count)
+            if layout.key not in SUPPORTED_HBF_LAYOUTS:
+                raise ValueError(
+                    f"unsupported HBF layout {layout.key!r}")
+        if (
+            len(layouts) > 1
+            and hbf_execution_backend != "analytical_calendar"
+        ):
             raise ValueError(
-                f"unsupported HBF layout {layout.key!r}")
+                "multiple HBF servers currently require the analytical "
+                "calendar backend")
 
         self.repo_root = Path(repo_root)
         self.gpu_hardware = gpu_hardware
         self.hbf_hardware = hbf_hardware
-        self.hbf_layout = layout
+        self.hbf_layout = layouts[0]
+        self.hbf_layouts = layouts
+        self.hbf_server_count = len(layouts)
         self.gpu_node_id = gpu_node_id
         self.hbf_execution_backend = hbf_execution_backend
         self.hbf_server_id = resolved_hbf_server_id
         self.hbf_astra_chunk_bytes = hbf_astra_chunk_bytes
+        self.migration_policy = policy
         self.validate_every_event = validate_every_event
         self.retain_detailed_history = validate_every_event
 
@@ -359,50 +517,77 @@ class GPUHBFHybridNode:
             retain_detailed_history=self.retain_detailed_history,
         )
 
-        workspace = derive_lpddr_workspace_bytes(
-            layout,
-            max_num_batched_tokens=max_num_batched_tokens,
-            max_num_seqs=max_num_seqs,
+        gpu_source_root_bandwidth_gbps = min(
+            gpu_hardware.pcie_root_bandwidth_gbps,
+            gpu_hardware.decode_gpu_count
+            * gpu_hardware.pcie_bandwidth_gbps_per_gpu,
         )
-        hbf_lpddr_ledger = PerGroupCapacityLedger(
-            group_count=layout.replicas,
-            capacity_bytes=(
-                hbf_hardware.lpddr_capacity_bytes_per_card
-                - workspace
-            ),
-        )
-        self.hbf_lifecycle = FullModelHBFLifecycle(
-            hardware=hbf_hardware,
-            layout=layout,
-            resource_calendar=self.hbf_calendar,
-            lpddr_ledger=hbf_lpddr_ledger,
-            gpu_source_root_bandwidth_gbps=(
-                min(
-                    gpu_hardware.pcie_root_bandwidth_gbps,
-                    gpu_hardware.decode_gpu_count
-                    * gpu_hardware.pcie_bandwidth_gbps_per_gpu,
-                )),
-            validate_every_event=validate_every_event,
-            execution_backend=hbf_execution_backend,
-            server_id=self.hbf_server_id,
-            astra_chunk_bytes=hbf_astra_chunk_bytes,
-        )
-        self.hbf_pool = FullModelHBFServingPool(
-            repo_root=self.repo_root,
-            hardware=hbf_hardware,
-            layout=layout,
-            resource_calendar=self.hbf_calendar,
-            lpddr_ledger=hbf_lpddr_ledger,
-            placement_resolver=self.hbf_lifecycle.placement_snapshot,
-            max_num_batched_tokens=max_num_batched_tokens,
-            max_num_seqs=max_num_seqs,
-            max_prefill_chunk_tokens=max_prefill_chunk_tokens,
-            band=band,
-            validate_every_event=validate_every_event,
-            retain_detailed_history=self.retain_detailed_history,
-            execution_backend=hbf_execution_backend,
-            server_id=self.hbf_server_id,
-        )
+        self.multi_hbf_cluster = None
+        if len(layouts) == 1:
+            layout = layouts[0]
+            workspace = derive_lpddr_workspace_bytes(
+                layout,
+                max_num_batched_tokens=max_num_batched_tokens,
+                max_num_seqs=max_num_seqs,
+            )
+            hbf_lpddr_ledger = PerGroupCapacityLedger(
+                group_count=layout.replicas,
+                capacity_bytes=(
+                    hbf_hardware.lpddr_capacity_bytes_per_card
+                    - workspace
+                ),
+            )
+            self.hbf_lifecycle = FullModelHBFLifecycle(
+                hardware=hbf_hardware,
+                layout=layout,
+                resource_calendar=self.hbf_calendar,
+                lpddr_ledger=hbf_lpddr_ledger,
+                gpu_source_root_bandwidth_gbps=(
+                    gpu_source_root_bandwidth_gbps),
+                validate_every_event=validate_every_event,
+                execution_backend=hbf_execution_backend,
+                server_id=self.hbf_server_id,
+                astra_chunk_bytes=hbf_astra_chunk_bytes,
+            )
+            self.hbf_pool = FullModelHBFServingPool(
+                repo_root=self.repo_root,
+                hardware=hbf_hardware,
+                layout=layout,
+                resource_calendar=self.hbf_calendar,
+                lpddr_ledger=hbf_lpddr_ledger,
+                placement_resolver=(
+                    self.hbf_lifecycle.placement_snapshot),
+                max_num_batched_tokens=max_num_batched_tokens,
+                max_num_seqs=max_num_seqs,
+                max_prefill_chunk_tokens=max_prefill_chunk_tokens,
+                band=band,
+                validate_every_event=validate_every_event,
+                retain_detailed_history=self.retain_detailed_history,
+                execution_backend=hbf_execution_backend,
+                server_id=self.hbf_server_id,
+            )
+        else:
+            from .multi_hbf_cluster import MultiHBFCluster
+
+            if self.hbf_calendar is None:
+                raise AssertionError(
+                    "analytical multi-HBF cluster lacks a calendar")
+            self.multi_hbf_cluster = MultiHBFCluster(
+                repo_root=self.repo_root,
+                hardware=hbf_hardware,
+                layouts=layouts,
+                resource_calendar=self.hbf_calendar,
+                gpu_source_root_bandwidth_gbps=(
+                    gpu_source_root_bandwidth_gbps),
+                max_num_batched_tokens=max_num_batched_tokens,
+                max_num_seqs=max_num_seqs,
+                max_prefill_chunk_tokens=max_prefill_chunk_tokens,
+                band=band,
+                validate_every_event=validate_every_event,
+                server_id_base=self.hbf_server_id,
+            )
+            self.hbf_lifecycle = self.multi_hbf_cluster.lifecycle
+            self.hbf_pool = self.multi_hbf_cluster.pool
 
         self.calls: dict[int, HybridCall] = {}
         self.sessions: dict[str, HybridSession] = {}
@@ -412,6 +597,8 @@ class GPUHBFHybridNode:
         self._gpu_ready_call_ids: deque[int] = deque()
         self._prepare_jobs: dict[int, HybridGPUPrepareJob] = {}
         self._prepare_completion_heap: list[tuple[int, int, int]] = []
+        self._migration_trigger_heap: list[
+            tuple[int, str, int, int]] = []
         self._admission_by_request: dict[int, PDHBMAdmission] = {}
         self._user_completed_ids: deque[int] = deque()
         self._gpu_user_seen: set[int] = set()
@@ -534,6 +721,14 @@ class GPUHBFHybridNode:
         if call.call_index == 0:
             self.hbf_lifecycle.register_session(
                 call.session_id, now_ns=self.current_ns)
+        if hasattr(
+                self.hbf_lifecycle,
+                "server_index_for_session"):
+            call.hbf_server_index = (
+                self.hbf_lifecycle.server_index_for_session(
+                    call.session_id))
+        else:
+            call.hbf_server_index = 0
         placement = self.hbf_lifecycle.sessions[call.session_id]
         operational_reuse = min(
             call.prefix_reuse_tokens,
@@ -654,10 +849,11 @@ class GPUHBFHybridNode:
         self.metrics.gpu_d_to_p_tokens += hit_tokens
         self.metrics.gpu_d_to_p_aggregate_bytes += stage.aggregate_bytes
 
-    def _admit_pending(self, now_ns: int) -> None:
+    def _admit_pending(self, now_ns: int) -> bool:
         deferred: deque[int] = deque()
         hbf_requests: list[HBFServingRequest] = []
         gpu_requests: list[PDServingRequest] = []
+        capacity_blocked = False
         while self._pending_call_ids:
             request_id = self._pending_call_ids.popleft()
             call = self.calls[request_id]
@@ -690,7 +886,13 @@ class GPUHBFHybridNode:
             if admission is None:
                 self.metrics.gpu_hbm_capacity_deferrals += 1
                 deferred.append(request_id)
-                continue
+                # Do not route later calls yet. Their still-idle GPU_READY
+                # placements remain eligible for deterministic pressure
+                # migration or eviction.
+                deferred.extend(self._pending_call_ids)
+                self._pending_call_ids.clear()
+                capacity_blocked = True
+                break
             self._admission_by_request[request_id] = admission
             call.admission_id = admission.admission_id
             hit_tokens = (
@@ -724,6 +926,7 @@ class GPUHBFHybridNode:
             gpu_requests.sort(key=lambda request: request.request_id)
             self.gpu_pool.submit_many(
                 gpu_requests, now_ns=now_ns)
+        return capacity_blocked
 
     def _submit_gpu_ready(self, now_ns: int) -> bool:
         if not self._gpu_ready_call_ids:
@@ -763,6 +966,237 @@ class GPUHBFHybridNode:
         self._user_completed_ids.append(call.request_id)
         self.metrics.user_completed_calls += 1
 
+    def _gpu_compute_pressure(self) -> float:
+        worker_work = sum((
+            len(self.gpu_pool.p_worker.waiting),
+            len(self.gpu_pool.d_worker.waiting),
+            int(self.gpu_pool.p_worker.inflight is not None),
+            int(self.gpu_pool.d_worker.inflight is not None),
+            len(self._pending_call_ids),
+            len(self._gpu_ready_call_ids),
+        ))
+        return worker_work / 2.0
+
+    def _hbf_compute_pressure(self) -> float:
+        if self.multi_hbf_cluster is not None:
+            return self.multi_hbf_cluster.normalized_compute_pressure()
+        worker_work = sum(
+            len(worker.waiting)
+            + len(worker.prefill_drain)
+            + len(worker.active_decode)
+            + int(worker.inflight is not None)
+            + int(worker.pending_launch_ns is not None)
+            for worker in self.hbf_pool.workers
+        )
+        return worker_work / max(1, len(self.hbf_pool.workers))
+
+    def _gpu_d_hbm_fraction(self) -> float:
+        return (
+            self.gpu_hbm.d_used_bytes_per_rank
+            / self.gpu_hbm.d_capacity_bytes_per_rank
+        )
+
+    def _gpu_ready_pressure_candidates(self) -> list[str]:
+        values = []
+        for session_id, placement in self.hbf_lifecycle.sessions.items():
+            if (
+                placement.state == PlacementState.GPU_READY
+                and placement.active_request_id is None
+                and self.gpu_hbm.d_bytes(session_id)
+                and self.gpu_hbm.active_admission(session_id) is None
+                and self.hbf_lifecycle.gpu_ready_pressure_reclaimable(
+                    session_id)
+            ):
+                values.append((
+                    placement.last_access_ns,
+                    session_id,
+                ))
+        return [
+            session_id for _, session_id in sorted(values)
+        ]
+
+    def _relieve_gpu_hbm_pressure(
+            self, now_ns: int) -> Optional[str]:
+        """Create progress when idle retained KV blocks GPU admission."""
+
+        candidates = self._gpu_ready_pressure_candidates()
+        if not candidates:
+            return None
+        victim = candidates[0]
+        if self.migration_policy.mode != "never":
+            job = self.hbf_lifecycle.start_migration(
+                victim, now_ns=now_ns)
+            if job is not None:
+                self.metrics.gpu_hbm_pressure_migration_starts += 1
+                return "migration"
+        eviction = (
+            self.hbf_lifecycle
+            .evict_oldest_gpu_ready_for_hbm_pressure(
+                candidates, now_ns=now_ns)
+        )
+        if eviction is None:
+            return None
+        self.gpu_hbm.release_idle_session(eviction.session_id)
+        self.metrics.gpu_hbm_pressure_evictions += 1
+        return "eviction"
+
+    def _migration_lower_bound_ns(self, call: HybridCall) -> int:
+        """Return a future-aware JIT policy's optimistic transfer bound."""
+
+        if call.gpu_request is None:
+            raise RuntimeError(
+                "migration estimate requires a completed GPU request")
+        logical_bytes = (
+            call.gpu_request.final_materialized_kv_tokens
+            * qwen_logical_kv_bytes_per_token()
+        )
+        rdma_ns = (
+            int(math.ceil(
+                self.hbf_hardware.rdma_one_way_latency_us * 1e3))
+            + int(math.ceil(
+                logical_bytes
+                / self.hbf_hardware.rdma_bandwidth_gbps))
+        )
+        return rdma_ns
+
+    def _schedule_migration_trigger(
+            self, call: HybridCall, *,
+            due_ns: int, deferrals: int = 0) -> None:
+        placement = self.hbf_lifecycle.sessions[call.session_id]
+        if placement.state != PlacementState.GPU_READY:
+            raise RuntimeError(
+                "migration trigger requires GPU_READY placement")
+        heapq.heappush(
+            self._migration_trigger_heap,
+            (
+                due_ns,
+                call.session_id,
+                placement.version,
+                deferrals,
+            ),
+        )
+        self.metrics.migration_triggers_scheduled += 1
+
+    def _migration_trigger_due_ns(
+            self, call: HybridCall, *, now_ns: int) -> Optional[int]:
+        policy = self.migration_policy
+        if policy.mode == "never":
+            return None
+        if policy.mode == "after_first_tool":
+            return None
+        if call.user_completion_ns is None:
+            raise RuntimeError(
+                "migration trigger requires user completion")
+        if policy.mode in {"idle_delay", "load_aware"}:
+            return max(
+                now_ns,
+                call.user_completion_ns + policy.idle_delay_ns,
+            )
+        if policy.mode == "jit_oracle":
+            next_release_ns = (
+                call.user_completion_ns + call.tool_duration_ns)
+            return max(
+                now_ns,
+                next_release_ns
+                - self._migration_lower_bound_ns(call),
+            )
+        raise RuntimeError(
+            f"policy {policy.mode!r} does not use a delayed trigger")
+
+    def _complete_gpu_placement(
+            self, call: HybridCall, *, now_ns: int) -> None:
+        if call.gpu_request is None:
+            raise RuntimeError("GPU call lacks a serving request")
+        policy = self.migration_policy
+        start_now = (
+            policy.mode == "eager"
+            or (
+                policy.mode == "after_first_tool"
+                and call.call_index >= 1
+            )
+        )
+        self.hbf_lifecycle.complete_gpu_turn(
+            call.session_id,
+            now_ns=now_ns,
+            total_tokens=(
+                call.gpu_request.final_materialized_kv_tokens),
+            has_successor=call.has_successor,
+            start_migration=start_now,
+        )
+        if not call.has_successor or start_now:
+            return
+        due_ns = self._migration_trigger_due_ns(
+            call, now_ns=now_ns)
+        if due_ns is not None:
+            self._schedule_migration_trigger(
+                call, due_ns=due_ns)
+
+    def _process_migration_triggers(self, now_ns: int) -> None:
+        while (
+            self._migration_trigger_heap
+            and self._migration_trigger_heap[0][0] <= now_ns
+        ):
+            due_ns, session_id, version, deferrals = heapq.heappop(
+                self._migration_trigger_heap)
+            placement = self.hbf_lifecycle.sessions.get(session_id)
+            if (
+                placement is None
+                or placement.state != PlacementState.GPU_READY
+                or placement.active_request_id is not None
+                or placement.version != version
+            ):
+                self.metrics.migration_triggers_canceled += 1
+                continue
+            if (
+                self.migration_policy.mode == "load_aware"
+                and deferrals
+                < self.migration_policy.max_load_deferrals
+                and self._gpu_d_hbm_fraction()
+                < self.migration_policy.gpu_hbm_high_watermark
+                and self._hbf_compute_pressure()
+                > (
+                    self._gpu_compute_pressure()
+                    + self.migration_policy.load_hysteresis
+                )
+            ):
+                heapq.heappush(
+                    self._migration_trigger_heap,
+                    (
+                        max(due_ns, now_ns)
+                        + self.migration_policy.load_retry_ns,
+                        session_id,
+                        version,
+                        deferrals + 1,
+                    ),
+                )
+                self.metrics.migration_load_deferrals += 1
+                continue
+            job = self.hbf_lifecycle.start_migration(
+                session_id, now_ns=now_ns)
+            if job is not None:
+                self.metrics.migration_triggers_launched += 1
+
+    def _prune_stale_migration_triggers(self) -> None:
+        while self._migration_trigger_heap:
+            _, session_id, version, _ = (
+                self._migration_trigger_heap[0])
+            placement = self.hbf_lifecycle.sessions.get(session_id)
+            if (
+                placement is not None
+                and placement.state == PlacementState.GPU_READY
+                and placement.active_request_id is None
+                and placement.version == version
+            ):
+                return
+            heapq.heappop(self._migration_trigger_heap)
+            self.metrics.migration_triggers_canceled += 1
+
+    def _next_migration_trigger_ns(self) -> Optional[int]:
+        self._prune_stale_migration_triggers()
+        if not self._migration_trigger_heap:
+            return None
+        return self._migration_trigger_heap[0][0]
+
     def _finish_gpu_internal(
             self, call: HybridCall, *, now_ns: int) -> None:
         if call.internal_completion_ns is not None:
@@ -775,15 +1209,7 @@ class GPUHBFHybridNode:
             admission,
             has_successor=call.has_successor,
         )
-        if call.gpu_request is None:
-            raise RuntimeError("GPU call lacks a serving request")
-        self.hbf_lifecycle.complete_gpu_turn(
-            call.session_id,
-            now_ns=now_ns,
-            total_tokens=(
-                call.gpu_request.final_materialized_kv_tokens),
-            has_successor=call.has_successor,
-        )
+        self._complete_gpu_placement(call, now_ns=now_ns)
         session = self.sessions[call.session_id]
         session.last_internal_call_index = call.call_index
         session.ended = not call.has_successor
@@ -1148,7 +1574,17 @@ class GPUHBFHybridNode:
         ):
             raise ValueError(
                 "flush_scheduling must run at the shared node timestamp")
-        self._admit_pending(now_ns)
+        # A co-timed resume is admitted first.  Its route transition makes
+        # the old delayed trigger stale before any migration resource is
+        # reserved.
+        while True:
+            capacity_blocked = self._admit_pending(now_ns)
+            if not capacity_blocked:
+                break
+            pressure_action = self._relieve_gpu_hbm_pressure(now_ns)
+            if pressure_action != "eviction":
+                break
+        self._process_migration_triggers(now_ns)
         self._submit_gpu_ready(now_ns)
         self.gpu_pool.flush_scheduling(now_ns)
         self.hbf_pool.flush_scheduling(now_ns)
@@ -1160,7 +1596,14 @@ class GPUHBFHybridNode:
         :meth:`has_pending_external` to distinguish it from full idleness.
         """
 
-        return self._next_raw_event_ns()
+        values = [
+            value for value in (
+                self._next_raw_event_ns(),
+                self._next_migration_trigger_ns(),
+            )
+            if value is not None
+        ]
+        return min(values) if values else None
 
     def pop_completed(self) -> list[HybridCall]:
         result = []
@@ -1177,6 +1620,7 @@ class GPUHBFHybridNode:
         return (
             f"unfinished={unfinished[:8]}, "
             f"pending={list(self._pending_call_ids)[:8]}, "
+            f"migration_triggers={len(self._migration_trigger_heap)}, "
             f"hbf_external_pending={self.has_pending_external()}, "
             f"gpu_hbm_p={self.gpu_hbm.p_used_bytes_per_rank}, "
             f"gpu_hbm_d={self.gpu_hbm.d_used_bytes_per_rank}")
@@ -1197,6 +1641,7 @@ class GPUHBFHybridNode:
             self._pending_call_ids
             or self._gpu_ready_call_ids
             or self._prepare_completion_heap
+            or self._migration_trigger_heap
             or any(
                 call.state != HybridCallState.INTERNAL_COMPLETE
                 for call in self.calls.values()
@@ -1381,6 +1826,16 @@ class GPUHBFHybridNode:
                 self.metrics.user_completed_calls):
             raise AssertionError(
                 "hybrid internal completions exceed user completions")
+        for due_ns, session_id, version, deferrals in (
+                self._migration_trigger_heap):
+            if (
+                due_ns < 0
+                or not session_id
+                or version < 0
+                or deferrals < 0
+            ):
+                raise AssertionError(
+                    "invalid delayed migration trigger")
 
     def report(self) -> Mapping[str, Any]:
         execution_counts = Counter(
@@ -1416,10 +1871,19 @@ class GPUHBFHybridNode:
                 .reservation_bytes_by_resource.get(
                     "rdma-network", 0))
             rdma_accounting_source = "python_analytical_calendar"
+        mode = (
+            "one_p4d4_gpu_plus_one_8card_full_model_hbf"
+            if self.hbf_server_count == 1
+            else (
+                "one_p4d4_gpu_plus_"
+                f"{self.hbf_server_count}_8card_full_model_hbf_servers"
+            )
+        )
         return {
-            "mode": "one_p4d4_gpu_plus_one_8card_full_model_hbf",
+            "mode": mode,
             "hbf_execution_backend": self.hbf_execution_backend,
             "hbf_server_id": self.hbf_server_id,
+            "hbf_server_count": self.hbf_server_count,
             "hbf_astra_chunk_bytes": self.hbf_astra_chunk_bytes,
             "hbf_completion_time_source": (
                 "external_astra_callback"
@@ -1427,12 +1891,34 @@ class GPUHBFHybridNode:
                 else "python_analytical_calendar"
             ),
             "hbf_layout": asdict(self.hbf_layout),
+            "hbf_server_layouts": [
+                asdict(layout) for layout in self.hbf_layouts
+            ],
+            "migration_policy": asdict(self.migration_policy),
             "hbf_topology_contract": {
+                # Legacy primary-server fields remain for report consumers.
                 "card_count": self.hbf_hardware.card_count,
                 "tp_group_count": self.hbf_layout.replicas,
                 "cards_per_tp_group": self.hbf_layout.tp_size,
                 "physical_kv_replication_factor": (
                     self.hbf_layout.physical_kv_replication_factor),
+                "card_count_per_server": self.hbf_hardware.card_count,
+                "total_card_count": (
+                    self.hbf_hardware.card_count
+                    * self.hbf_server_count),
+                "servers": [
+                    {
+                        "server_index": server_index,
+                        "tp_group_count": layout.replicas,
+                        "cards_per_tp_group": layout.tp_size,
+                        "physical_kv_replication_factor": (
+                            layout.physical_kv_replication_factor),
+                        "kv_layout_semantics": (
+                            layout.kv_layout_semantics),
+                    }
+                    for server_index, layout in enumerate(
+                        self.hbf_layouts)
+                ],
                 "collective_fabric": (
                     "nonblocking intra-server fabric with per-card "
                     "endpoint bandwidth; disjoint TP4 groups may overlap "
@@ -1445,9 +1931,10 @@ class GPUHBFHybridNode:
                     "PCIe root and card interface touched by the selected "
                     "replica group"),
                 "tp8_specific_assumption": (
-                    "one eight-card TP group spans both four-card PCIe "
-                    "roots; collectives use the intra-server fabric, and "
-                    "GQA stores two physical KV copies"),
+                    "tp8_context spans both four-card PCIe roots and "
+                    "context-stripes each KV head across a card pair, "
+                    "retaining one physical KV copy; conventional GQA tp8 "
+                    "retains two physical KV copies"),
             },
             "server_resource_contract": {
                 "gpu_compute_calendar_independent": True,
@@ -1471,8 +1958,9 @@ class GPUHBFHybridNode:
                     "root/NIC DMA resource; GPU P/D peer traffic uses "
                     "NVLink and does not share that resource"),
                 "same_timestamp_priority": (
-                    "completion and its migration/append allocation "
-                    "precede successor release and new arrivals"),
+                    "component completion publication precedes arrivals; "
+                    "a co-timed successor arrival precedes a delayed "
+                    "migration trigger"),
             },
             "validate_every_event": self.validate_every_event,
             "retain_detailed_history": self.retain_detailed_history,
@@ -1510,6 +1998,11 @@ class GPUHBFHybridNode:
             "gpu_pool": self.gpu_pool.report(),
             "hbf_lifecycle": self.hbf_lifecycle.report(),
             "hbf_pool": self.hbf_pool.report(),
+            "multi_hbf_cluster": (
+                None
+                if self.multi_hbf_cluster is None
+                else self.multi_hbf_cluster.report()
+            ),
             "sessions": {
                 session_id: asdict(session)
                 for session_id, session in sorted(self.sessions.items())
@@ -1524,6 +2017,8 @@ class GPUHBFHybridNode:
                     "output_tokens": call.output_tokens,
                     "prefix_reuse_tokens": call.prefix_reuse_tokens,
                     "has_successor": call.has_successor,
+                    "tool_duration_ns": call.tool_duration_ns,
+                    "hbf_server_index": call.hbf_server_index,
                     "state": call.state.value,
                     "execution": (
                         None if call.execution is None
@@ -1584,13 +2079,15 @@ class HybridSystemMetrics:
 
 
 class GPUHBFHybridSystem(ResumableCutoffEventLoopMixin):
-    """Dynamic agentic-session event loop for the proposed two-server system."""
+    """Dynamic agentic event loop for one GPU and one or more HBF servers."""
 
     def __init__(
             self, *, repo_root: Path,
             gpu_hardware: Optional[P4D4GPUHardware] = None,
             hbf_hardware: Optional[HBFServerHardware] = None,
             hbf_layout: str = "tp4",
+            hbf_server_layouts: Optional[
+                Sequence[str | HBFParallelLayout]] = None,
             max_num_batched_tokens: int = 8_192,
             max_num_seqs: int = 128,
             p_max_num_seqs: Optional[int] = None,
@@ -1601,7 +2098,8 @@ class GPUHBFHybridSystem(ResumableCutoffEventLoopMixin):
             hbf_execution_backend: str = (
                 "analytical_calendar"),
             hbf_server_id: Optional[int] = None,
-            hbf_astra_chunk_bytes: int = 64 * 1024 ** 2) -> None:
+            hbf_astra_chunk_bytes: int = 64 * 1024 ** 2,
+            migration_policy: str | MigrationPolicy = "eager") -> None:
         self.node = GPUHBFHybridNode(
             repo_root=repo_root,
             gpu_hardware=(
@@ -1613,6 +2111,7 @@ class GPUHBFHybridSystem(ResumableCutoffEventLoopMixin):
                 if hbf_hardware is None else hbf_hardware
             ),
             hbf_layout=hbf_layout,
+            hbf_server_layouts=hbf_server_layouts,
             max_num_batched_tokens=max_num_batched_tokens,
             max_num_seqs=max_num_seqs,
             p_max_num_seqs=p_max_num_seqs,
@@ -1623,6 +2122,7 @@ class GPUHBFHybridSystem(ResumableCutoffEventLoopMixin):
             hbf_execution_backend=hbf_execution_backend,
             hbf_server_id=hbf_server_id,
             hbf_astra_chunk_bytes=hbf_astra_chunk_bytes,
+            migration_policy=migration_policy,
         )
         self.validate_every_event = validate_every_event
         self.metrics = HybridSystemMetrics()
@@ -1876,6 +2376,7 @@ class GPUHBFHybridSystem(ResumableCutoffEventLoopMixin):
                 output_tokens=spec.output_tokens,
                 prefix_reuse_tokens=spec.cached_prefix_tokens,
                 has_successor=spec.has_successor,
+                tool_duration_ns=spec.tool_duration_ns,
             )
             self._released_ids.add(request_id)
             self._runtime_calls[request_id] = call
@@ -2031,8 +2532,18 @@ class GPUHBFHybridSystem(ResumableCutoffEventLoopMixin):
             "architecture": {
                 "gpu_server": "one_4p4d_h100_server",
                 "hbf_server": (
-                    "one_8card_full_model_hbf_npu_server"),
+                    "one_8card_full_model_hbf_gpu_server"
+                    if self.node.hbf_server_count == 1
+                    else (
+                        f"{self.node.hbf_server_count}_independent_"
+                        "8card_full_model_hbf_gpu_servers"
+                    )
+                ),
+                "hbf_server_count": self.node.hbf_server_count,
                 "hbf_layout": self.node.hbf_layout.key,
+                "hbf_server_layouts": [
+                    layout.key for layout in self.node.hbf_layouts
+                ],
                 "hbf_execution_backend": (
                     self.node.hbf_execution_backend),
                 "hbf_server_id": self.node.hbf_server_id,
@@ -2047,6 +2558,8 @@ class GPUHBFHybridSystem(ResumableCutoffEventLoopMixin):
                 "hbf_lpddr_finish_capacity_miss": (
                     "atomic_admission_then_full_gpu_recompute"),
                 "hbf_ready_per_call_network_round_trip": False,
+                "migration": asdict(
+                    self.node.migration_policy),
             },
             "metrics": asdict(self.metrics),
             "current_ns": self.current_ns,
@@ -2094,6 +2607,8 @@ __all__ = [
     "HybridNodeMetrics",
     "HybridSession",
     "HybridSystemMetrics",
+    "MigrationPolicy",
     "SUPPORTED_HBF_LAYOUTS",
     "SUPPORTED_HBF_EXECUTION_BACKENDS",
+    "SUPPORTED_MIGRATION_POLICY_MODES",
 ]

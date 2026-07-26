@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 class PlacementState(str, Enum):
     GPU_ACTIVE = "gpu_active"
     GPU_READY = "gpu_ready"
+    SSD_READY = "ssd_ready"
     MIGRATING = "migrating"
     HBF_READY = "hbf_ready"
     HBF_ACTIVE = "hbf_active"
@@ -41,8 +42,16 @@ class PlacementState(str, Enum):
 
 class ResumeExecution(str, Enum):
     GPU = "gpu"
+    GPU_RESTORE = "gpu_restore"
     GPU_RECOMPUTE = "gpu_recompute"
     HBF = "hbf"
+
+
+class MigrationSourceKind(str, Enum):
+    """Authoritative snapshot source for one HBF migration job."""
+
+    GPU = "gpu"
+    SSD = "ssd"
 
 
 class ActivePrefillDrainStatus(str, Enum):
@@ -723,6 +732,7 @@ class SessionPlacement:
     pending_reserved_per_card_bytes: int = 0
     last_access_ns: int = 0
     active_request_id: Optional[int] = None
+    migration_source_kind: Optional[MigrationSourceKind] = None
     migration_job_ids: set[int] = field(default_factory=set)
     append_job_ids: set[int] = field(default_factory=set)
 
@@ -742,6 +752,7 @@ class MigrationJob:
     completion_ns: int
     token_start: int = 0
     card_bytes: tuple[tuple[int, int], ...] = ()
+    source_kind: MigrationSourceKind = MigrationSourceKind.GPU
 
 
 @dataclass(frozen=True)
@@ -829,6 +840,14 @@ class LifecycleMetrics:
     migration_logical_bytes: int = 0
     migration_physical_bytes: int = 0
     migration_wasted_physical_bytes: int = 0
+    ssd_checkpoints_published: int = 0
+    ssd_imports_started: int = 0
+    ssd_imports_committed: int = 0
+    ssd_imports_stale: int = 0
+    ssd_import_logical_bytes: int = 0
+    ssd_import_physical_bytes: int = 0
+    ssd_import_wasted_physical_bytes: int = 0
+    ssd_restore_resumes: int = 0
     gpu_fallback_resumes: int = 0
     gpu_recompute_resumes: int = 0
     lpddr_capacity_fallback_resumes: int = 0
@@ -878,7 +897,11 @@ class FullModelHBFLifecycle:
             validate_every_event: bool = True,
             execution_backend: str = "analytical_calendar",
             server_id: int = 0,
-            astra_chunk_bytes: int = 64 * 1024 ** 2) -> None:
+            astra_chunk_bytes: int = 64 * 1024 ** 2,
+            analytical_resource_prefix: str = "",
+            gpu_source_node_id: int = 0,
+            gpu_source_cpu_bandwidth_gbps: float = 200.0,
+            gpu_source_nic_bandwidth_gbps: Optional[float] = None) -> None:
         hardware.validate()
         layout.validate(hardware.card_count)
         pcie_topology = HBFPCIeTopology.from_hardware(
@@ -895,12 +918,29 @@ class FullModelHBFLifecycle:
             raise ValueError(
                 "execution_backend must be one of "
                 f"{sorted(self._EXECUTION_BACKENDS)}")
+        if not isinstance(analytical_resource_prefix, str):
+            raise ValueError(
+                "analytical_resource_prefix must be a string")
+        if (
+            execution_backend == "external_astra"
+            and analytical_resource_prefix
+        ):
+            raise ValueError(
+                "analytical_resource_prefix is unsupported with "
+                "execution_backend='external_astra'")
         if (
             not isinstance(server_id, int)
             or isinstance(server_id, bool)
             or server_id < 0
         ):
             raise ValueError("server_id must be a non-negative integer")
+        if (
+            not isinstance(gpu_source_node_id, int)
+            or isinstance(gpu_source_node_id, bool)
+            or gpu_source_node_id < 0
+        ):
+            raise ValueError(
+                "gpu_source_node_id must be a non-negative integer")
         if (
             not isinstance(astra_chunk_bytes, int)
             or isinstance(astra_chunk_bytes, bool)
@@ -928,15 +968,45 @@ class FullModelHBFLifecycle:
             raise ValueError(
                 "gpu_source_root_bandwidth_gbps must be positive "
                 "and finite")
+        for name, value in (
+            (
+                "gpu_source_cpu_bandwidth_gbps",
+                gpu_source_cpu_bandwidth_gbps,
+            ),
+            (
+                "gpu_source_nic_bandwidth_gbps",
+                (
+                    hardware.rdma_bandwidth_gbps
+                    if gpu_source_nic_bandwidth_gbps is None
+                    else gpu_source_nic_bandwidth_gbps
+                ),
+            ),
+        ):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or value <= 0
+            ):
+                raise ValueError(f"{name} must be positive and finite")
         self.hardware = hardware
         self.layout = layout
         self.pcie_topology = pcie_topology
         self.execution_backend = execution_backend
         self.server_id = server_id
         self.astra_chunk_bytes = astra_chunk_bytes
+        self.analytical_resource_prefix = analytical_resource_prefix
+        self.gpu_source_node_id = gpu_source_node_id
         self.validate_every_event = validate_every_event
         self.gpu_source_root_bandwidth_gbps = float(
             gpu_source_root_bandwidth_gbps)
+        self.gpu_source_cpu_bandwidth_gbps = float(
+            gpu_source_cpu_bandwidth_gbps)
+        self.gpu_source_nic_bandwidth_gbps = float(
+            hardware.rdma_bandwidth_gbps
+            if gpu_source_nic_bandwidth_gbps is None
+            else gpu_source_nic_bandwidth_gbps
+        )
         self.calendar = (
             resource_calendar
             if resource_calendar is not None else ResourceCalendar()
@@ -1039,6 +1109,10 @@ class FullModelHBFLifecycle:
         )
 
         if isinstance(job, MigrationJob):
+            if job.source_kind != MigrationSourceKind.GPU:
+                raise RuntimeError(
+                    "external ASTRA lifecycle does not support "
+                    "SSD-origin migration jobs")
             projection = build_migration_hbf_astra_projection(
                 job=job,
                 hardware=self.hardware,
@@ -1351,11 +1425,62 @@ class FullModelHBFLifecycle:
                 "preflight-feasible HBF group could not reclaim capacity")
         return group.group_id
 
+    def _choose_group_without_eviction(
+            self, card_bytes_by_group: Mapping[
+                int, Mapping[int, int]]) -> Optional[int]:
+        """Choose a replica only when its current free capacity fits.
+
+        SSD checkpoints are durable source copies.  Importing one is an
+        opportunistic promotion, so it must never destroy an already useful
+        HBF placement merely to make the promotion fit.
+        """
+
+        if set(card_bytes_by_group) != {
+                group.group_id for group in self.groups}:
+            raise ValueError(
+                "candidate card vectors must cover every replica group")
+        feasible: list[HBFReplicaGroup] = []
+        for group in self.groups:
+            requested = self._normalize_group_card_bytes(
+                group.group_id,
+                card_bytes_by_group[group.group_id],
+            )
+            if all(
+                    self._reserved_bytes_by_card[
+                        group.group_id][card_id]
+                    + requested[card_id]
+                    <= self.usable_bytes_per_card
+                    for card_id in group.card_ids):
+                feasible.append(group)
+        if not feasible:
+            return None
+        return min(
+            feasible,
+            key=lambda item: (
+                max(
+                    (
+                        self._reserved_bytes_by_card[
+                            item.group_id][card_id]
+                        + card_bytes_by_group[
+                            item.group_id][card_id]
+                        for card_id in item.card_ids
+                    ),
+                    default=0,
+                ),
+                item.group_id,
+            ),
+        ).group_id
+
     @staticmethod
     def _service_ns(byte_count: int, bandwidth_gbps: float) -> int:
         if byte_count <= 0:
             return 0
         return int(math.ceil(byte_count / bandwidth_gbps))
+
+    def _analytical_local_resource(self, resource: str) -> str:
+        """Namespace one HBF-server-local analytical resource."""
+
+        return f"{self.analytical_resource_prefix}{resource}"
 
     def _migration_demands(
             self, group_id: int, *, logical_bytes: int,
@@ -1387,7 +1512,9 @@ class FullModelHBFLifecycle:
         for root_id, byte_count in root_bytes.items():
             root_bandwidth, root_fixed_us = (
                 self.pcie_topology.migration_root_service(root_id))
-            demands[f"hbf-pcie-root-{root_id}"] = (
+            demands[self._analytical_local_resource(
+                f"hbf-pcie-root-{root_id}"
+            )] = (
                 int(math.ceil(root_fixed_us * 1e3))
                 + self._service_ns(byte_count, root_bandwidth),
                 byte_count,
@@ -1395,14 +1522,18 @@ class FullModelHBFLifecycle:
         for card_id, byte_count in normalized.items():
             if byte_count == 0:
                 continue
-            demands[f"hbf-card-{card_id}-pcie"] = (
+            demands[self._analytical_local_resource(
+                f"hbf-card-{card_id}-pcie"
+            )] = (
                 self._service_ns(
                     byte_count,
                     self.hardware.intra_fabric_bandwidth_gbps_per_card,
                 ),
                 byte_count,
             )
-            demands[f"hbf-card-{card_id}-media"] = (
+            demands[self._analytical_local_resource(
+                f"hbf-card-{card_id}-media"
+            )] = (
                 int(math.ceil(
                     self.hardware.hbf_write_latency_us * 1e3
                 )) + self._service_ns(
@@ -1411,6 +1542,40 @@ class FullModelHBFLifecycle:
                 ),
                 byte_count,
             )
+        return demands
+
+    def _ssd_import_demands(
+            self, group_id: int, *, logical_bytes: int,
+            physical_bytes: int, card_bytes: Mapping[int, int],
+            job_id: int) -> Mapping[str, tuple[int, int]]:
+        """Return SSD-origin import demand after SSD-to-CPU has completed."""
+
+        demands = dict(self._migration_demands(
+            group_id,
+            logical_bytes=logical_bytes,
+            physical_bytes=physical_bytes,
+            card_bytes=card_bytes,
+            job_id=job_id,
+        ))
+        # The external SSD stage has already populated CPU DRAM.  Replace
+        # the direct GPU-HBM source root with the GPU host's CPU/NIC path.
+        demands.pop("gpu-source-pcie-root")
+        demands.update({
+            f"gpu-node-{self.gpu_source_node_id}-cpu-dram": (
+                self._service_ns(
+                    logical_bytes,
+                    self.gpu_source_cpu_bandwidth_gbps,
+                ),
+                logical_bytes,
+            ),
+            f"gpu-node-{self.gpu_source_node_id}-rdma-nic": (
+                self._service_ns(
+                    logical_bytes,
+                    self.gpu_source_nic_bandwidth_gbps,
+                ),
+                logical_bytes,
+            ),
+        })
         return demands
 
     def _append_demands(
@@ -1422,14 +1587,18 @@ class FullModelHBFLifecycle:
         for card_id, byte_count in normalized.items():
             if byte_count == 0:
                 continue
-            demands[f"hbf-card-{card_id}-lpddr"] = (
+            demands[self._analytical_local_resource(
+                f"hbf-card-{card_id}-lpddr"
+            )] = (
                 self._service_ns(
                     byte_count,
                     self.hardware.lpddr_bandwidth_gbps_per_card,
                 ),
                 byte_count,
             )
-            demands[f"hbf-card-{card_id}-media"] = (
+            demands[self._analytical_local_resource(
+                f"hbf-card-{card_id}-media"
+            )] = (
                 int(math.ceil(
                     self.hardware.hbf_write_latency_us * 1e3
                 )) + self._service_ns(
@@ -1457,7 +1626,10 @@ class FullModelHBFLifecycle:
 
     def complete_gpu_turn(
             self, session_id: str, *, now_ns: int,
-            total_tokens: int, has_successor: bool) -> Optional[MigrationJob]:
+            total_tokens: int, has_successor: bool,
+            start_migration: bool = True) -> Optional[MigrationJob]:
+        if not isinstance(start_migration, bool):
+            raise ValueError("start_migration must be a boolean")
         self.advance(now_ns)
         record = self.sessions[session_id]
         if record.state not in {
@@ -1476,15 +1648,157 @@ class FullModelHBFLifecycle:
             total_tokens * self.kv_bytes_per_token)
         record.last_access_ns = now_ns
         record.active_request_id = None
+        record.migration_source_kind = None
         self._update_peaks()
         if not has_successor:
             self.end_session(session_id, now_ns=now_ns)
             return None
+        if not start_migration:
+            record.state = PlacementState.GPU_READY
+            record.group_id = None
+            if self.validate_every_event:
+                self.assert_invariants()
+            return None
         return self._start_migration(record, now_ns)
+
+    def publish_ssd_checkpoint(
+            self, session_id: str, *, now_ns: int,
+            snapshot_version: int) -> bool:
+        """Atomically publish an externally committed SSD checkpoint.
+
+        The SSD writer owns its transfer and capacity accounting.  This
+        callback only changes the authoritative snapshot source after the
+        complete object is durable.  A late callback is harmless: if the
+        session resumed or produced a newer version, no lifecycle state is
+        changed and ``False`` is returned.
+        """
+
+        if (
+            isinstance(snapshot_version, bool)
+            or not isinstance(snapshot_version, int)
+            or snapshot_version < 0
+        ):
+            raise ValueError(
+                "snapshot_version must be a non-negative integer")
+        self.advance(now_ns)
+        record = self.sessions[session_id]
+        if (
+            record.state != PlacementState.GPU_READY
+            or record.version != snapshot_version
+        ):
+            return False
+        if (
+            record.active_request_id is not None
+            or record.group_id is not None
+            or record.migration_job_ids
+            or record.append_job_ids
+        ):
+            raise RuntimeError(
+                "GPU_READY SSD publication has unexpected live ownership")
+        expected_bytes = record.total_tokens * self.kv_bytes_per_token
+        if record.gpu_retained_bytes != expected_bytes:
+            raise RuntimeError(
+                "SSD publication lacks the complete retained GPU snapshot")
+        record.state = PlacementState.SSD_READY
+        record.gpu_retained_bytes = 0
+        record.last_access_ns = now_ns
+        self.metrics.ssd_checkpoints_published += 1
+        if self.validate_every_event:
+            self.assert_invariants()
+        return True
+
+    def start_migration(
+            self, session_id: str, *,
+            now_ns: int) -> Optional[MigrationJob]:
+        """Start a previously deferred GPU-to-HBF migration.
+
+        The caller owns eligibility timing and exact-timestamp ordering.  A
+        resume that wins that ordering moves the placement out of GPU_READY,
+        causing this method to reject the stale trigger without reserving any
+        migration resource.
+        """
+
+        self.advance(now_ns)
+        record = self.sessions[session_id]
+        if record.state != PlacementState.GPU_READY:
+            raise RuntimeError(
+                "deferred migration requires a GPU_READY session: "
+                f"session={session_id!r}, state={record.state}")
+        if record.active_request_id is not None:
+            raise RuntimeError(
+                "deferred migration cannot start for an active request")
+        if record.group_id is not None:
+            raise RuntimeError(
+                "GPU_READY session unexpectedly owns an HBF group")
+        if record.total_tokens <= 0 or record.gpu_retained_bytes <= 0:
+            raise RuntimeError(
+                "deferred migration lacks retained GPU KV")
+        return self._start_migration(record, now_ns)
+
+    def start_import_from_ssd(
+            self, session_id: str, *,
+            now_ns: int) -> Optional[MigrationJob]:
+        """Promote one CPU-staged SSD snapshot without evicting HBF data.
+
+        ``now_ns`` is the completion time of the caller-owned SSD-to-CPU
+        stage.  This method accounts for the GPU host CPU/NIC source path,
+        the shared RDMA link, and all HBF destination resources.  The
+        analytical calendar is required because the legacy ASTRA migration
+        projection models a GPU-HBM source.
+        """
+
+        if self.execution_backend != "analytical_calendar":
+            raise RuntimeError(
+                "SSD-origin HBF import requires "
+                "execution_backend='analytical_calendar'")
+        self.advance(now_ns)
+        record = self.sessions[session_id]
+        if record.state != PlacementState.SSD_READY:
+            raise RuntimeError(
+                "SSD import requires an SSD_READY session: "
+                f"session={session_id!r}, state={record.state}")
+        if record.active_request_id is not None:
+            raise RuntimeError(
+                "SSD import cannot start for an active request")
+        if record.group_id is not None:
+            raise RuntimeError(
+                "SSD_READY session unexpectedly owns an HBF group")
+        if record.total_tokens <= 0 or record.gpu_retained_bytes != 0:
+            raise RuntimeError(
+                "SSD import requires an SSD-only snapshot")
+        return self._start_migration(
+            record,
+            now_ns,
+            source_kind=MigrationSourceKind.SSD,
+            allow_eviction=False,
+        )
 
     def _start_migration(
             self, record: SessionPlacement,
-            now_ns: int) -> Optional[MigrationJob]:
+            now_ns: int, *,
+            source_kind: MigrationSourceKind = MigrationSourceKind.GPU,
+            allow_eviction: bool = True) -> Optional[MigrationJob]:
+        if not isinstance(source_kind, MigrationSourceKind):
+            raise ValueError(
+                "source_kind must be a MigrationSourceKind")
+        if not isinstance(allow_eviction, bool):
+            raise ValueError("allow_eviction must be a boolean")
+        if source_kind == MigrationSourceKind.GPU:
+            if (
+                record.state not in {
+                    PlacementState.GPU_ACTIVE,
+                    PlacementState.GPU_READY,
+                }
+                or record.gpu_retained_bytes <= 0
+            ):
+                raise RuntimeError(
+                    "GPU migration requires retained GPU KV")
+        elif (
+            record.state != PlacementState.SSD_READY
+            or record.gpu_retained_bytes != 0
+        ):
+            raise RuntimeError(
+                "SSD import requires an SSD-only snapshot")
         logical_bytes = record.total_tokens * self.kv_bytes_per_token
         card_bytes_by_group = {
             group.group_id: self._range_card_bytes(
@@ -1494,10 +1808,19 @@ class FullModelHBFLifecycle:
             )
             for group in self.groups
         }
-        group_id = self._choose_group(card_bytes_by_group, now_ns)
+        group_id = (
+            self._choose_group(card_bytes_by_group, now_ns)
+            if allow_eviction
+            else self._choose_group_without_eviction(
+                card_bytes_by_group)
+        )
         if group_id is None:
-            # No HBF copy exists, but the retained GPU copy remains valid.
-            record.state = PlacementState.GPU_READY
+            # The source copy remains authoritative and retryable.
+            record.state = (
+                PlacementState.GPU_READY
+                if source_kind == MigrationSourceKind.GPU
+                else PlacementState.SSD_READY
+            )
             record.group_id = None
             return None
         card_bytes = card_bytes_by_group[group_id]
@@ -1507,21 +1830,37 @@ class FullModelHBFLifecycle:
         record.generation += 1
         record.state = PlacementState.MIGRATING
         record.group_id = group_id
+        record.migration_source_kind = source_kind
         job_id = self._next_id()
         physical_bytes = self._physical_bytes(logical_bytes)
         if self.execution_backend == "analytical_calendar":
-            start_ns, completion_ns = self.calendar.reserve_parallel(
-                arrival_ns=now_ns,
-                job_id=job_id,
-                kind="migration",
-                namespace="hbf-lifecycle",
-                demands=self._migration_demands(
+            demands = (
+                self._migration_demands(
                     group_id,
                     logical_bytes=logical_bytes,
                     physical_bytes=physical_bytes,
                     card_bytes=card_bytes,
                     job_id=job_id,
+                )
+                if source_kind == MigrationSourceKind.GPU
+                else self._ssd_import_demands(
+                    group_id,
+                    logical_bytes=logical_bytes,
+                    physical_bytes=physical_bytes,
+                    card_bytes=card_bytes,
+                    job_id=job_id,
+                )
+            )
+            start_ns, completion_ns = self.calendar.reserve_parallel(
+                arrival_ns=now_ns,
+                job_id=job_id,
+                kind=(
+                    "migration"
+                    if source_kind == MigrationSourceKind.GPU
+                    else "ssd-import"
                 ),
+                namespace="hbf-lifecycle",
+                demands=demands,
             )
         else:
             # These fields preserve the immutable legacy job schema.  They
@@ -1544,6 +1883,7 @@ class FullModelHBFLifecycle:
             token_start=0,
             card_bytes=canonical_card_bytes(
                 self._group(group_id).card_ids, card_bytes),
+            source_kind=source_kind,
         )
         self._jobs[job_id] = job
         if self.execution_backend == "analytical_calendar":
@@ -1555,6 +1895,10 @@ class FullModelHBFLifecycle:
         self.metrics.migrations_started += 1
         self.metrics.migration_logical_bytes += logical_bytes
         self.metrics.migration_physical_bytes += physical_bytes
+        if source_kind == MigrationSourceKind.SSD:
+            self.metrics.ssd_imports_started += 1
+            self.metrics.ssd_import_logical_bytes += logical_bytes
+            self.metrics.ssd_import_physical_bytes += physical_bytes
         return job
 
     @staticmethod
@@ -1867,24 +2211,40 @@ class FullModelHBFLifecycle:
             # Invalidate publication but do not cancel already consumed
             # network/media service. Its capacity reservation is released by
             # the stale completion callback.
+            source_kind = record.migration_source_kind
+            if source_kind is None:
+                raise RuntimeError(
+                    "migrating session lacks an authoritative source kind")
             record.generation += 1
             if reuse_tokens < record.total_tokens:
                 record.version += 1
                 record.total_tokens = reuse_tokens
+            if source_kind == MigrationSourceKind.SSD:
                 record.gpu_retained_bytes = (
                     reuse_tokens * self.kv_bytes_per_token)
             record.state = PlacementState.GPU_ACTIVE
             record.group_id = None
             record.active_request_id = request_id
+            record.migration_source_kind = None
             self.metrics.gpu_fallback_resumes += 1
+            if source_kind == MigrationSourceKind.SSD:
+                self.metrics.ssd_restore_resumes += 1
             return ResumeRoute(
-                execution=ResumeExecution.GPU,
+                execution=(
+                    ResumeExecution.GPU
+                    if source_kind == MigrationSourceKind.GPU
+                    else ResumeExecution.GPU_RESTORE
+                ),
                 session_id=session_id,
                 group_id=None,
                 hbf_tokens=0,
                 lpddr_tokens=0,
                 migration_inflight=True,
-                reason="migration_inflight_gpu_fallback",
+                reason=(
+                    "migration_inflight_gpu_fallback"
+                    if source_kind == MigrationSourceKind.GPU
+                    else "ssd_import_inflight_gpu_restore"
+                ),
             )
         if record.state == PlacementState.EVICTED:
             self._trim_gpu_lineage(record, reuse_tokens)
@@ -1913,6 +2273,27 @@ class FullModelHBFLifecycle:
                 lpddr_tokens=0,
                 migration_inflight=False,
                 reason="hbf_capacity_unavailable_gpu_retained",
+            )
+        if record.state == PlacementState.SSD_READY:
+            trimmed = self._trim_gpu_lineage(record, reuse_tokens)
+            if not trimmed:
+                # Invalidate any caller-side delayed import trigger even
+                # when the entire SSD snapshot will be restored.
+                record.generation += 1
+            record.gpu_retained_bytes = (
+                reuse_tokens * self.kv_bytes_per_token)
+            record.state = PlacementState.GPU_ACTIVE
+            record.active_request_id = request_id
+            self.metrics.gpu_fallback_resumes += 1
+            self.metrics.ssd_restore_resumes += 1
+            return ResumeRoute(
+                execution=ResumeExecution.GPU_RESTORE,
+                session_id=session_id,
+                group_id=None,
+                hbf_tokens=0,
+                lpddr_tokens=0,
+                migration_inflight=False,
+                reason="ssd_checkpoint_gpu_restore",
             )
         if record.state == PlacementState.GPU_ACTIVE:
             if record.active_request_id is not None:
@@ -2262,6 +2643,7 @@ class FullModelHBFLifecycle:
         )
         if valid:
             record.state = PlacementState.HBF_READY
+            record.migration_source_kind = None
             record.committed_hbf_tokens = job.token_count
             record.lpddr_tokens = 0
             self.lpddr_ledger.release(
@@ -2270,11 +2652,17 @@ class FullModelHBFLifecycle:
                 job_card_bytes)
             record.gpu_retained_bytes = 0
             self.metrics.migrations_committed += 1
+            if job.source_kind == MigrationSourceKind.SSD:
+                self.metrics.ssd_imports_committed += 1
         else:
             self._release_group(job.group_id, job_card_bytes)
             self.metrics.migrations_stale += 1
             self.metrics.migration_wasted_physical_bytes += (
                 job.physical_bytes)
+            if job.source_kind == MigrationSourceKind.SSD:
+                self.metrics.ssd_imports_stale += 1
+                self.metrics.ssd_import_wasted_physical_bytes += (
+                    job.physical_bytes)
 
     def _finish_append(self, job: AppendJob) -> None:
         record = self.sessions[job.session_id]
@@ -2529,6 +2917,7 @@ class FullModelHBFLifecycle:
             record.committed_per_card_bytes = 0
         record.state = PlacementState.ENDED
         record.group_id = None
+        record.migration_source_kind = None
         record.gpu_retained_bytes = 0
         record.committed_hbf_tokens = 0
         record.lpddr_tokens = 0
@@ -2644,6 +3033,50 @@ class FullModelHBFLifecycle:
         )):
             raise AssertionError(
                 "active prefill drain completion accounting mismatch")
+        pending_migrations = tuple(
+            job
+            for job in self._jobs.values()
+            if isinstance(job, MigrationJob)
+        )
+        if any(
+                not isinstance(job.source_kind, MigrationSourceKind)
+                for job in pending_migrations):
+            raise AssertionError(
+                "pending migration has an invalid source kind")
+        if self.metrics.migrations_started != sum((
+            self.metrics.migrations_committed,
+            self.metrics.migrations_stale,
+            len(pending_migrations),
+        )):
+            raise AssertionError(
+                "migration completion accounting mismatch")
+        pending_ssd_imports = sum(
+            job.source_kind == MigrationSourceKind.SSD
+            for job in pending_migrations
+        )
+        if self.metrics.ssd_imports_started != sum((
+            self.metrics.ssd_imports_committed,
+            self.metrics.ssd_imports_stale,
+            pending_ssd_imports,
+        )):
+            raise AssertionError(
+                "SSD import completion accounting mismatch")
+        if (
+            self.metrics.ssd_imports_started
+            > self.metrics.migrations_started
+            or self.metrics.ssd_imports_committed
+            > self.metrics.migrations_committed
+            or self.metrics.ssd_imports_stale
+            > self.metrics.migrations_stale
+            or self.metrics.ssd_import_physical_bytes
+            > self.metrics.migration_physical_bytes
+            or self.metrics.ssd_import_logical_bytes
+            > self.metrics.migration_logical_bytes
+            or self.metrics.ssd_import_wasted_physical_bytes
+            > self.metrics.migration_wasted_physical_bytes
+        ):
+            raise AssertionError(
+                "SSD import metrics exceed aggregate migration metrics")
         expected_group_reservations = {
             group.group_id: {
                 card_id: 0 for card_id in group.card_ids
@@ -2767,18 +3200,69 @@ class FullModelHBFLifecycle:
             ):
                 raise AssertionError(
                     f"HBF state without group: {record}")
-            if (
-                record.state == PlacementState.MIGRATING
-                and record.gpu_retained_bytes <= 0
-            ):
+            if record.state == PlacementState.MIGRATING:
+                current_jobs = [
+                    job
+                    for job_id in record.migration_job_ids
+                    if (
+                        isinstance(
+                            (job := self._jobs.get(job_id)),
+                            MigrationJob,
+                        )
+                        and job.generation == record.generation
+                        and job.version == record.version
+                        and job.group_id == record.group_id
+                    )
+                ]
+                if len(current_jobs) != 1:
+                    raise AssertionError(
+                        "migrating session lacks exactly one current job: "
+                        f"{record}")
+                current_job = current_jobs[0]
+                if (
+                    record.migration_source_kind
+                    != current_job.source_kind
+                ):
+                    raise AssertionError(
+                        "migration source bookkeeping mismatch: "
+                        f"{record}")
+                if (
+                    current_job.source_kind == MigrationSourceKind.GPU
+                    and record.gpu_retained_bytes <= 0
+                ):
+                    raise AssertionError(
+                        f"GPU migration lacks retained KV: {record}")
+                if (
+                    current_job.source_kind == MigrationSourceKind.SSD
+                    and record.gpu_retained_bytes != 0
+                ):
+                    raise AssertionError(
+                        f"SSD import unexpectedly retains GPU KV: {record}")
+            elif record.migration_source_kind is not None:
                 raise AssertionError(
-                    f"migration without retained GPU KV: {record}")
+                    "non-migrating session retains a migration source: "
+                    f"{record}")
             if (
                 record.state == PlacementState.GPU_READY
                 and record.gpu_retained_bytes <= 0
             ):
                 raise AssertionError(
                     f"GPU-ready session lacks retained KV: {record}")
+            if (
+                record.state == PlacementState.SSD_READY
+                and (
+                    record.gpu_retained_bytes
+                    or record.group_id is not None
+                    or record.committed_hbf_tokens
+                    or record.lpddr_tokens
+                    or record.committed_per_card_bytes
+                    or record.pending_reserved_per_card_bytes
+                    or record.migration_job_ids
+                    or record.append_job_ids
+                )
+            ):
+                raise AssertionError(
+                    f"SSD-ready session has non-SSD ownership: {record}")
             if (
                 record.state == PlacementState.ENDED
                 and (
@@ -2801,7 +3285,7 @@ class FullModelHBFLifecycle:
         else:
             projection_schema = None
             projection_fidelity = None
-        return {
+        result = {
             "layout": asdict(self.layout),
             "hardware": asdict(self.hardware),
             "execution_backend": self.execution_backend,
@@ -2822,6 +3306,11 @@ class FullModelHBFLifecycle:
             "validate_every_event": self.validate_every_event,
             "gpu_source_root_bandwidth_gbps": (
                 self.gpu_source_root_bandwidth_gbps),
+            "gpu_source_node_id": self.gpu_source_node_id,
+            "gpu_source_cpu_bandwidth_gbps": (
+                self.gpu_source_cpu_bandwidth_gbps),
+            "gpu_source_nic_bandwidth_gbps": (
+                self.gpu_source_nic_bandwidth_gbps),
             "kv_bytes_per_token": self.kv_bytes_per_token,
             "weight_bytes_per_rank": self.weight_bytes_per_rank,
             "usable_bytes_per_card": self.usable_bytes_per_card,
@@ -2854,6 +3343,24 @@ class FullModelHBFLifecycle:
                 self.lpddr_ledger.peak_used_bytes_by_card.items()
             },
             "pending_job_count": len(self._jobs),
+            "pending_migration_jobs": [
+                {
+                    "job_id": job.job_id,
+                    "session_id": job.session_id,
+                    "generation": job.generation,
+                    "version": job.version,
+                    "group_id": job.group_id,
+                    "source_kind": job.source_kind.value,
+                }
+                for job in sorted(
+                    (
+                        pending
+                        for pending in self._jobs.values()
+                        if isinstance(pending, MigrationJob)
+                    ),
+                    key=lambda pending: pending.job_id,
+                )
+            ],
             "active_prefill_drain_pending_job_ids": sorted(
                 self._active_prefill_drain_job_ids),
             "external_pending_job_ids": sorted(
@@ -2869,6 +3376,11 @@ class FullModelHBFLifecycle:
                 session_id: {
                     **asdict(record),
                     "state": record.state.value,
+                    "migration_source_kind": (
+                        None
+                        if record.migration_source_kind is None
+                        else record.migration_source_kind.value
+                    ),
                     "migration_job_ids": sorted(
                         record.migration_job_ids),
                     "append_job_ids": sorted(record.append_job_ids),
@@ -2876,6 +3388,10 @@ class FullModelHBFLifecycle:
                 for session_id, record in sorted(self.sessions.items())
             },
         }
+        if self.analytical_resource_prefix:
+            result["analytical_resource_prefix"] = (
+                self.analytical_resource_prefix)
+        return result
 
 
 __all__ = [
@@ -2888,6 +3404,7 @@ __all__ = [
     "HBFReplicaGroup",
     "LifecycleMetrics",
     "MigrationJob",
+    "MigrationSourceKind",
     "PerGroupCapacityLedger",
     "PlacementState",
     "ResourceCalendar",

@@ -1,4 +1,4 @@
-"""Continuous-batching serving pool for full-model HBF-NPU replicas."""
+"""Continuous-batching serving pool for full-model HBF-GPU replicas."""
 
 from __future__ import annotations
 
@@ -334,7 +334,8 @@ class FullModelHBFServingPool:
             retain_detailed_history: bool = True,
             retain_token_completion_history: Optional[bool] = None,
             execution_backend: str = "analytical_calendar",
-            server_id: int = 0) -> None:
+            server_id: int = 0,
+            analytical_resource_prefix: str = "") -> None:
         hardware.validate()
         layout.validate(hardware.card_count)
         if (
@@ -344,6 +345,16 @@ class FullModelHBFServingPool:
             raise ValueError(
                 "execution_backend must be one of "
                 f"{sorted(self._EXECUTION_BACKENDS)}")
+        if not isinstance(analytical_resource_prefix, str):
+            raise ValueError(
+                "analytical_resource_prefix must be a string")
+        if (
+            execution_backend == "external_astra"
+            and analytical_resource_prefix
+        ):
+            raise ValueError(
+                "analytical_resource_prefix is unsupported with "
+                "execution_backend='external_astra'")
         if (
             not isinstance(server_id, int)
             or isinstance(server_id, bool)
@@ -406,6 +417,7 @@ class FullModelHBFServingPool:
         self.layout = layout
         self.execution_backend = execution_backend
         self.server_id = server_id
+        self.analytical_resource_prefix = analytical_resource_prefix
         self.calendar = (
             resource_calendar
             if resource_calendar is not None else ResourceCalendar()
@@ -634,9 +646,9 @@ class FullModelHBFServingPool:
         }
         for request in values:
             request.validate()
-            if request.arrival_ns != now_ns:
+            if request.arrival_ns > now_ns:
                 raise ValueError(
-                    "submit_many requests must arrive at now_ns")
+                    "request logical arrival cannot be after submit time")
             if (
                 request.request_id in self.requests
                 or request.request_id in seen
@@ -1084,16 +1096,25 @@ class FullModelHBFServingPool:
         if self.validate_every_event:
             self.assert_invariants()
 
+    def _analytical_local_resource(self, resource: str) -> str:
+        """Namespace one HBF-server-local analytical resource."""
+
+        return f"{self.analytical_resource_prefix}{resource}"
+
     def _foreground_resource_names(
             self, group_id: int) -> tuple[str, ...]:
         names = [
-            f"hbf-group-{group_id}-npu",
-            f"hbf-group-{group_id}-fabric",
+            self._analytical_local_resource(
+                f"hbf-group-{group_id}-npu"),
+            self._analytical_local_resource(
+                f"hbf-group-{group_id}-fabric"),
         ]
         for card_id in self._cards(group_id):
             names.extend((
-                f"hbf-card-{card_id}-media",
-                f"hbf-card-{card_id}-lpddr",
+                self._analytical_local_resource(
+                    f"hbf-card-{card_id}-media"),
+                self._analytical_local_resource(
+                    f"hbf-card-{card_id}-lpddr"),
             ))
         return tuple(names)
 
@@ -1134,11 +1155,15 @@ class FullModelHBFServingPool:
         ready_ns = min(ready_values)
         if self.execution_backend == "analytical_calendar":
             demands = {
-                f"hbf-group-{group_id}-npu": (
+                self._analytical_local_resource(
+                    f"hbf-group-{group_id}-npu"
+                ): (
                     latency.total_ns,
                     0,
                 ),
-                f"hbf-group-{group_id}-fabric": (
+                self._analytical_local_resource(
+                    f"hbf-group-{group_id}-fabric"
+                ): (
                     latency.collective_ns,
                     latency.collective_bytes_per_rank,
                 ),
@@ -1148,11 +1173,15 @@ class FullModelHBFServingPool:
             lpddr_service_ns = min(
                 latency.total_ns, latency.lpddr_roof_ns_sum)
             for card_id in self._cards(group_id):
-                demands[f"hbf-card-{card_id}-media"] = (
+                demands[self._analytical_local_resource(
+                    f"hbf-card-{card_id}-media"
+                )] = (
                     hbf_service_ns,
                     latency.hbf_read_bytes_per_rank,
                 )
-                demands[f"hbf-card-{card_id}-lpddr"] = (
+                demands[self._analytical_local_resource(
+                    f"hbf-card-{card_id}-lpddr"
+                )] = (
                     lpddr_service_ns,
                     latency.lpddr_bytes_per_rank,
                 )
@@ -1881,7 +1910,7 @@ class FullModelHBFServingPool:
                     f"{self.lpddr_ledger.capacity_bytes}")
 
     def report(self) -> dict[str, Any]:
-        return {
+        result = {
             "layout": asdict(self.layout),
             "hardware": asdict(self.hardware),
             "execution_backend": self.execution_backend,
@@ -1987,13 +2016,36 @@ class FullModelHBFServingPool:
                     "inflight": worker.inflight is not None,
                     "npu_busy_ns": (
                         self.calendar.busy_ns.get(
-                            f"hbf-group-{worker.group_id}-npu", 0)
+                            self._analytical_local_resource(
+                                f"hbf-group-{worker.group_id}-npu"),
+                            0,
+                        )
                         if self.execution_backend
                         == "analytical_calendar" else None
                     ),
                     "npu_utilization": (
                         self.calendar.utilization(
-                            f"hbf-group-{worker.group_id}-npu",
+                            self._analytical_local_resource(
+                                f"hbf-group-{worker.group_id}-npu"),
+                            self.current_ns,
+                        )
+                        if self.execution_backend
+                        == "analytical_calendar" else None
+                    ),
+                    "compute_device": "h100_class_gpu",
+                    "gpu_busy_ns": (
+                        self.calendar.busy_ns.get(
+                            self._analytical_local_resource(
+                                f"hbf-group-{worker.group_id}-npu"),
+                            0,
+                        )
+                        if self.execution_backend
+                        == "analytical_calendar" else None
+                    ),
+                    "gpu_utilization": (
+                        self.calendar.utilization(
+                            self._analytical_local_resource(
+                                f"hbf-group-{worker.group_id}-npu"),
                             self.current_ns,
                         )
                         if self.execution_backend
@@ -2001,13 +2053,17 @@ class FullModelHBFServingPool:
                     ),
                     "fabric_busy_ns": (
                         self.calendar.busy_ns.get(
-                            f"hbf-group-{worker.group_id}-fabric", 0)
+                            self._analytical_local_resource(
+                                f"hbf-group-{worker.group_id}-fabric"),
+                            0,
+                        )
                         if self.execution_backend
                         == "analytical_calendar" else None
                     ),
                     "fabric_utilization": (
                         self.calendar.utilization(
-                            f"hbf-group-{worker.group_id}-fabric",
+                            self._analytical_local_resource(
+                                f"hbf-group-{worker.group_id}-fabric"),
                             self.current_ns,
                         )
                         if self.execution_backend
@@ -2040,6 +2096,10 @@ class FullModelHBFServingPool:
                 for request_id, request in sorted(self.requests.items())
             },
         }
+        if self.analytical_resource_prefix:
+            result["analytical_resource_prefix"] = (
+                self.analytical_resource_prefix)
+        return result
 
 __all__ = [
     "BatchItem",

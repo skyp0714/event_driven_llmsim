@@ -1,6 +1,6 @@
 """Configuration contract for a mirrored full-model HBF P4D4 server.
 
-The eight HBF-NPU cards are split into one TP4 prefill role and one TP4
+The eight HBF-GPU cards are split into one TP4 prefill role and one TP4
 decode role.  Every published session KV version is stored by both roles.
 Consequently, the unique logical capacity is the capacity of one TP4 role,
 while persistent writes consume two physical copies.

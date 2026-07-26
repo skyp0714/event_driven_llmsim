@@ -143,6 +143,7 @@ class PrepareCapacity:
 
 @dataclass
 class TieredNodeMetrics:
+    session_restarts: int = 0
     submitted_calls: int = 0
     admitted_calls: int = 0
     user_completed_calls: int = 0
@@ -341,6 +342,40 @@ class FiniteHBMTieredP4D4Node:
 
     def submit(self, call: TieredNodeCall, *, now_ns: int) -> None:
         self.submit_many((call,), now_ns=now_ns)
+
+    def restart_ended_session(
+            self, session_id: str, *, now_ns: int) -> None:
+        """Restart one drained GPU-local lineage at call index zero."""
+
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("session_id must be non-empty")
+        self.advance(now_ns, defer_schedule=True)
+        try:
+            lineage = self.sessions[session_id]
+        except KeyError as exc:
+            raise KeyError(
+                f"unknown tiered session {session_id!r}") from exc
+        if not lineage.ended or lineage.active_request_id is not None:
+            raise RuntimeError(
+                "only an inactive ended tiered session can restart")
+        if any(
+                self.calls[request_id].session_id == session_id
+                for request_id in self._pending_call_ids
+        ) or any(
+                self.calls[request_id].session_id == session_id
+                for request_id in self._ready_call_ids
+        ):
+            raise RuntimeError(
+                "ended tiered session retains queued calls")
+        self.lifecycle.restart_ended(
+            session_id, now_ns=now_ns)
+        lineage.last_call_index = -1
+        lineage.ended = False
+        self._last_submitted_call_index.pop(session_id, None)
+        self._last_submitted_request_id.pop(session_id, None)
+        self.metrics.session_restarts += 1
+        if self.validate_every_event:
+            self.assert_invariants()
 
     def _prepare_capacity(
             self, call: TieredNodeCall) -> PrepareCapacity:

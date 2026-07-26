@@ -116,9 +116,9 @@ def evaluate_with_provenance(values, **kwargs):
 
 def central_point():
     return SensitivityPoint(
-        npu_logic_capex_ratio_to_gpu_logic=0.50,
+        npu_logic_capex_ratio_to_gpu_logic=1.00,
         hbf_subsystem_capex_ratio_to_hbm_stack=0.50,
-        npu_logic_power_ratio_to_gpu_logic=0.50,
+        npu_logic_power_ratio_to_gpu_logic=1.00,
         hbf_subsystem_power_ratio_to_hbm_stack=3.50,
     )
 
@@ -248,9 +248,13 @@ class SensitivityTests(unittest.TestCase):
     def test_default_grid_is_full_cartesian_product(self):
         axes = SensitivityAxes()
         points = sensitivity_points(axes)
-        self.assertEqual(axes.cartesian_size, 81)
-        self.assertEqual(len(points), 81)
-        self.assertEqual(len({point.key for point in points}), 81)
+        self.assertEqual(
+            axes.npu_logic_capex_ratios_to_gpu_logic, (1.0,))
+        self.assertEqual(
+            axes.npu_logic_power_ratios_to_gpu_logic, (1.0,))
+        self.assertEqual(axes.cartesian_size, 9)
+        self.assertEqual(len(points), 9)
+        self.assertEqual(len({point.key for point in points}), 9)
 
     def test_sensitivity_keys_do_not_alias_nearby_custom_floats(self):
         left = SensitivityPoint(0.50000001, 0.5, 0.5, 3.5)
@@ -383,7 +387,7 @@ class SensitivityTests(unittest.TestCase):
             TIERING_SYSTEM_KEY: 1_000.0,
             PROPOSED_SYSTEM_KEY: 900.0,
         })
-        self.assertEqual(len(report.sensitivity_rows), 81)
+        self.assertEqual(len(report.sensitivity_rows), 9)
         self.assertTrue(all(
             row.tiering_cost == report.tiering_cost
             for row in report.sensitivity_rows

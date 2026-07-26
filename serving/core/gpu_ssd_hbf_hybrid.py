@@ -1,0 +1,1487 @@
+"""SSD-staged serving on one GPU server and one eight-card HBF server.
+
+This module models the concrete two-server design:
+
+* one P4D4 GPU server is the sole owner of model execution, P/D HBM, host
+  DRAM, and local SSD before promotion;
+* every non-terminal GPU turn is proactively checkpointed D -> CPU -> SSD;
+* an independently selected, causal idle policy may later promote the
+  durable SSD checkpoint through CPU/NIC/RDMA into one eight-card HBF
+  server; and
+* a resume always invalidates a not-yet-published promotion and restores
+  through the GPU tiered node unless the HBF copy has already committed.
+
+All compute and transfer components share one :class:`ResourceCalendar`.
+The implementation is analytical-only and intentionally has no multi-HBF
+or direct GPU-HBM-to-HBF path.
+"""
+
+from __future__ import annotations
+
+from collections import deque
+from dataclasses import asdict, dataclass
+import heapq
+import math
+from pathlib import Path
+from typing import Any, Iterable, Mapping, Optional
+
+from .gpu_hbf_hybrid import (
+    GPUHBFHybridSystem,
+    HybridCall,
+    HybridCallState,
+    HybridDeadlockError,
+    HybridExecution,
+    HybridSession,
+    HybridSystemMetrics,
+)
+from .gpu_pd_latency import P4D4GPUHardware
+from .gpu_pd_tier_lifecycle import (
+    SSDExportStatus,
+    SSDExportTicket,
+    TierSessionState,
+)
+from .gpu_pd_tiered_node import (
+    FiniteHBMTieredP4D4Node,
+    TieredCallState,
+    TieredNodeCall,
+)
+from .hbf_comparison_metrics import CompletedRequest
+from .hbf_comparison_workload import (
+    ScheduledSession,
+    full_drain_hashes,
+    stable_json_sha256,
+)
+from .hbf_full_model_latency import (
+    HBFParallelLayout,
+    HBFServerHardware,
+)
+from .hbf_full_model_lifecycle import (
+    FullModelHBFLifecycle,
+    MigrationJob,
+    PerGroupCapacityLedger,
+    PlacementState,
+    ResourceCalendar,
+    ResumeExecution,
+    ResumeRoute,
+)
+from .hbf_full_model_pool import (
+    FullModelHBFServingPool,
+    HBFServingRequest,
+    derive_lpddr_workspace_bytes,
+)
+
+
+SUPPORTED_SSD_STAGED_HBF_LAYOUTS = frozenset({
+    "dp8",
+    "tp4",
+    "tp8",
+    "tp8_context",
+})
+SUPPORTED_SSD_PROMOTION_MODES = frozenset({
+    "eager",
+    "idle_delay",
+    "load_aware",
+    "never",
+})
+
+
+@dataclass(frozen=True)
+class SSDPromotionPolicy:
+    """Causal SSD-to-HBF promotion policy.
+
+    ``idle_delay_ns`` is measured from the predecessor LLM request's user
+    completion.  ``allowed_gap_types`` filters on metadata already known at
+    that boundary.  The policy never inspects the future wait duration.
+    """
+
+    key: str = "eager"
+    mode: str = "eager"
+    idle_delay_ns: int = 0
+    allowed_gap_types: tuple[str, ...] = ()
+    retry_ns: int = 1_000_000
+    load_hysteresis: float = 0.10
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.key, str) or not self.key:
+            raise ValueError("promotion policy key must be non-empty")
+        if self.mode not in SUPPORTED_SSD_PROMOTION_MODES:
+            raise ValueError(
+                "promotion policy mode must be one of "
+                f"{sorted(SUPPORTED_SSD_PROMOTION_MODES)}")
+        for name in ("idle_delay_ns", "retry_ns"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+            ):
+                raise ValueError(f"{name} must be non-negative")
+        if self.retry_ns <= 0:
+            raise ValueError("retry_ns must be positive")
+        if self.mode == "eager" and self.idle_delay_ns:
+            raise ValueError("eager promotion cannot have an idle delay")
+        if self.mode == "idle_delay" and self.idle_delay_ns <= 0:
+            raise ValueError(
+                "idle-delay promotion requires a positive delay")
+        if (
+            isinstance(self.load_hysteresis, bool)
+            or not isinstance(self.load_hysteresis, (int, float))
+            or not math.isfinite(float(self.load_hysteresis))
+            or not 0.0 <= float(self.load_hysteresis) <= 1.0
+        ):
+            raise ValueError(
+                "load_hysteresis must be in [0, 1]")
+        if (
+            not isinstance(self.allowed_gap_types, tuple)
+            or any(
+                not isinstance(value, str) or not value.strip()
+                for value in self.allowed_gap_types
+            )
+        ):
+            raise ValueError(
+                "allowed_gap_types must be an immutable tuple of strings")
+        normalized = tuple(
+            value.strip().lower()
+            for value in self.allowed_gap_types
+        )
+        if len(normalized) != len(set(normalized)):
+            raise ValueError(
+                "allowed_gap_types cannot contain duplicates")
+        object.__setattr__(self, "allowed_gap_types", normalized)
+
+    @classmethod
+    def for_key(cls, key: str) -> "SSDPromotionPolicy":
+        fixed_delays = {
+            "delay_25ms": 25_000_000,
+            "delay_50ms": 50_000_000,
+            "delay_100ms": 100_000_000,
+            "delay_200ms": 200_000_000,
+            "delay_500ms": 500_000_000,
+            "delay_1000ms": 1_000_000_000,
+            "delay_1s": 1_000_000_000,
+            "delay_5s": 5_000_000_000,
+            "delay_30s": 30_000_000_000,
+            "delay_300s": 300_000_000_000,
+        }
+        if key == "eager":
+            return cls()
+        if key == "tool_immediate":
+            return cls(
+                key=key,
+                mode="eager",
+                allowed_gap_types=("tool",),
+            )
+        if key == "human_immediate":
+            return cls(
+                key=key,
+                mode="eager",
+                allowed_gap_types=("human",),
+            )
+        if key == "tool_or_human_immediate":
+            return cls(
+                key=key,
+                mode="eager",
+                allowed_gap_types=("tool", "human"),
+            )
+        if key in fixed_delays:
+            return cls(
+                key=key,
+                mode="idle_delay",
+                idle_delay_ns=fixed_delays[key],
+            )
+        if key == "load_aware":
+            return cls(
+                key=key,
+                mode="load_aware",
+                retry_ns=50_000_000,
+            )
+        if key == "never":
+            return cls(key=key, mode="never")
+        raise ValueError(
+            f"unsupported SSD promotion policy {key!r}")
+
+    def eligible_gap(self, gap_type: Optional[str]) -> bool:
+        if self.mode == "never":
+            return False
+        if not self.allowed_gap_types:
+            return True
+        normalized = (
+            "unknown"
+            if gap_type is None
+            else gap_type.strip().lower()
+        )
+        return normalized in self.allowed_gap_types
+
+
+@dataclass
+class SSDPromotionIntent:
+    session_id: str
+    predecessor_request_id: int
+    snapshot_version: int
+    user_completion_ns: int
+    due_ns: int
+    gap_type: Optional[str]
+    serial: int
+    due_reached: bool = False
+
+
+@dataclass
+class SSDStagedHybridMetrics:
+    submitted_calls: int = 0
+    routed_calls: int = 0
+    gpu_calls: int = 0
+    hbf_calls: int = 0
+    gpu_first_turn_calls: int = 0
+    gpu_owned_calls: int = 0
+    gpu_import_inflight_calls: int = 0
+    gpu_recompute_calls: int = 0
+    user_completed_calls: int = 0
+    internal_completed_calls: int = 0
+    proactive_offloads_requested: int = 0
+    proactive_offloads_started: int = 0
+    ssd_checkpoints_published: int = 0
+    promotion_intents_scheduled: int = 0
+    promotion_intents_filtered: int = 0
+    promotion_intents_canceled: int = 0
+    promotion_thresholds_reached: int = 0
+    ssd_exports_started: int = 0
+    ssd_export_capacity_deferrals: int = 0
+    hbf_imports_started: int = 0
+    hbf_import_capacity_deferrals: int = 0
+    promotion_load_deferrals: int = 0
+    hbf_imports_committed: int = 0
+    hbf_imports_stale: int = 0
+    max_pending_calls: int = 0
+
+
+class SSDStagedGPUHBFNode:
+    """One P4D4 GPU server plus one SSD-fed eight-card HBF server."""
+
+    def __init__(
+            self, *, repo_root: Path,
+            gpu_hardware: P4D4GPUHardware,
+            hbf_hardware: HBFServerHardware,
+            hbf_layout: str | HBFParallelLayout = "tp4",
+            gpu_node_id: int = 0,
+            hbf_server_id: int = 0,
+            p_capacity_bytes_per_rank: Optional[int] = None,
+            d_capacity_bytes_per_rank: Optional[int] = None,
+            cpu_capacity_bytes: Optional[int] = None,
+            ssd_capacity_bytes: Optional[int] = None,
+            max_num_batched_tokens: int = 8_192,
+            max_num_seqs: int = 128,
+            p_max_num_seqs: Optional[int] = None,
+            d_max_num_seqs: Optional[int] = None,
+            max_prefill_chunk_tokens: int = 4_096,
+            band: str = "central",
+            validate_every_event: bool = True,
+            promotion_policy: Optional[
+                str | SSDPromotionPolicy] = None,
+            migration_policy: Optional[
+                str | SSDPromotionPolicy] = None) -> None:
+        if not isinstance(validate_every_event, bool):
+            raise ValueError("validate_every_event must be a boolean")
+        if (
+            isinstance(gpu_node_id, bool)
+            or not isinstance(gpu_node_id, int)
+            or gpu_node_id < 0
+        ):
+            raise ValueError("gpu_node_id must be non-negative")
+        if (
+            isinstance(hbf_server_id, bool)
+            or not isinstance(hbf_server_id, int)
+            or hbf_server_id < 0
+        ):
+            raise ValueError("hbf_server_id must be non-negative")
+        layout = (
+            HBFParallelLayout.for_key(hbf_layout)
+            if isinstance(hbf_layout, str) else hbf_layout
+        )
+        if not isinstance(layout, HBFParallelLayout):
+            raise TypeError(
+                "hbf_layout must be a key or HBFParallelLayout")
+        if (
+            promotion_policy is not None
+            and migration_policy is not None
+        ):
+            raise ValueError(
+                "specify only one of promotion_policy and "
+                "migration_policy")
+        requested_policy = (
+            "eager"
+            if promotion_policy is None
+            and migration_policy is None
+            else (
+                promotion_policy
+                if promotion_policy is not None
+                else migration_policy
+            )
+        )
+        policy = (
+            SSDPromotionPolicy.for_key(requested_policy)
+            if isinstance(requested_policy, str)
+            else requested_policy
+        )
+        if not isinstance(policy, SSDPromotionPolicy):
+            raise TypeError(
+                "promotion_policy must be a key or SSDPromotionPolicy")
+        gpu_hardware.validate()
+        hbf_hardware.validate()
+        layout.validate(hbf_hardware.card_count)
+        if layout.key not in SUPPORTED_SSD_STAGED_HBF_LAYOUTS:
+            raise ValueError(
+                f"unsupported HBF layout {layout.key!r}")
+        if gpu_hardware.gpu_count != 8:
+            raise ValueError(
+                "the staged design requires one physical eight-GPU "
+                "P4D4 server")
+        if hbf_hardware.card_count != 8:
+            raise ValueError(
+                "the staged design requires one physical eight-card "
+                "HBF server")
+
+        self.repo_root = Path(repo_root)
+        self.gpu_hardware = gpu_hardware
+        self.hbf_hardware = hbf_hardware
+        self.hbf_layout = layout
+        self.hbf_layouts = (layout,)
+        self.hbf_server_count = 1
+        self.gpu_node_id = gpu_node_id
+        self.hbf_server_id = hbf_server_id
+        self.hbf_execution_backend = "analytical_calendar"
+        self.promotion_policy = policy
+        self.migration_policy = policy
+        self.validate_every_event = validate_every_event
+        self.calendar = ResourceCalendar(
+            retain_reservations=validate_every_event)
+        # Compatibility aliases intentionally point to the same calendar.
+        self.gpu_calendar = self.calendar
+        self.hbf_calendar = self.calendar
+
+        self.gpu_node = FiniteHBMTieredP4D4Node(
+            repo_root=self.repo_root,
+            hardware=gpu_hardware,
+            node_id=gpu_node_id,
+            policy="ssd_direct",
+            resource_calendar=self.calendar,
+            p_capacity_bytes_per_rank=p_capacity_bytes_per_rank,
+            d_capacity_bytes_per_rank=d_capacity_bytes_per_rank,
+            cpu_capacity_bytes=cpu_capacity_bytes,
+            ssd_capacity_bytes=ssd_capacity_bytes,
+            max_num_batched_tokens=max_num_batched_tokens,
+            max_num_seqs=max_num_seqs,
+            p_max_num_seqs=p_max_num_seqs,
+            d_max_num_seqs=d_max_num_seqs,
+            max_prefill_chunk_tokens=max_prefill_chunk_tokens,
+            band=band,
+            validate_every_event=validate_every_event,
+            retain_detailed_history=validate_every_event,
+        )
+        self.gpu_lifecycle = self.gpu_node.lifecycle
+        self.gpu_pool = self.gpu_node.pool
+
+        workspace = derive_lpddr_workspace_bytes(
+            layout,
+            max_num_batched_tokens=max_num_batched_tokens,
+            max_num_seqs=max_num_seqs,
+        )
+        hbf_lpddr_ledger = PerGroupCapacityLedger(
+            group_count=layout.replicas,
+            capacity_bytes=(
+                hbf_hardware.lpddr_capacity_bytes_per_card
+                - workspace
+            ),
+        )
+        gpu_source_root_bandwidth_gbps = min(
+            gpu_hardware.pcie_root_bandwidth_gbps,
+            gpu_hardware.decode_gpu_count
+            * gpu_hardware.pcie_bandwidth_gbps_per_gpu,
+        )
+        self.hbf_lifecycle = FullModelHBFLifecycle(
+            hardware=hbf_hardware,
+            layout=layout,
+            resource_calendar=self.calendar,
+            lpddr_ledger=hbf_lpddr_ledger,
+            gpu_source_root_bandwidth_gbps=(
+                gpu_source_root_bandwidth_gbps),
+            gpu_source_node_id=gpu_node_id,
+            gpu_source_cpu_bandwidth_gbps=(
+                gpu_hardware.cpu_memory_bandwidth_gbps),
+            gpu_source_nic_bandwidth_gbps=(
+                hbf_hardware.rdma_bandwidth_gbps),
+            validate_every_event=validate_every_event,
+            execution_backend="analytical_calendar",
+            server_id=hbf_server_id,
+        )
+        self.hbf_pool = FullModelHBFServingPool(
+            repo_root=self.repo_root,
+            hardware=hbf_hardware,
+            layout=layout,
+            resource_calendar=self.calendar,
+            lpddr_ledger=hbf_lpddr_ledger,
+            placement_resolver=(
+                self.hbf_lifecycle.placement_snapshot),
+            max_num_batched_tokens=max_num_batched_tokens,
+            max_num_seqs=max_num_seqs,
+            max_prefill_chunk_tokens=max_prefill_chunk_tokens,
+            band=band,
+            validate_every_event=validate_every_event,
+            retain_detailed_history=validate_every_event,
+            execution_backend="analytical_calendar",
+            server_id=hbf_server_id,
+        )
+
+        self.calls: dict[int, HybridCall] = {}
+        self.sessions: dict[str, HybridSession] = {}
+        self.metrics = SSDStagedHybridMetrics()
+        self.current_ns = 0
+        self._pending_call_ids: deque[int] = deque()
+        self._user_completed_ids: deque[int] = deque()
+        self._tier_call_by_request: dict[int, TieredNodeCall] = {}
+        self._gpu_user_seen: set[int] = set()
+        self._gpu_internal_seen: set[int] = set()
+        self._next_gpu_call_index: dict[str, int] = {}
+        self._live_hbf_request_ids: set[int] = set()
+        self._last_submitted_call_index: dict[str, int] = {}
+        self._last_submitted_request_id: dict[str, int] = {}
+        self._gap_type_by_request: dict[int, Optional[str]] = {}
+        self._offload_version_by_session: dict[str, int] = {}
+        self._intent_by_session: dict[str, SSDPromotionIntent] = {}
+        self._promotion_heap: list[tuple[int, int, str]] = []
+        self._export_by_session: dict[str, SSDExportTicket] = {}
+        self._import_by_session: dict[
+            str, tuple[MigrationJob, SSDExportTicket]] = {}
+        self._next_promotion_serial = 1
+
+    def set_gap_type(
+            self, request_id: int,
+            gap_type: Optional[str]) -> None:
+        if request_id in self.calls:
+            raise RuntimeError(
+                "gap metadata must be registered before release")
+        if gap_type is not None and (
+                not isinstance(gap_type, str)
+                or not gap_type.strip()):
+            raise ValueError(
+                "gap_type must be a non-empty string or None")
+        self._gap_type_by_request[request_id] = gap_type
+
+    def _sync_hybrid_from_tier(
+            self, call: HybridCall,
+            tier_call: TieredNodeCall) -> None:
+        call.operational_reuse_tokens = (
+            tier_call.operational_hit_tokens)
+        call.gpu_hit_tokens = tier_call.operational_hit_tokens
+        call.prepare_start_ns = tier_call.prepare_start_ns
+        call.prepare_completion_ns = tier_call.prepare_completion_ns
+        if tier_call.pool_request is not None:
+            tier_call.pool_request.arrival_ns = call.release_ns
+        call.gpu_request = tier_call.pool_request
+        if tier_call.state in {
+            TieredCallState.PENDING,
+            TieredCallState.PREPARING,
+        }:
+            call.state = HybridCallState.GPU_PREPARING
+        elif tier_call.state == TieredCallState.EXECUTING:
+            call.state = HybridCallState.GPU_EXECUTING
+
+    @staticmethod
+    def _execution_for_route(
+            call: HybridCall, route: ResumeRoute) -> HybridExecution:
+        if call.call_index == 0:
+            return HybridExecution.GPU_FIRST_TURN
+        if route.execution == ResumeExecution.HBF:
+            return HybridExecution.HBF_READY
+        if route.execution == ResumeExecution.GPU_RECOMPUTE:
+            return HybridExecution.GPU_RECOMPUTE
+        if route.migration_inflight:
+            return HybridExecution.GPU_MIGRATION_INFLIGHT
+        return HybridExecution.GPU_OWNED
+
+    def _cancel_intent_only(self, session_id: str) -> None:
+        if self._intent_by_session.pop(session_id, None) is not None:
+            self.metrics.promotion_intents_canceled += 1
+
+    def _abort_export_for_resume(
+            self, session_id: str, *,
+            now_ns: int) -> None:
+        ticket = self._export_by_session.get(session_id)
+        if ticket is None:
+            return
+        if ticket.status in {
+            SSDExportStatus.RUNNING,
+            SSDExportStatus.ABORT_PENDING,
+            SSDExportStatus.READY,
+        }:
+            released = self.gpu_lifecycle.abort_ssd_export(
+                ticket, now_ns=now_ns)
+            if released:
+                self._export_by_session.pop(session_id, None)
+        elif ticket.status == SSDExportStatus.ABORTED:
+            self._export_by_session.pop(session_id, None)
+        elif ticket.status == SSDExportStatus.FINISHED:
+            raise RuntimeError(
+                "resume found a finished SSD export without HBF commit")
+
+    def _route_call(
+            self, call: HybridCall) -> tuple[
+                ResumeRoute, Optional[TieredNodeCall],
+                Optional[HBFServingRequest]]:
+        if call.call_index == 0:
+            self.hbf_lifecycle.register_session(
+                call.session_id, now_ns=self.current_ns)
+        placement = self.hbf_lifecycle.sessions[call.session_id]
+        operational_reuse = min(
+            call.prefix_reuse_tokens,
+            placement.total_tokens,
+            call.input_tokens,
+        )
+        route = self.hbf_lifecycle.route_resume(
+            call.session_id,
+            now_ns=self.current_ns,
+            request_id=call.request_id,
+            prefix_reuse_tokens=operational_reuse,
+            input_tokens=call.input_tokens,
+            lpddr_growth_tokens=(
+                call.input_tokens
+                - operational_reuse
+                + call.output_tokens
+                - 1
+            ),
+        )
+        call.execution = self._execution_for_route(call, route)
+        call.route_reason = route.reason
+        call.migration_inflight_at_route = route.migration_inflight
+        call.operational_reuse_tokens = operational_reuse
+        self.metrics.routed_calls += 1
+
+        if route.execution == ResumeExecution.HBF:
+            if route.group_id is None:
+                raise RuntimeError(
+                    "HBF route lacks a replica group")
+            request = HBFServingRequest(
+                request_id=call.request_id,
+                session_id=call.session_id,
+                arrival_ns=call.release_ns,
+                input_tokens=call.input_tokens,
+                output_tokens=call.output_tokens,
+                hbf_prefix_tokens=route.hbf_tokens,
+                lpddr_prefix_tokens=route.lpddr_tokens,
+                group_id=route.group_id,
+            )
+            call.hbf_request = request
+            call.hbf_server_index = 0
+            call.state = HybridCallState.HBF_EXECUTING
+            self._live_hbf_request_ids.add(call.request_id)
+            self.metrics.hbf_calls += 1
+            return route, None, request
+
+        self._cancel_intent_only(call.session_id)
+        self._abort_export_for_resume(
+            call.session_id, now_ns=self.current_ns)
+        self._offload_version_by_session.pop(
+            call.session_id, None)
+        gpu_lineage = self.gpu_node.sessions.get(call.session_id)
+        restarted_gpu_lineage = False
+        if gpu_lineage is not None and gpu_lineage.ended:
+            self.gpu_node.restart_ended_session(
+                call.session_id, now_ns=self.current_ns)
+            self._next_gpu_call_index[call.session_id] = 0
+            restarted_gpu_lineage = True
+        gpu_call_index = self._next_gpu_call_index.get(
+            call.session_id, 0)
+        tier_call = TieredNodeCall(
+            request_id=call.request_id,
+            session_id=call.session_id,
+            call_index=gpu_call_index,
+            release_ns=self.current_ns,
+            input_tokens=call.input_tokens,
+            output_tokens=call.output_tokens,
+            prefix_reuse_tokens=(
+                0 if restarted_gpu_lineage
+                else operational_reuse),
+            has_successor=call.has_successor,
+        )
+        self._next_gpu_call_index[call.session_id] = (
+            gpu_call_index + 1)
+        self._tier_call_by_request[call.request_id] = tier_call
+        self.metrics.gpu_calls += 1
+        if call.execution == HybridExecution.GPU_FIRST_TURN:
+            self.metrics.gpu_first_turn_calls += 1
+        elif call.execution == HybridExecution.GPU_RECOMPUTE:
+            self.metrics.gpu_recompute_calls += 1
+        elif call.execution == HybridExecution.GPU_MIGRATION_INFLIGHT:
+            self.metrics.gpu_import_inflight_calls += 1
+        else:
+            self.metrics.gpu_owned_calls += 1
+        return route, tier_call, None
+
+    def submit_many(
+            self, calls: Iterable[HybridCall], *,
+            now_ns: int) -> None:
+        values = list(calls)
+        seen_ids: set[int] = set()
+        proposed_last = dict(self._last_submitted_call_index)
+        proposed_predecessors = {
+            session_id: self.calls[request_id]
+            for session_id, request_id
+            in self._last_submitted_request_id.items()
+        }
+        for call in values:
+            call.validate()
+            if call.release_ns != now_ns:
+                raise ValueError(
+                    "hybrid calls must be submitted at logical release")
+            if call.request_id in self.calls or call.request_id in seen_ids:
+                raise ValueError(
+                    f"duplicate request_id={call.request_id}")
+            prior_index = proposed_last.get(call.session_id, -1)
+            if call.call_index != prior_index + 1:
+                raise ValueError(
+                    "session calls must be submitted in contiguous order")
+            predecessor = proposed_predecessors.get(call.session_id)
+            if predecessor is not None:
+                if not predecessor.has_successor:
+                    raise ValueError(
+                        "cannot submit after a terminal predecessor")
+                if predecessor.user_completion_ns is None:
+                    raise ValueError(
+                        "successor cannot precede predecessor completion")
+                if call.release_ns < predecessor.user_completion_ns:
+                    raise ValueError(
+                        "successor release precedes predecessor completion")
+            session = self.sessions.get(call.session_id)
+            if session is not None and session.ended:
+                raise ValueError(
+                    f"session {call.session_id!r} already ended")
+            proposed_last[call.session_id] = call.call_index
+            proposed_predecessors[call.session_id] = call
+            seen_ids.add(call.request_id)
+
+        self.advance(now_ns, defer_schedule=True)
+        for call in values:
+            # Arrival visibility wins a same-timestamp promotion threshold,
+            # even if the predecessor's internal handoff is still pending.
+            if call.call_index > 0:
+                self._cancel_intent_only(call.session_id)
+            self.calls[call.request_id] = call
+            self.sessions.setdefault(
+                call.session_id,
+                HybridSession(session_id=call.session_id),
+            )
+            self._last_submitted_call_index[call.session_id] = (
+                call.call_index)
+            self._last_submitted_request_id[call.session_id] = (
+                call.request_id)
+            self._pending_call_ids.append(call.request_id)
+            self.metrics.submitted_calls += 1
+        self.metrics.max_pending_calls = max(
+            self.metrics.max_pending_calls,
+            len(self._pending_call_ids),
+        )
+        self.flush_scheduling(now_ns)
+
+    def submit(self, call: HybridCall, *, now_ns: int) -> None:
+        self.submit_many((call,), now_ns=now_ns)
+
+    def _admit_pending(self, now_ns: int) -> None:
+        deferred: deque[int] = deque()
+        gpu_calls: list[TieredNodeCall] = []
+        hbf_requests: list[HBFServingRequest] = []
+        while self._pending_call_ids:
+            request_id = self._pending_call_ids.popleft()
+            call = self.calls[request_id]
+            session = self.sessions[call.session_id]
+            if call.call_index != session.last_internal_call_index + 1:
+                deferred.append(request_id)
+                continue
+            _, tier_call, hbf_request = self._route_call(call)
+            if tier_call is not None:
+                gpu_calls.append(tier_call)
+            if hbf_request is not None:
+                hbf_requests.append(hbf_request)
+        self._pending_call_ids = deferred
+        if gpu_calls:
+            gpu_calls.sort(key=lambda value: value.request_id)
+            self.gpu_node.submit_many(gpu_calls, now_ns=now_ns)
+            for tier_call in gpu_calls:
+                self._sync_hybrid_from_tier(
+                    self.calls[tier_call.request_id],
+                    tier_call,
+                )
+        if hbf_requests:
+            hbf_requests.sort(key=lambda value: value.request_id)
+            self.hbf_pool.submit_many(
+                hbf_requests,
+                now_ns=now_ns,
+                defer_schedule=True,
+            )
+
+    def _schedule_promotion(
+            self, call: HybridCall, *,
+            completion_ns: int) -> None:
+        gap_type = self._gap_type_by_request.get(
+            call.request_id)
+        if not self.promotion_policy.eligible_gap(gap_type):
+            if self.promotion_policy.mode != "never":
+                self.metrics.promotion_intents_filtered += 1
+            return
+        placement = self.hbf_lifecycle.sessions[call.session_id]
+        serial = self._next_promotion_serial
+        self._next_promotion_serial += 1
+        intent = SSDPromotionIntent(
+            session_id=call.session_id,
+            predecessor_request_id=call.request_id,
+            snapshot_version=placement.version + 1,
+            user_completion_ns=completion_ns,
+            due_ns=(
+                completion_ns
+                + self.promotion_policy.idle_delay_ns
+            ),
+            gap_type=gap_type,
+            serial=serial,
+        )
+        self._intent_by_session[call.session_id] = intent
+        heapq.heappush(
+            self._promotion_heap,
+            (intent.due_ns, intent.serial, intent.session_id),
+        )
+        self.metrics.promotion_intents_scheduled += 1
+
+    def _consume_gpu_notifications(self, now_ns: int) -> None:
+        for tier_call in self.gpu_node.pop_completed():
+            request_id = tier_call.request_id
+            if request_id in self._gpu_user_seen:
+                raise RuntimeError(
+                    "duplicate GPU user completion")
+            self._gpu_user_seen.add(request_id)
+            call = self.calls[request_id]
+            self._sync_hybrid_from_tier(call, tier_call)
+            if tier_call.user_completion_ns != now_ns:
+                raise RuntimeError(
+                    "GPU completion at wrong node timestamp")
+            call.user_completion_ns = now_ns
+            call.state = HybridCallState.USER_COMPLETE
+            self._user_completed_ids.append(request_id)
+            self.metrics.user_completed_calls += 1
+            if call.has_successor:
+                self._schedule_promotion(
+                    call, completion_ns=now_ns)
+
+        for request_id, tier_call in sorted(
+                self._tier_call_by_request.items()):
+            if (
+                request_id in self._gpu_internal_seen
+                or tier_call.state
+                != TieredCallState.INTERNAL_COMPLETE
+            ):
+                continue
+            self._gpu_internal_seen.add(request_id)
+            call = self.calls[request_id]
+            self._sync_hybrid_from_tier(call, tier_call)
+            if tier_call.internal_completion_ns != now_ns:
+                raise RuntimeError(
+                    "GPU internal completion at wrong node timestamp")
+            total_tokens = (
+                call.input_tokens + call.output_tokens - 1)
+            self.hbf_lifecycle.complete_gpu_turn(
+                call.session_id,
+                now_ns=now_ns,
+                total_tokens=total_tokens,
+                has_successor=call.has_successor,
+                start_migration=False,
+            )
+            session = self.sessions[call.session_id]
+            session.last_internal_call_index = call.call_index
+            session.ended = not call.has_successor
+            call.internal_completion_ns = now_ns
+            call.state = HybridCallState.INTERNAL_COMPLETE
+            self.metrics.internal_completed_calls += 1
+            if call.has_successor:
+                version = self.hbf_lifecycle.sessions[
+                    call.session_id].version
+                self._offload_version_by_session[
+                    call.session_id] = version
+                self.metrics.proactive_offloads_requested += 1
+                self._try_start_offload(
+                    call.session_id, now_ns=now_ns)
+
+    def _sync_live_gpu_calls(self) -> None:
+        for request_id, tier_call in (
+                self._tier_call_by_request.items()):
+            if request_id in self._gpu_internal_seen:
+                continue
+            self._sync_hybrid_from_tier(
+                self.calls[request_id], tier_call)
+
+    def _consume_hbf_notifications(self, now_ns: int) -> None:
+        for request in self.hbf_pool.pop_completed():
+            request_id = request.request_id
+            if request_id not in self._live_hbf_request_ids:
+                raise RuntimeError(
+                    "unknown HBF completion")
+            self._live_hbf_request_ids.remove(request_id)
+            call = self.calls[request_id]
+            call.user_completion_ns = request.completion_ns
+            call.internal_completion_ns = request.completion_ns
+            call.state = HybridCallState.INTERNAL_COMPLETE
+            self._user_completed_ids.append(request_id)
+            self.metrics.user_completed_calls += 1
+            self.metrics.internal_completed_calls += 1
+            self.hbf_lifecycle.complete_hbf_turn(
+                call.session_id,
+                now_ns=now_ns,
+                total_tokens=(
+                    call.input_tokens + call.output_tokens - 1),
+                has_successor=call.has_successor,
+            )
+            session = self.sessions[call.session_id]
+            session.last_internal_call_index = call.call_index
+            session.ended = not call.has_successor
+
+    def _try_start_offload(
+            self, session_id: str, *,
+            now_ns: int) -> None:
+        snapshot_version = self._offload_version_by_session.get(
+            session_id)
+        if snapshot_version is None:
+            return
+        tier_record = self.gpu_lifecycle.sessions[session_id]
+        hbf_record = self.hbf_lifecycle.sessions[session_id]
+        if tier_record.state == TierSessionState.SSD_READY:
+            published = self.hbf_lifecycle.publish_ssd_checkpoint(
+                session_id,
+                now_ns=now_ns,
+                snapshot_version=snapshot_version,
+            )
+            self._offload_version_by_session.pop(session_id, None)
+            if published:
+                self.metrics.ssd_checkpoints_published += 1
+            return
+        if (
+            tier_record.state == TierSessionState.D_READY
+            and hbf_record.state == PlacementState.GPU_READY
+        ):
+            started_before = (
+                self.gpu_lifecycle.metrics.d_to_ssd_started)
+            self.gpu_lifecycle.demote(
+                session_id, now_ns=now_ns)
+            if (
+                self.gpu_lifecycle.metrics.d_to_ssd_started
+                > started_before
+            ):
+                self.metrics.proactive_offloads_started += 1
+
+    def _reconcile_offloads(self, now_ns: int) -> None:
+        for session_id in tuple(
+                self._offload_version_by_session):
+            tier_record = self.gpu_lifecycle.sessions.get(
+                session_id)
+            hbf_record = self.hbf_lifecycle.sessions.get(
+                session_id)
+            if tier_record is None or hbf_record is None:
+                self._offload_version_by_session.pop(
+                    session_id, None)
+                continue
+            if hbf_record.state != PlacementState.GPU_READY:
+                self._offload_version_by_session.pop(
+                    session_id, None)
+                continue
+            self._try_start_offload(
+                session_id, now_ns=now_ns)
+
+    def _cleanup_aborted_exports(self) -> None:
+        for session_id, ticket in tuple(
+                self._export_by_session.items()):
+            if ticket.status == SSDExportStatus.ABORTED:
+                self._export_by_session.pop(session_id, None)
+
+    def _reconcile_imports(self, now_ns: int) -> None:
+        for session_id, (job, ticket) in tuple(
+                self._import_by_session.items()):
+            record = self.hbf_lifecycle.sessions[session_id]
+            if job.job_id in record.migration_job_ids:
+                continue
+            if (
+                record.state == PlacementState.HBF_READY
+                and record.version == job.version
+            ):
+                if ticket.status != SSDExportStatus.READY:
+                    raise RuntimeError(
+                        "committed HBF import lost its SSD export")
+                self.gpu_lifecycle.finish_ssd_export(
+                    ticket, now_ns=now_ns)
+                self.gpu_lifecycle.end(
+                    session_id, now_ns=now_ns)
+                gpu_lineage = self.gpu_node.sessions.get(session_id)
+                if gpu_lineage is not None:
+                    gpu_lineage.ended = True
+                self.metrics.hbf_imports_committed += 1
+            else:
+                if ticket.status in {
+                    SSDExportStatus.RUNNING,
+                    SSDExportStatus.ABORT_PENDING,
+                    SSDExportStatus.READY,
+                }:
+                    self.gpu_lifecycle.abort_ssd_export(
+                        ticket, now_ns=now_ns)
+                self.metrics.hbf_imports_stale += 1
+            self._import_by_session.pop(session_id, None)
+            self._export_by_session.pop(session_id, None)
+            self._intent_by_session.pop(session_id, None)
+
+    def _prune_promotion_heap(self) -> None:
+        while self._promotion_heap:
+            due_ns, serial, session_id = self._promotion_heap[0]
+            intent = self._intent_by_session.get(session_id)
+            if (
+                intent is not None
+                and intent.serial == serial
+                and intent.due_ns == due_ns
+                and not intent.due_reached
+            ):
+                break
+            heapq.heappop(self._promotion_heap)
+
+    def _queue_intent_retry(
+            self, intent: SSDPromotionIntent, *,
+            now_ns: int) -> None:
+        serial = self._next_promotion_serial
+        self._next_promotion_serial += 1
+        intent.serial = serial
+        intent.due_ns = now_ns + self.promotion_policy.retry_ns
+        intent.due_reached = False
+        heapq.heappush(
+            self._promotion_heap,
+            (intent.due_ns, serial, intent.session_id),
+        )
+
+    def _mark_due_promotions(self, now_ns: int) -> None:
+        self._prune_promotion_heap()
+        while (
+            self._promotion_heap
+            and self._promotion_heap[0][0] <= now_ns
+        ):
+            _, serial, session_id = heapq.heappop(
+                self._promotion_heap)
+            intent = self._intent_by_session.get(session_id)
+            if intent is None or intent.serial != serial:
+                self._prune_promotion_heap()
+                continue
+            intent.due_reached = True
+            self.metrics.promotion_thresholds_reached += 1
+            self._prune_promotion_heap()
+
+    def _calendar_backlog_ns(
+            self, *, prefixes: tuple[str, ...],
+            now_ns: int) -> int:
+        return max(
+            (
+                max(0, available_ns - now_ns)
+                for resource, available_ns
+                in self.calendar.available_ns.items()
+                if resource.startswith(prefixes)
+            ),
+            default=0,
+        )
+
+    def _load_aware_allows_promotion(self, now_ns: int) -> bool:
+        """Compare only causally visible queue and calendar pressure."""
+
+        gpu_queue_work = sum((
+            len(self.gpu_pool.p_worker.waiting),
+            len(self.gpu_pool.d_worker.waiting),
+            int(self.gpu_pool.p_worker.inflight is not None),
+            int(self.gpu_pool.d_worker.inflight is not None),
+            len(self.gpu_node._pending_call_ids),
+            len(self.gpu_node._ready_call_ids),
+        ))
+        hbf_queue_work = sum(
+            len(worker.waiting)
+            + len(worker.prefill_drain)
+            + len(worker.active_decode)
+            + int(worker.inflight is not None)
+            + int(worker.pending_launch_ns is not None)
+            for worker in self.hbf_pool.workers
+        ) / max(1, len(self.hbf_pool.workers))
+        gpu_backlog = self._calendar_backlog_ns(
+            prefixes=(f"gpu-node-{self.gpu_node_id}-p-model",
+                      f"gpu-node-{self.gpu_node_id}-d-model",
+                      f"gpu-node-{self.gpu_node_id}-pd-fabric"),
+            now_ns=now_ns,
+        )
+        hbf_backlog = self._calendar_backlog_ns(
+            prefixes=("hbf-group-", "hbf-card-"),
+            now_ns=now_ns,
+        )
+        scale_ns = max(1, self.promotion_policy.retry_ns)
+        gpu_hbm_pressure = (
+            self.gpu_lifecycle.d_ledger.used_bytes
+            / self.gpu_lifecycle.d_ledger.capacity_bytes
+        )
+        gpu_score = (
+            float(gpu_queue_work)
+            + gpu_backlog / scale_ns
+            + gpu_hbm_pressure
+        )
+        hbf_score = (
+            float(hbf_queue_work)
+            + hbf_backlog / scale_ns
+        )
+        if hbf_score == 0.0:
+            return True
+        return hbf_score <= (
+            gpu_score * (1.0 - self.promotion_policy.load_hysteresis)
+        )
+
+    def _progress_promotions(self, now_ns: int) -> None:
+        self._mark_due_promotions(now_ns)
+        for session_id, intent in tuple(
+                sorted(self._intent_by_session.items())):
+            if not intent.due_reached:
+                continue
+            if session_id in self._import_by_session:
+                continue
+            if (
+                self.promotion_policy.mode == "load_aware"
+                and not self._load_aware_allows_promotion(now_ns)
+            ):
+                self.metrics.promotion_load_deferrals += 1
+                self._queue_intent_retry(
+                    intent, now_ns=now_ns)
+                continue
+            hbf_record = self.hbf_lifecycle.sessions[session_id]
+            tier_record = self.gpu_lifecycle.sessions[session_id]
+            ticket = self._export_by_session.get(session_id)
+            if ticket is None:
+                if (
+                    hbf_record.state != PlacementState.SSD_READY
+                    or tier_record.state
+                    != TierSessionState.SSD_READY
+                ):
+                    continue
+                ticket = self.gpu_lifecycle.begin_ssd_export(
+                    session_id, now_ns=now_ns)
+                if ticket is None:
+                    self.metrics.ssd_export_capacity_deferrals += 1
+                    self._queue_intent_retry(
+                        intent, now_ns=now_ns)
+                    continue
+                self._export_by_session[session_id] = ticket
+                self.metrics.ssd_exports_started += 1
+            if ticket.status == SSDExportStatus.RUNNING:
+                continue
+            if ticket.status != SSDExportStatus.READY:
+                self._intent_by_session.pop(session_id, None)
+                continue
+            if not self.gpu_lifecycle.ssd_export_publication_valid(
+                    ticket):
+                self.gpu_lifecycle.abort_ssd_export(
+                    ticket, now_ns=now_ns)
+                self._export_by_session.pop(session_id, None)
+                self._intent_by_session.pop(session_id, None)
+                continue
+            job = self.hbf_lifecycle.start_import_from_ssd(
+                session_id, now_ns=now_ns)
+            if job is None:
+                self.metrics.hbf_import_capacity_deferrals += 1
+                self._queue_intent_retry(
+                    intent, now_ns=now_ns)
+                continue
+            self._import_by_session[session_id] = (job, ticket)
+            self.metrics.hbf_imports_started += 1
+
+    def _next_raw_event_ns(self) -> Optional[int]:
+        values = []
+        for value in (
+            self.gpu_node.next_event_ns(),
+            self.hbf_pool.next_event_ns(),
+            self.hbf_lifecycle.next_completion_ns(),
+        ):
+            if value is not None:
+                values.append(value)
+        self._prune_promotion_heap()
+        if self._promotion_heap:
+            values.append(self._promotion_heap[0][0])
+        return min(values) if values else None
+
+    def advance(
+            self, now_ns: int, *,
+            defer_schedule: bool = False) -> None:
+        if now_ns < self.current_ns:
+            raise ValueError(
+                "staged hybrid time cannot move backwards")
+        while True:
+            event_ns = self._next_raw_event_ns()
+            if event_ns is None or event_ns > now_ns:
+                break
+            # Transfer and HBF publication callbacks win same-time arrivals.
+            self.hbf_lifecycle.advance(event_ns)
+            self._reconcile_imports(event_ns)
+            self.hbf_pool.advance(
+                event_ns, defer_schedule=True)
+            self.gpu_node.advance(
+                event_ns, defer_schedule=True)
+            self.current_ns = event_ns
+            self._sync_live_gpu_calls()
+            self._consume_hbf_notifications(event_ns)
+            self._consume_gpu_notifications(event_ns)
+            self._reconcile_offloads(event_ns)
+            self._cleanup_aborted_exports()
+            if defer_schedule and event_ns == now_ns:
+                break
+            self.flush_scheduling(event_ns)
+        self.hbf_lifecycle.advance(now_ns)
+        self._reconcile_imports(now_ns)
+        self.hbf_pool.advance(now_ns, defer_schedule=True)
+        self.gpu_node.advance(now_ns, defer_schedule=True)
+        self.current_ns = now_ns
+        self._sync_live_gpu_calls()
+        self._consume_hbf_notifications(now_ns)
+        self._consume_gpu_notifications(now_ns)
+        self._reconcile_offloads(now_ns)
+        self._cleanup_aborted_exports()
+        if not defer_schedule:
+            self.flush_scheduling(now_ns)
+        if self.validate_every_event:
+            self.assert_invariants()
+
+    def flush_scheduling(self, now_ns: int) -> None:
+        if not (
+            now_ns
+            == self.current_ns
+            == self.gpu_node.current_ns
+            == self.hbf_pool.current_ns
+            == self.hbf_lifecycle.current_ns
+        ):
+            raise ValueError(
+                "flush_scheduling requires synchronized clocks")
+        # Arrivals are admitted and routed before promotion thresholds.
+        self._admit_pending(now_ns)
+        self._reconcile_offloads(now_ns)
+        self._progress_promotions(now_ns)
+        self.gpu_node.flush_scheduling(now_ns)
+        self._sync_live_gpu_calls()
+        self.hbf_pool.flush_scheduling(now_ns)
+
+    def next_event_ns(self) -> Optional[int]:
+        return self._next_raw_event_ns()
+
+    def pop_completed(self) -> list[HybridCall]:
+        result = []
+        while self._user_completed_ids:
+            result.append(self.calls[
+                self._user_completed_ids.popleft()])
+        return result
+
+    def has_pending_external(self) -> bool:
+        return False
+
+    def _deadlock_detail(self) -> str:
+        return (
+            f"pending_calls={list(self._pending_call_ids)[:8]}, "
+            f"offloads={sorted(self._offload_version_by_session)}, "
+            f"promotions={sorted(self._intent_by_session)}, "
+            f"exports={sorted(self._export_by_session)}, "
+            f"imports={sorted(self._import_by_session)}"
+        )
+
+    def run_until_idle(self) -> list[HybridCall]:
+        result = self.pop_completed()
+        while self.next_event_ns() is not None:
+            event_ns = self.next_event_ns()
+            assert event_ns is not None
+            self.advance(event_ns)
+            result.extend(self.pop_completed())
+        if (
+            self._pending_call_ids
+            or any(
+                call.state != HybridCallState.INTERNAL_COMPLETE
+                for call in self.calls.values()
+            )
+        ):
+            raise HybridDeadlockError(self._deadlock_detail())
+        self.assert_invariants()
+        return result
+
+    def assert_invariants(self) -> None:
+        self.gpu_node.assert_invariants()
+        self.hbf_lifecycle.assert_invariants()
+        self.hbf_pool.assert_invariants()
+        if not (
+            self.calendar is self.gpu_node.calendar
+            is self.gpu_lifecycle.calendar
+            is self.gpu_pool.calendar
+            is self.hbf_lifecycle.calendar
+            is self.hbf_pool.calendar
+        ):
+            raise AssertionError(
+                "staged hybrid components do not share one calendar")
+        if not (
+            self.current_ns
+            == self.gpu_node.current_ns
+            == self.hbf_lifecycle.current_ns
+            == self.hbf_pool.current_ns
+        ):
+            raise AssertionError(
+                "staged hybrid component clocks diverged")
+        if self.hbf_server_count != 1:
+            raise AssertionError(
+                "staged hybrid must have exactly one HBF server")
+        pending_ids = list(self._pending_call_ids)
+        if len(pending_ids) != len(set(pending_ids)):
+            raise AssertionError(
+                "duplicate staged pending call")
+        expected_pending = {
+            call.request_id
+            for call in self.calls.values()
+            if call.state == HybridCallState.PENDING
+        }
+        if set(pending_ids) != expected_pending:
+            raise AssertionError(
+                "staged pending queue/state mismatch")
+        for session_id, ticket in self._export_by_session.items():
+            if ticket.session_id != session_id:
+                raise AssertionError(
+                    "SSD export session index mismatch")
+        for session_id, (job, ticket) in (
+                self._import_by_session.items()):
+            if (
+                job.session_id != session_id
+                or ticket.session_id != session_id
+            ):
+                raise AssertionError(
+                    "HBF import session index mismatch")
+            placement = self.hbf_lifecycle.sessions[session_id]
+            import_is_publishable = bool(
+                placement.state == PlacementState.MIGRATING
+                and job.job_id in placement.migration_job_ids
+                and placement.generation == job.generation
+                and placement.version == job.version
+            )
+            if import_is_publishable:
+                if (
+                    ticket.status != SSDExportStatus.READY
+                    or ticket.resources_released
+                ):
+                    raise AssertionError(
+                        "publishable HBF import released its SSD source")
+            elif ticket.status not in {
+                SSDExportStatus.ABORTED,
+                SSDExportStatus.ABORT_PENDING,
+            }:
+                raise AssertionError(
+                    "invalidated HBF import retained a live export")
+        if (
+            self.metrics.submitted_calls != len(self.calls)
+            or self.metrics.routed_calls
+            != self.metrics.gpu_calls + self.metrics.hbf_calls
+            or self.metrics.user_completed_calls
+            < self.metrics.internal_completed_calls
+        ):
+            raise AssertionError(
+                "staged hybrid metric conservation failed")
+
+    def report(self) -> Mapping[str, Any]:
+        return {
+            "mode": "ssd_staged_gpu_hbf_node",
+            "architecture": {
+                "gpu_server_count": 1,
+                "gpu_server": "one_4p4d_h100_server",
+                "gpu_tier_policy": "ssd_direct",
+                "hbf_server_count": 1,
+                "hbf_server": "one_8card_full_model_hbf_server",
+                "hbf_card_count": self.hbf_hardware.card_count,
+                "hbf_layout": self.hbf_layout.key,
+                "execution_backend": "analytical_calendar",
+                "shared_resource_calendar": True,
+            },
+            "policy": asdict(self.promotion_policy),
+            "metrics": asdict(self.metrics),
+            "current_ns": self.current_ns,
+            "calendar": self.calendar.report(),
+            "gpu_node": self.gpu_node.report(),
+            "hbf_lifecycle": self.hbf_lifecycle.report(),
+            "hbf_pool": self.hbf_pool.report(),
+            "active_state": {
+                "pending_call_ids": list(self._pending_call_ids),
+                "offload_sessions": sorted(
+                    self._offload_version_by_session),
+                "promotion_sessions": sorted(
+                    self._intent_by_session),
+                "export_sessions": sorted(
+                    self._export_by_session),
+                "import_sessions": sorted(
+                    self._import_by_session),
+            },
+            "calls": {
+                request_id: {
+                    **asdict(call),
+                    "state": call.state.value,
+                    "execution": (
+                        None if call.execution is None
+                        else call.execution.value),
+                    "ttft_ns": call.ttft_ns,
+                    "tpot_ns": call.tpot_ns,
+                }
+                for request_id, call in sorted(self.calls.items())
+            },
+        }
+
+
+class SSDStagedGPUHBFSystem(GPUHBFHybridSystem):
+    """Agentic event loop for :class:`SSDStagedGPUHBFNode`."""
+
+    def __init__(
+            self, *, repo_root: Path,
+            gpu_hardware: Optional[P4D4GPUHardware] = None,
+            hbf_hardware: Optional[HBFServerHardware] = None,
+            hbf_layout: str = "tp4",
+            p_capacity_bytes_per_rank: Optional[int] = None,
+            d_capacity_bytes_per_rank: Optional[int] = None,
+            cpu_capacity_bytes: Optional[int] = None,
+            ssd_capacity_bytes: Optional[int] = None,
+            max_num_batched_tokens: int = 8_192,
+            max_num_seqs: int = 128,
+            p_max_num_seqs: Optional[int] = None,
+            d_max_num_seqs: Optional[int] = None,
+            max_prefill_chunk_tokens: int = 4_096,
+            band: str = "central",
+            validate_every_event: bool = True,
+            promotion_policy: Optional[
+                str | SSDPromotionPolicy] = None,
+            migration_policy: Optional[
+                str | SSDPromotionPolicy] = None) -> None:
+        self.node = SSDStagedGPUHBFNode(
+            repo_root=repo_root,
+            gpu_hardware=(
+                P4D4GPUHardware()
+                if gpu_hardware is None else gpu_hardware
+            ),
+            hbf_hardware=(
+                HBFServerHardware()
+                if hbf_hardware is None else hbf_hardware
+            ),
+            hbf_layout=hbf_layout,
+            p_capacity_bytes_per_rank=p_capacity_bytes_per_rank,
+            d_capacity_bytes_per_rank=d_capacity_bytes_per_rank,
+            cpu_capacity_bytes=cpu_capacity_bytes,
+            ssd_capacity_bytes=ssd_capacity_bytes,
+            max_num_batched_tokens=max_num_batched_tokens,
+            max_num_seqs=max_num_seqs,
+            p_max_num_seqs=p_max_num_seqs,
+            d_max_num_seqs=d_max_num_seqs,
+            max_prefill_chunk_tokens=max_prefill_chunk_tokens,
+            band=band,
+            validate_every_event=validate_every_event,
+            promotion_policy=promotion_policy,
+            migration_policy=migration_policy,
+        )
+        self.validate_every_event = validate_every_event
+        self.metrics = HybridSystemMetrics()
+        self.current_ns = 0
+        self.call_specs = ()
+        self._spec_by_request = {}
+        self._request_by_identity = {}
+        self._successor_by_request = {}
+        self._release_heap = []
+        self._queued_release_ids = set()
+        self._released_ids = set()
+        self._completed_ids = set()
+        self._runtime_calls = {}
+        self._completed_snapshots: dict[int, CompletedRequest] = {}
+        self._completion_order = []
+        self._completed_session_order = []
+        self._offered_session_order = []
+        self._loaded = False
+        self._running = False
+        self._finished = False
+
+    def load(
+            self,
+            scheduled_sessions: Iterable[ScheduledSession]) -> None:
+        values = tuple(scheduled_sessions)
+        gap_types = {
+            (scheduled.session.session_id, call.call_index):
+            call.inter_turn_gap_type
+            for scheduled in values
+            for call in scheduled.session.calls
+        }
+        super().load(values)
+        for spec in self.call_specs:
+            self.node.set_gap_type(
+                spec.request_id,
+                gap_types[(spec.session_id, spec.call_index)],
+            )
+
+    def report(self) -> Mapping[str, Any]:
+        spec_rows = [asdict(spec) for spec in self.call_specs]
+        completed_identities = [
+            self._spec_by_request[
+                request_id].completion_identity
+            for request_id in self._completion_order
+        ]
+        result: dict[str, Any] = {
+            "mode": "ssd_staged_gpu_hbf_agentic_system",
+            "architecture": {
+                "gpu_server_count": 1,
+                "gpu_server": "one_4p4d_h100_server",
+                "local_ssd_checkpoint": True,
+                "hbf_server_count": 1,
+                "hbf_server": "one_8card_full_model_hbf_server",
+                "hbf_layout": self.node.hbf_layout.key,
+                "execution_backend": "analytical_calendar",
+                "shared_resource_calendar": True,
+            },
+            "policy": {
+                "first_turn": "gpu",
+                "gpu_turn_checkpoint": "d_to_cpu_to_local_ssd",
+                "promotion_source": "local_ssd_via_cpu_rdma",
+                "resume_at_threshold": "resume_wins",
+                "promotion": asdict(
+                    self.node.promotion_policy),
+            },
+            "metrics": asdict(self.metrics),
+            "current_ns": self.current_ns,
+            "finished": self._finished,
+            "call_specs": spec_rows,
+            "call_specs_identity_sha256": stable_json_sha256(
+                spec_rows),
+            "completion_order": completed_identities,
+            "completed_requests": [
+                asdict(request)
+                for request in self.completed_requests
+            ],
+            "node": self.node.report(),
+        }
+        if self._finished:
+            call_drain = asdict(full_drain_hashes(
+                [
+                    spec.completion_identity
+                    for spec in self.call_specs
+                ],
+                completed_identities,
+            ))
+            session_drain = asdict(full_drain_hashes(
+                self._offered_session_order,
+                self._completed_session_order,
+            ))
+            result["full_drain"] = call_drain
+            result["call_full_drain"] = call_drain
+            result["session_full_drain"] = session_drain
+        return result
+
+
+SSDStagedGPUHBFRunner = SSDStagedGPUHBFSystem
+
+
+__all__ = [
+    "SSDPromotionIntent",
+    "SSDPromotionPolicy",
+    "SSDStagedGPUHBFNode",
+    "SSDStagedGPUHBFRunner",
+    "SSDStagedGPUHBFSystem",
+    "SSDStagedHybridMetrics",
+    "SUPPORTED_SSD_PROMOTION_MODES",
+    "SUPPORTED_SSD_STAGED_HBF_LAYOUTS",
+]

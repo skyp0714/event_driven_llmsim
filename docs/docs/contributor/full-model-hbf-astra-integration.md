@@ -17,7 +17,7 @@ The strict online path models two physical servers:
 | Server | Modeled resources | Role |
 | --- | --- | --- |
 | GPU server | one TP4 prefill instance and one TP4 decode instance on eight H100 GPUs | First-turn execution and explicit fallback recomputation |
-| HBF server | eight HBF-NPU cards with card-local HBF and LPDDR | Full resume-prefill and decode after a session has a committed HBF record |
+| HBF server | eight H100-class HBF-GPU cards with card-local HBF and LPDDR | Full resume-prefill and decode after a session has a committed HBF record |
 
 The GPU cluster must use
 `Qwen/Qwen3-30B-A3B-Instruct-2507`, BF16 weights and KV, 16-token KV blocks,
@@ -31,7 +31,7 @@ The HBF hardware file exposes the following parameters independently:
 
 - card count and per-card HBF capacity;
 - HBF read/write bandwidth and fixed latency;
-- NPU peak throughput;
+- H100-class GPU peak throughput;
 - LPDDR capacity and bandwidth;
 - card-link, PCIe-root, inter-root, and RDMA bandwidth and latency;
 - the explicit card-to-root and RDMA-NIC-to-root mappings;
@@ -401,17 +401,18 @@ KV replication, and TP8-context has one weight copy and one striped KV copy.
 The adapter also parses the cluster, SSD-policy, and HBF configs and
 cross-checks a semantic deployment snapshot against the generated BOM: two
 hosts, sixteen H100s, and sixteen SSDs for the baseline; two hosts, eight
-H100s, eight HBF-NPUs, 512 GiB LPDDR, and no SSD for the proposal. Every GPU
-server is required to remain exactly 4P+4D (four H100s per instance,
-TP4/PP1), Qwen3-30B-A3B-Instruct-2507, bfloat16 weights, automatic KV dtype,
-512,000,000,000 bytes of CPU DRAM per host, and 80,000,000,000 bytes of HBM
-per H100. The baseline must expose eight 3,840-GB SSDs per host. Because the
-HBF config describes accelerator cards rather than its CPU server, the
-proposal records a separate explicit BOM assumption of 512,000,000,000 bytes
-of host DRAM for the HBF-NPU server. These values and the assumption semantics
-are serialized in the report, covered by the deployment snapshot digest, and
-embedded in the CSV export. Boolean values are never accepted as integer
-counts, sizes, token quantities, TP degree, or replica count.
+H100s, eight H100-class HBF-GPUs, 512 GiB LPDDR, and no SSD for the proposal.
+Every GPU server is required to remain exactly 4P+4D (four H100s per
+instance, TP4/PP1), Qwen3-30B-A3B-Instruct-2507, bfloat16 weights, automatic
+KV dtype, 512,000,000,000 bytes of CPU DRAM per host, and 80,000,000,000
+bytes of HBM per H100. The baseline must expose eight 3,840-GB SSDs per host.
+Because the HBF config describes accelerator cards rather than its CPU
+server, the proposal records a separate explicit BOM assumption of
+512,000,000,000 bytes of host DRAM for the HBF-GPU server. These values and
+the assumption semantics are serialized in the report, covered by the
+deployment snapshot digest, and embedded in the CSV export. Boolean values
+are never accepted as integer counts, sizes, token quantities, TP degree, or
+replica count.
 Every selected cell must report complete uncensored measurement and timing
 validation, five verified artifacts, and zero metric cross-check mismatches.
 Oracle invariants must pass. HBF pending queues, quarantines, lifecycle jobs,
@@ -582,12 +583,17 @@ results.
 
 ### Analytical device latency
 
-The NPU is modeled with an H100-derived analytical kernel model and
-parameterized NPU compute, HBF bandwidth, and LPDDR bandwidth. ASTRA-Sim
-schedules those stage runtimes; it does not derive them from a cycle-level HBF
-device model. The result is suitable for controlled sensitivity studies, not
-a claim of measured HBF-NPU silicon performance. New hardware claims require
-calibration data and uncertainty reporting.
+The HBF card uses H100-class GPU compute: a 989.5 TFLOP/s peak and the
+H100-derived analytical kernel calibration. HBF bandwidth and LPDDR bandwidth
+remain independent parameters. The legacy
+`npu_peak_tflops_per_card` configuration key is retained for artifact
+compatibility, but reports identify the modeled compute device as
+`h100_class_gpu`.
+
+ASTRA-Sim schedules those stage runtimes; it does not derive them from a
+cycle-level HBF device model. The result is suitable for controlled
+sensitivity studies, not a claim of measured HBF-GPU silicon performance.
+New hardware claims require calibration data and uncertainty reporting.
 
 ### Missing D-to-P restore
 
@@ -598,11 +604,16 @@ transfer route, overlap policy, and same-time ordering with P dispatch.
 
 ### Incomplete power and TCO coupling
 
-The existing online power model covers GPU instances, not the HBF NPU, HBF
-media, LPDDR, PCIe, or RDMA components. Full-model HBF therefore rejects
-cluster power modeling. TCO and energy analysis must remain a separately
-declared sensitivity until those components and their utilization-dependent
-power are integrated.
+The existing online power model covers GPU instances, not the HBF-side GPU,
+HBF media, LPDDR, PCIe, or RDMA components. A runtime energy result therefore
+does not represent the complete heterogeneous system.
+
+The separate design TCO evaluator uses a five-year horizon. It prices the
+HBF-side compute at the full H100 GPU-logic anchor while keeping HBF media
+separate, so HBM is not counted twice. Its JSON and summary CSV compare
+baseline and proposed IT power, facility power, and five-year IT/facility
+energy. These are static BOM sensitivity projections using utilization,
+idle-power, and PUE assumptions—not event-derived HBF runtime energy.
 
 These limits are fundamental modeling boundaries, not liveness exceptions.
 The current implementation has one causal online ASTRA process for GPU

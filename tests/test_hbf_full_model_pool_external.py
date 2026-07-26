@@ -334,9 +334,12 @@ class ExternalAstraFullModelPoolTests(unittest.TestCase):
         )
         self.assertEqual(report["pending_batch_count"], 1)
         self.assertEqual(report["external_undrained_dispatch_count"], 1)
-        self.assertIsNone(report["group_telemetry"][0]["npu_busy_ns"])
-        self.assertIsNone(
-            report["group_telemetry"][0]["npu_utilization"])
+        telemetry = report["group_telemetry"][0]
+        self.assertEqual(telemetry["compute_device"], "h100_class_gpu")
+        self.assertIsNone(telemetry["gpu_busy_ns"])
+        self.assertIsNone(telemetry["gpu_utilization"])
+        self.assertIsNone(telemetry["npu_busy_ns"])
+        self.assertIsNone(telemetry["npu_utilization"])
 
     def test_tp8_context_uses_ordered_exact_card_projection(self):
         pool = self.make_pool(layout="tp8_context")

@@ -1,10 +1,10 @@
-"""Analytical full-model latency for an eight-card HBF-NPU server.
+"""Analytical full-model latency for an eight-card HBF-GPU server.
 
 This module is intentionally separate from the attention-only WakeKV path.
 Every HBF worker executes the complete transformer, including dense
 projections, attention, MoE, the language-model head, and sampling.  The
-legacy H100 TP4 calibration remains the empirical anchor, while per-rank work
-is rebuilt for TP1, TP4, and TP8.
+H100 TP4 calibration and an H100-class 989.5-TFLOP/s compute peak are the
+empirical anchors, while per-rank work is rebuilt for TP1, TP4, and TP8.
 
 Model weights and committed KV are read from HBF.  Activations and active-turn
 KV are read from LPDDR.  The two media have independent roofline terms.  TP
@@ -198,7 +198,12 @@ def _two_way_zigzag_causal_visible_pairs(
 
 @dataclass(frozen=True)
 class HBFServerHardware:
-    """Hardware inputs shared by all parallel layouts."""
+    """Hardware inputs shared by all parallel layouts.
+
+    ``npu_peak_tflops_per_card`` is retained as a configuration-compatibility
+    name.  The modeled compute device is an H100-class GPU and uses the same
+    989.5-TFLOP/s peak as the pinned P4D4 H100 configuration.
+    """
 
     card_count: int = 8
     hbf_capacity_bytes_per_card: int = 1_280_000_000_000
@@ -224,6 +229,12 @@ class HBFServerHardware:
     pcie_inter_root_fixed_latency_us: float = 0.0
     rdma_bandwidth_gbps: float = 80.0
     rdma_one_way_latency_us: float = 10.0
+
+    @property
+    def gpu_peak_tflops_per_card(self) -> float:
+        """Return the H100-class GPU compute peak used by the HBF card."""
+
+        return self.npu_peak_tflops_per_card
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, object]) -> "HBFServerHardware":
@@ -706,7 +717,7 @@ class FullModelHBFLatencyModel:
         fit = self._fit(family)
         compute_seconds = (
             flops
-            / (self.hardware.npu_peak_tflops_per_card * 1e12)
+            / (self.hardware.gpu_peak_tflops_per_card * 1e12)
             * wave_penalty
         )
         hbf_seconds = (
@@ -955,7 +966,7 @@ class FullModelHBFLatencyModel:
             )
             compute_seconds = (
                 candidate_work[0]
-                / (self.hardware.npu_peak_tflops_per_card * 1e12)
+                / (self.hardware.gpu_peak_tflops_per_card * 1e12)
                 * candidate_work[3]
             )
             hbf_seconds = (
@@ -1027,7 +1038,7 @@ class FullModelHBFLatencyModel:
         )
         prefill_compute_seconds = (
             prefill_work[0]
-            / (self.hardware.npu_peak_tflops_per_card * 1e12)
+            / (self.hardware.gpu_peak_tflops_per_card * 1e12)
             * prefill_work[3]
         )
         prefill_hbf_seconds = (
@@ -1208,7 +1219,7 @@ class FullModelHBFLatencyModel:
         )
         compute_seconds = (
             flops
-            / (self.hardware.npu_peak_tflops_per_card * 1e12)
+            / (self.hardware.gpu_peak_tflops_per_card * 1e12)
         )
         lpddr_seconds = (
             lpddr_bytes
@@ -1641,6 +1652,315 @@ class FullModelHBFLatencyModel:
     @lru_cache(maxsize=262_144)
     def batch_latency(
             self, shape: HBFModelBatchShape) -> HBFModelBatchLatency:
+        """Return the compact analytical latency summary for ``shape``.
+
+        The ordered execution plan intentionally remains available through
+        :meth:`batch_execution_plan` for diagnostics and ASTRA projection.
+        Serving only needs the aggregate summary, however, so this hot path
+        computes each distinct per-layer kernel once and applies the fixed
+        Qwen layer multiplicity directly.  It therefore avoids constructing
+        and scanning hundreds of immutable operation records on every cache
+        miss.
+        """
+
+        shape.validate()
+        total_tokens = shape.total_tokens
+        sequences = shape.lm_head_sequences
+        tp = self.layout.tp_size
+        q_dim = self.layout.q_heads_per_rank * QWEN_HEAD_DIM
+        kv_dim = self.layout.kv_heads_per_rank * QWEN_HEAD_DIM
+        qkv_dim = q_dim + 2 * kv_dim
+
+        embedding = self._elementwise(
+            "embedding", total_tokens, QWEN_HIDDEN_SIZE, 0.0, 1.0)
+        layernorm = self._elementwise(
+            "norm", total_tokens, QWEN_HIDDEN_SIZE, 8.0, 2.0)
+        q_norm = self._elementwise(
+            "norm", total_tokens, q_dim, 8.0, 2.0)
+        k_norm = self._elementwise(
+            "norm", total_tokens, kv_dim, 8.0, 2.0)
+        qkv = self._gemm(
+            "q_projection", total_tokens, QWEN_HIDDEN_SIZE, qkv_dim)
+        rope = self._elementwise(
+            "rope", total_tokens, q_dim + kv_dim, 10.0, 2.0)
+        attention = self._attention(shape)
+        pair_query_bytes, pair_partial_bytes = (
+            self._pair_attention_exchange_bytes(shape))
+        pair_merge = self._pair_attention_merge(shape)
+        o_proj = self._gemm(
+            "o_projection", total_tokens, q_dim, QWEN_HIDDEN_SIZE)
+        router = self._gemm(
+            "router",
+            total_tokens,
+            QWEN_HIDDEN_SIZE,
+            QWEN_EXPERTS,
+        )
+        moe = self._moe(total_tokens)
+
+        final_norm = self._elementwise(
+            "norm", total_tokens, QWEN_HIDDEN_SIZE, 8.0, 2.0)
+        lm_head = self._gemm(
+            "lm_head",
+            sequences,
+            QWEN_HIDDEN_SIZE,
+            QWEN_VOCAB_SIZE // tp,
+        )
+        sampler_fit = self._fit("lm_head")
+        sampler_bytes = (
+            sequences * (QWEN_VOCAB_SIZE // tp) * BF16_BYTES)
+        sampler_seconds = max(
+            sampler_fit.launch_floor_seconds,
+            sampler_bytes
+            / (self.hardware.lpddr_bandwidth_gbps_per_card * 1e9),
+        )
+        sampler = KernelLatency(
+            family="sampler",
+            latency_ns=self._ns(sampler_seconds),
+            latency_seconds=sampler_seconds,
+            flops=0.0,
+            hbf_read_bytes=0.0,
+            lpddr_bytes=float(sampler_bytes),
+            compute_roof_ns=0,
+            hbf_roof_ns=0,
+            lpddr_roof_ns=self._ns(
+                sampler_bytes
+                / (
+                    self.hardware.lpddr_bandwidth_gbps_per_card
+                    * 1e9
+                )
+            ),
+            dominant_roof="lpddr",
+        )
+
+        dense_per_layer = (
+            2 * layernorm.latency_ns
+            + qkv.latency_ns
+            + q_norm.latency_ns
+            + k_norm.latency_ns
+            + rope.latency_ns
+            + o_proj.latency_ns
+        )
+        attention_per_layer = (
+            attention.latency_ns
+            + (pair_merge.latency_ns if pair_merge is not None else 0)
+        )
+        moe_per_layer = sum(kernel.latency_ns for kernel in moe)
+
+        embedding_ns = embedding.latency_ns
+        dense_ns = QWEN_LAYERS * dense_per_layer
+        attention_ns = QWEN_LAYERS * attention_per_layer
+        router_ns = QWEN_LAYERS * router.latency_ns
+        moe_ns = QWEN_LAYERS * moe_per_layer
+        final_ns = (
+            final_norm.latency_ns
+            + lm_head.latency_ns
+            + sampler.latency_ns
+        )
+
+        allreduce_payload = (
+            total_tokens * QWEN_HIDDEN_SIZE * BF16_BYTES)
+        dispatch_tokens_per_rank = max(1, total_tokens // tp)
+        allgather_local_chunk = (
+            dispatch_tokens_per_rank
+            * (QWEN_HIDDEN_SIZE + QWEN_EXPERTS)
+            * BF16_BYTES
+        )
+        standard_collective_route = (
+            CROSS_ROOT_ROUTE if tp == 8 else ROOT_LOCAL_ROUTE)
+
+        if tp > 1:
+            allreduce_per_layer_ns = self._collective_ns(
+                allreduce_payload,
+                rank_multiplier=2.0 * (tp - 1) / tp,
+                route=standard_collective_route,
+            )
+            allgather_per_layer_ns = self._collective_ns(
+                allgather_local_chunk,
+                rank_multiplier=tp - 1,
+                route=standard_collective_route,
+            )
+            reduce_scatter_per_layer_ns = self._collective_ns(
+                allreduce_payload,
+                rank_multiplier=(tp - 1) / tp,
+                route=standard_collective_route,
+            )
+            allreduce_bytes_per_layer = int(
+                2.0 * (tp - 1) / tp * allreduce_payload)
+            allgather_bytes_per_layer = (
+                (tp - 1) * allgather_local_chunk)
+            reduce_scatter_bytes_per_layer = int(
+                (tp - 1) / tp * allreduce_payload)
+        else:
+            allreduce_per_layer_ns = 0
+            allgather_per_layer_ns = 0
+            reduce_scatter_per_layer_ns = 0
+            allreduce_bytes_per_layer = 0
+            allgather_bytes_per_layer = 0
+            reduce_scatter_bytes_per_layer = 0
+
+        if self.layout.is_context_striped:
+            pair_query_per_layer_ns = self._collective_ns(
+                pair_query_bytes,
+                rank_multiplier=1.0,
+                route=ROOT_LOCAL_ROUTE,
+            )
+            pair_partial_per_layer_ns = self._collective_ns(
+                pair_partial_bytes,
+                rank_multiplier=1.0,
+                route=ROOT_LOCAL_ROUTE,
+            )
+        else:
+            pair_query_per_layer_ns = 0
+            pair_partial_per_layer_ns = 0
+
+        tp_allreduce_ns = QWEN_LAYERS * allreduce_per_layer_ns
+        ep_allgather_ns = QWEN_LAYERS * allgather_per_layer_ns
+        ep_reduce_scatter_ns = (
+            QWEN_LAYERS * reduce_scatter_per_layer_ns)
+        pair_query_exchange_ns = (
+            QWEN_LAYERS * pair_query_per_layer_ns)
+        pair_softmax_partial_exchange_ns = (
+            QWEN_LAYERS * pair_partial_per_layer_ns)
+        collective_ns = (
+            tp_allreduce_ns
+            + ep_allgather_ns
+            + ep_reduce_scatter_ns
+            + pair_query_exchange_ns
+            + pair_softmax_partial_exchange_ns
+        )
+
+        per_layer_kernel_multiplicities = (
+            (layernorm, 2),
+            (qkv, 1),
+            (q_norm, 1),
+            (k_norm, 1),
+            (rope, 1),
+            (attention, 1),
+            (o_proj, 1),
+            (router, 1),
+            (moe[0], 1),
+            (moe[1], 1),
+            (moe[2], 1),
+        ) + (((pair_merge, 1),) if pair_merge is not None else ())
+        all_kernel_multiplicities = (
+            (embedding, 1),
+            *(
+                (kernel, QWEN_LAYERS * multiplicity)
+                for kernel, multiplicity
+                in per_layer_kernel_multiplicities
+            ),
+            (final_norm, 1),
+            (lm_head, 1),
+            (sampler, 1),
+        )
+
+        def weighted_sum(attribute: str) -> float | int:
+            return sum(
+                getattr(kernel, attribute) * multiplicity
+                for kernel, multiplicity in all_kernel_multiplicities
+            )
+
+        dominant_counts = {
+            name: sum(
+                multiplicity
+                for kernel, multiplicity in all_kernel_multiplicities
+                if kernel.dominant_roof == name
+            )
+            for name in ("compute", "hbf_read", "lpddr")
+        }
+        attention_roof_totals = {
+            "compute": QWEN_LAYERS * (
+                attention.compute_roof_ns
+                + (
+                    pair_merge.compute_roof_ns
+                    if pair_merge is not None else 0
+                )
+            ),
+            "hbf_read": QWEN_LAYERS * (
+                attention.hbf_roof_ns
+                + (
+                    pair_merge.hbf_roof_ns
+                    if pair_merge is not None else 0
+                )
+            ),
+            "lpddr": QWEN_LAYERS * (
+                attention.lpddr_roof_ns
+                + (
+                    pair_merge.lpddr_roof_ns
+                    if pair_merge is not None else 0
+                )
+            ),
+        }
+        attention_dominant_roof = max(
+            attention_roof_totals, key=attention_roof_totals.get)
+        total_ns = (
+            embedding_ns
+            + dense_ns
+            + attention_ns
+            + router_ns
+            + moe_ns
+            + final_ns
+            + collective_ns
+        )
+        collective_bytes_per_rank = QWEN_LAYERS * (
+            allreduce_bytes_per_layer
+            + allgather_bytes_per_layer
+            + reduce_scatter_bytes_per_layer
+            + pair_query_bytes
+            + pair_partial_bytes
+        )
+
+        return HBFModelBatchLatency(
+            layout=self.layout.key,
+            tp_size=tp,
+            replicas=self.layout.replicas,
+            total_ns=total_ns,
+            embedding_ns=embedding_ns,
+            dense_ns=dense_ns,
+            attention_ns=attention_ns,
+            router_ns=router_ns,
+            moe_ns=moe_ns,
+            final_ns=final_ns,
+            collective_ns=collective_ns,
+            tp_allreduce_ns=tp_allreduce_ns,
+            ep_allgather_ns=ep_allgather_ns,
+            ep_reduce_scatter_ns=ep_reduce_scatter_ns,
+            hbf_read_bytes_per_rank=int(math.ceil(
+                weighted_sum("hbf_read_bytes"))),
+            lpddr_bytes_per_rank=int(math.ceil(
+                weighted_sum("lpddr_bytes"))),
+            collective_bytes_per_rank=collective_bytes_per_rank,
+            compute_roof_ns_sum=int(weighted_sum("compute_roof_ns")),
+            hbf_roof_ns_sum=int(weighted_sum("hbf_roof_ns")),
+            lpddr_roof_ns_sum=int(weighted_sum("lpddr_roof_ns")),
+            attention_compute_roof_ns=attention_roof_totals["compute"],
+            attention_hbf_roof_ns=attention_roof_totals["hbf_read"],
+            attention_lpddr_roof_ns=attention_roof_totals["lpddr"],
+            attention_dominant_roof=attention_dominant_roof,
+            dominant_kernel_counts=dominant_counts,
+            pair_query_exchange_ns=pair_query_exchange_ns,
+            pair_softmax_partial_exchange_ns=(
+                pair_softmax_partial_exchange_ns),
+            pair_attention_merge_ns=QWEN_LAYERS * (
+                pair_merge.latency_ns
+                if pair_merge is not None else 0
+            ),
+            pair_query_exchange_bytes_per_rank=(
+                QWEN_LAYERS * pair_query_bytes),
+            pair_softmax_partial_exchange_bytes_per_rank=(
+                QWEN_LAYERS * pair_partial_bytes),
+            pair_attention_merge_lpddr_bytes_per_rank=int(math.ceil(
+                QWEN_LAYERS * (
+                    pair_merge.lpddr_bytes
+                    if pair_merge is not None else 0.0
+                )
+            )),
+        )
+
+    def _batch_latency_from_execution_plan(
+            self, shape: HBFModelBatchShape) -> HBFModelBatchLatency:
+        """Reference summary built by expanding and scanning the full plan."""
+
         plan = self.batch_execution_plan(shape)
         kernel_operations = plan.kernel_operations
         collective_operations = plan.collective_operations
@@ -1821,6 +2141,12 @@ class FullModelHBFLatencyModel:
             "execution_scope": "full_transformer_end_to_end",
             "layout": asdict(self.layout),
             "hardware": asdict(self.hardware),
+            "compute_device": {
+                "kind": "h100_class_gpu",
+                "peak_tflops_per_card": (
+                    self.hardware.gpu_peak_tflops_per_card),
+                "calibration_source": "h100_tp4_kernel_families",
+            },
             "weight_location": "hbf",
             "committed_kv_location": "hbf",
             "activation_location": "lpddr",

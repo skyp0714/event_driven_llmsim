@@ -2277,10 +2277,29 @@ def write_tco_csv(
                 row.sensitivity.npu_logic_power_ratio_to_gpu_logic),
             "hbf_subsystem_power_ratio_to_hbm_stack": (
                 row.sensitivity.hbf_subsystem_power_ratio_to_hbm_stack),
+            "tco_lifetime_years": row.proposed_cost.lifetime_years,
             "tiering_lifetime_tco_usd": (
                 row.tiering_cost.lifetime_tco_usd),
             "proposed_lifetime_tco_usd": (
                 row.proposed_cost.lifetime_tco_usd),
+            "tiering_it_power_w": row.tiering_cost.it_power_w,
+            "proposed_it_power_w": row.proposed_cost.it_power_w,
+            "incremental_it_power_w": (
+                row.proposed_cost.it_power_w
+                - row.tiering_cost.it_power_w),
+            "proposed_it_power_ratio_to_tiering": (
+                row.proposed_cost.it_power_w
+                / row.tiering_cost.it_power_w),
+            "tiering_lifetime_facility_energy_kwh": (
+                row.tiering_cost.lifetime_facility_energy_kwh),
+            "proposed_lifetime_facility_energy_kwh": (
+                row.proposed_cost.lifetime_facility_energy_kwh),
+            "incremental_lifetime_facility_energy_kwh": (
+                row.proposed_cost.lifetime_facility_energy_kwh
+                - row.tiering_cost.lifetime_facility_energy_kwh),
+            "proposed_facility_energy_ratio_to_tiering": (
+                row.proposed_cost.lifetime_facility_energy_kwh
+                / row.tiering_cost.lifetime_facility_energy_kwh),
             "proposed_tco_ratio_to_tiering": (
                 row.proposed_tco_ratio_to_tiering),
             "proposed_goodput_ratio_to_tiering": (

@@ -49,6 +49,22 @@ class FullModelHBFLatencyTests(unittest.TestCase):
         self.assertEqual(
             self.layouts["tp8_context"].physical_kv_replication_factor, 1)
 
+    def test_hbf_compute_is_reported_as_h100_class_gpu(self):
+        metadata = self.models["tp4"].metadata()
+
+        self.assertEqual(
+            self.hardware.gpu_peak_tflops_per_card,
+            989.5,
+        )
+        self.assertEqual(
+            metadata["compute_device"],
+            {
+                "kind": "h100_class_gpu",
+                "peak_tflops_per_card": 989.5,
+                "calibration_source": "h100_tp4_kernel_families",
+            },
+        )
+
     def test_invalid_layout_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "every HBF card"):
             HBFParallelLayout("bad", 4, 1).validate(8)
