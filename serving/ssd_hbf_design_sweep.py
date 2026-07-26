@@ -30,6 +30,10 @@ import re
 import time
 from typing import Callable, Mapping, Optional, Sequence
 
+from .core.endurance_model import (
+    DeviceProfile,
+    EnduranceConfigError,
+)
 from .core.gpu_pd_latency import load_p4d4_gpu_config
 from .core.gpu_pd_dual_oracle import (
     ROUTE_BALANCED_TRACE_WORK,
@@ -39,6 +43,12 @@ from .core.gpu_pd_dual_tiered import DualFiniteHBMTieredBaseline
 from .core.gpu_pd_tier_lifecycle import (
     RESTORE_EXECUTION_BULK,
     RESTORE_EXECUTION_LAYERWISE,
+)
+from .core.hbf_endurance import (
+    HBFEnduranceError,
+    HBFWriteSample,
+    default_hbf_endurance_scenarios,
+    project_hbf_endurance,
 )
 from .core.hbf_comparison_cell import (
     DEFAULT_FIRST_TTFT_SECONDS,
@@ -88,10 +98,12 @@ from .hbf_comparison_sweep import (
 )
 
 
-SSD_HBF_SWEEP_SCHEMA_VERSION = 5
-SSD_HBF_CELL_SCHEMA_VERSION = 4
-SSD_HBF_CONTRACT_KEY = "two-gpu-local-ssd-vs-one-gpu-one-hbf-staged-v3"
+SSD_HBF_SWEEP_SCHEMA_VERSION = 6
+SSD_HBF_CELL_SCHEMA_VERSION = 5
+SSD_HBF_CONTRACT_KEY = "two-gpu-local-ssd-vs-one-gpu-one-hbf-staged-v4"
 REQUIRED_SESSION_RATE = 3.0
+PINNED_ENDURANCE_PROFILE = Path(
+    "configs/storage/micron_9550_pro_3_84tb.json")
 
 BASELINE_CANDIDATE_KEY = "baseline_two_gpu_local_ssd"
 STREAMING_BASELINE_CANDIDATE_KEY = (
@@ -175,6 +187,8 @@ _EXECUTION_INPUTS = (
     Path("serving/core/gpu_pd_tier_lifecycle.py"),
     Path("serving/core/gpu_pd_tier_resources.py"),
     Path("serving/core/gpu_ssd_hbf_hybrid.py"),
+    Path("serving/core/endurance_model.py"),
+    Path("serving/core/hbf_endurance.py"),
     Path("serving/core/ssd_hbf_tco.py"),
     Path("serving/core/gpu_pd_tiered_node.py"),
     Path("serving/core/gpu_pd_oracle_node.py"),
@@ -187,6 +201,7 @@ _EXECUTION_INPUTS = (
     Path("serving/core/tracelab_comparison_scenarios.py"),
     PINNED_GPU_CONFIG,
     PINNED_HBF_CONFIG,
+    PINNED_ENDURANCE_PROFILE,
 )
 
 
@@ -1128,6 +1143,66 @@ def pareto_frontier(
     return tuple(sorted(frontier))
 
 
+def _design_hbf_endurance(
+        records_by_seed: Mapping[int, Mapping[str, object]],
+        *,
+        scenarios,
+) -> dict[str, object]:
+    samples = []
+    for seed, record in sorted(records_by_seed.items()):
+        observation = record.get("execution_observation")
+        system_report = record.get("system_report")
+        if (
+            not isinstance(observation, Mapping)
+            or not isinstance(system_report, Mapping)
+        ):
+            raise SSDHBFDesignSweepError(
+                "design cell lacks execution/HBF write observations")
+        horizon_ns = observation.get("simulated_horizon_ns")
+        if (
+            isinstance(horizon_ns, bool)
+            or not isinstance(horizon_ns, int)
+            or horizon_ns <= 0
+        ):
+            raise SSDHBFDesignSweepError(
+                "design cell simulated horizon must be positive")
+        node_report = system_report.get("node")
+        if not isinstance(node_report, Mapping):
+            raise SSDHBFDesignSweepError(
+                "design cell lacks staged-node report")
+        lifecycle_report = node_report.get("hbf_lifecycle")
+        if not isinstance(lifecycle_report, Mapping):
+            raise SSDHBFDesignSweepError(
+                "design cell lacks HBF lifecycle report")
+        accounting = lifecycle_report.get(
+            "hbf_write_accounting")
+        if not isinstance(accounting, Mapping):
+            raise SSDHBFDesignSweepError(
+                "design cell lacks HBF write accounting")
+        try:
+            samples.append(HBFWriteSample.from_write_accounting(
+                run_id=(
+                    f"{record['candidate_key']}::seed-{seed}"),
+                duration_seconds=horizon_ns / 1e9,
+                write_accounting=accounting,
+            ))
+        except HBFEnduranceError as exc:
+            raise SSDHBFDesignSweepError(
+                "invalid design HBF write accounting: "
+                f"candidate={record['candidate_key']}, seed={seed}: "
+                f"{exc}"
+            ) from exc
+    try:
+        return project_hbf_endurance(
+            samples,
+            scenarios,
+            service_lifetime_years=5.0,
+        )
+    except HBFEnduranceError as exc:
+        raise SSDHBFDesignSweepError(
+            f"cannot aggregate design HBF endurance: {exc}") from exc
+
+
 def aggregate_cell_records(
         records: Sequence[Mapping[str, object]],
         designs: Sequence[SSDHBFDesignSpec],
@@ -1137,6 +1212,16 @@ def aggregate_cell_records(
     design_by_key = {design.key: design for design in designs}
     if not design_by_key:
         raise SSDHBFDesignSweepError("designs cannot be empty")
+    try:
+        endurance_profile = DeviceProfile.from_json_file(
+            Path(__file__).resolve().parents[1]
+            / PINNED_ENDURANCE_PROFILE
+        )
+        endurance_scenarios = default_hbf_endurance_scenarios(
+            endurance_profile)
+    except (EnduranceConfigError, OSError) as exc:
+        raise SSDHBFDesignSweepError(
+            f"cannot load pinned HBF endurance proxy: {exc}") from exc
     restore_modes = tuple(
         mode
         for mode in SUPPORTED_RESTORE_EXECUTION_MODES
@@ -1315,6 +1400,10 @@ def aggregate_cell_records(
                 "slo_good_output_tokens_per_second"]["mean"]
             values = seed_values(
                 key, "slo_good_output_tokens_per_second")
+            hbf_endurance = _design_hbf_endurance(
+                candidates[key],
+                scenarios=endurance_scenarios,
+            )
             paired_baseline = asdict(aggregate_paired_seed_values(
                 baseline_goodput, values))
             paired_oracle = asdict(aggregate_paired_seed_values(
@@ -1345,6 +1434,7 @@ def aggregate_cell_records(
                 "baseline_candidate_key": baseline_key,
                 "matched_reference_eligibility": (
                     matched_eligibility),
+                "hbf_endurance": hbf_endurance,
                 "paired_vs_baseline_goodput": paired_baseline,
                 "paired_vs_oracle_goodput": paired_oracle,
                 "tco": tco,
@@ -1393,6 +1483,15 @@ def aggregate_cell_records(
         "schema_version": SSD_HBF_SWEEP_SCHEMA_VERSION,
         "comparison_contract": SSD_HBF_CONTRACT_KEY,
         "measurement_roster_sha256": roster_hash,
+        "hbf_endurance_proxy_profile": {
+            "profile_id": endurance_profile.profile_id,
+            "vendor": endurance_profile.vendor,
+            "model": endurance_profile.model,
+            "source_url": endurance_profile.source_url,
+            "semantics": (
+                "SSD ratings are reported only as empirical full-write "
+                "proxies; raw HBF 100K/1M P/E bands are separate"),
+        },
         "rates": rate_rows,
     }
 
@@ -1482,6 +1581,21 @@ def _write_summary_csv(
         "active_memory_kind",
         "active_memory_gib_per_card",
         "active_memory_gbps_per_card",
+        "hbf_total_write_bytes_across_seeds",
+        "hbf_total_observed_seconds",
+        "hbf_payload_write_bytes_per_second",
+        "hbf_hottest_card_write_bytes_per_day",
+        "hbf_card_write_cv",
+        "hbf_hottest_card_share",
+        "hbf_wasted_write_fraction",
+        "hbf_lifetime_years_ssd_random_proxy",
+        "hbf_lifetime_years_ssd_sequential_proxy",
+        "hbf_lifetime_years_100k_pe_waf1",
+        "hbf_lifetime_years_100k_pe_waf1_3",
+        "hbf_lifetime_years_100k_pe_waf2",
+        "hbf_lifetime_years_1m_pe_waf1",
+        "hbf_five_year_budget_fraction_100k_pe_waf1",
+        "hbf_meets_five_year_endurance_100k_pe_waf1",
         "goodput_mean",
         "goodput_ci95_lower",
         "goodput_ci95_upper",
@@ -1515,6 +1629,10 @@ def _write_summary_csv(
             memory = design["active_memory"]
             goodput = row["metrics"][
                 "slo_good_output_tokens_per_second"]
+            endurance = row["hbf_endurance"]
+            endurance_scenarios = endurance["scenarios"]
+            central_endurance = endurance_scenarios[
+                "slc_100k_pe_waf1"]
             tco = row["tco"]
             baseline_ratio = row["paired_vs_baseline_goodput"][
                 "candidate_over_reference"]
@@ -1536,6 +1654,55 @@ def _write_summary_csv(
                     memory["capacity_gib_per_card"]),
                 "active_memory_gbps_per_card": (
                     memory["bandwidth_gbps_per_card"]),
+                "hbf_total_write_bytes_across_seeds": (
+                    endurance["total_physical_write_bytes"]),
+                "hbf_total_observed_seconds": (
+                    endurance["total_observed_seconds"]),
+                "hbf_payload_write_bytes_per_second": (
+                    endurance["total_physical_write_bytes"]
+                    / endurance["total_observed_seconds"]),
+                "hbf_hottest_card_write_bytes_per_day": max(
+                    card["payload_write_bytes_per_day"]
+                    for card in central_endurance["cards"]
+                ),
+                "hbf_card_write_cv": (
+                    endurance["hotness"][
+                        "coefficient_of_variation"]),
+                "hbf_hottest_card_share": (
+                    endurance["hotness"][
+                        "hottest_card_share"]),
+                "hbf_wasted_write_fraction": (
+                    endurance["wasted_write_fraction"]),
+                "hbf_lifetime_years_ssd_random_proxy": (
+                    endurance_scenarios[
+                        "ssd_proxy_random_4k"][
+                            "pool_years_to_first_card_eol"]),
+                "hbf_lifetime_years_ssd_sequential_proxy": (
+                    endurance_scenarios[
+                        "ssd_proxy_sequential_128k"][
+                            "pool_years_to_first_card_eol"]),
+                "hbf_lifetime_years_100k_pe_waf1": (
+                    central_endurance[
+                        "pool_years_to_first_card_eol"]),
+                "hbf_lifetime_years_100k_pe_waf1_3": (
+                    endurance_scenarios[
+                        "slc_100k_pe_waf1.3"][
+                            "pool_years_to_first_card_eol"]),
+                "hbf_lifetime_years_100k_pe_waf2": (
+                    endurance_scenarios[
+                        "slc_100k_pe_waf2"][
+                            "pool_years_to_first_card_eol"]),
+                "hbf_lifetime_years_1m_pe_waf1": (
+                    endurance_scenarios[
+                        "retention_relaxed_1m_pe_waf1"][
+                            "pool_years_to_first_card_eol"]),
+                "hbf_five_year_budget_fraction_100k_pe_waf1": max(
+                    card["service_lifetime_budget_fraction"]
+                    for card in central_endurance["cards"]
+                ),
+                "hbf_meets_five_year_endurance_100k_pe_waf1": (
+                    central_endurance[
+                        "pool_meets_service_lifetime"]),
                 "goodput_mean": goodput["mean"],
                 "goodput_ci95_lower": goodput["ci95_lower"],
                 "goodput_ci95_upper": goodput["ci95_upper"],

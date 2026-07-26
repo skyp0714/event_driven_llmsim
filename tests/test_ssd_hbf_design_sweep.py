@@ -112,6 +112,8 @@ def _record(
         goodput: float,
         *,
         joint: float,
+        hbf_card_writes=(0,) * 8,
+        horizon_ns: int = 1_000_000_000,
 ) -> dict[str, object]:
     restore_execution_mode = (
         BASELINE_RESTORE_MODES[candidate_key]
@@ -141,6 +143,43 @@ def _record(
             "ordered_identities_sha256": ROSTER_HASH,
         },
         "summary": _summary(goodput, joint=joint),
+        "execution_observation": {
+            "simulated_horizon_ns": horizon_ns,
+            "elapsed_wall_time_ns": 1,
+        },
+        "system_report": {
+            "node": {
+                "hbf_lifecycle": {
+                    "hbf_write_accounting": {
+                        "schema_version": 1,
+                        "accounting_basis": (
+                            "physical_media_payload_of_admitted_jobs"),
+                        "complete_for_endurance_projection": True,
+                        "total_physical_write_bytes": sum(
+                            hbf_card_writes),
+                        "wasted_physical_write_bytes": 0,
+                        "static_model_weight": {
+                            "bytes_per_card": 100,
+                            "write_count": 1,
+                            "included_in_recurring_kv_wear": False,
+                        },
+                        "cards": [
+                            {
+                                "device_id": (
+                                    f"hbf-server-0-card-{card_id}"),
+                                "server_id": 0,
+                                "card_id": card_id,
+                                "kv_region_capacity_bytes": 1_000,
+                                "total_write_bytes": write_bytes,
+                                "wasted_write_bytes": 0,
+                            }
+                            for card_id, write_bytes
+                            in enumerate(hbf_card_writes)
+                        ],
+                    },
+                },
+            },
+        },
     }
 
 
@@ -468,6 +507,54 @@ class SSDHBFDesignSweepTests(unittest.TestCase):
                 "paired_vs_baseline_goodput"][
                     "candidate_over_reference"]["mean"],
             8.0,
+        )
+
+    def test_endurance_aggregation_weights_bytes_by_trace_duration(self):
+        records = []
+        for seed, writes, horizon_ns in (
+                (7, (100,) + (0,) * 7, 1_000_000_000),
+                (11, (300,) + (0,) * 7, 3_000_000_000)):
+            records.extend((
+                _record(
+                    BASELINE_CANDIDATE_KEY,
+                    seed, 5.0, joint=0.05,
+                ),
+                _record(
+                    ORACLE_CANDIDATE_KEY,
+                    seed, 100.0, joint=0.98,
+                ),
+                _record(
+                    self.tp4.key,
+                    seed, 60.0, joint=0.60,
+                    hbf_card_writes=writes,
+                    horizon_ns=horizon_ns,
+                ),
+            ))
+
+        aggregate = aggregate_cell_records(
+            records, (self.tp4,))
+        endurance = aggregate["rates"][0]["designs"][0][
+            "hbf_endurance"]
+        central = endurance["scenarios"][
+            "slc_100k_pe_waf1"]
+
+        self.assertEqual(endurance["sample_count"], 2)
+        self.assertEqual(
+            endurance["total_observed_seconds"], 4.0)
+        self.assertEqual(
+            endurance["total_physical_write_bytes"], 400)
+        limiting = central["cards"][0]
+        self.assertEqual(
+            limiting["payload_write_bytes_per_second"],
+            100.0,
+        )
+        self.assertEqual(
+            central["limiting_device_ids"],
+            ["hbf-server-0-card-0"],
+        )
+        self.assertEqual(
+            endurance["hotness"]["hottest_card_share"],
+            1.0,
         )
 
     def test_tasks_share_one_schedule_object_and_hash_per_seed(self):
@@ -885,6 +972,20 @@ class SSDHBFDesignSweepTests(unittest.TestCase):
             self.assertNotEqual(
                 summary["proposed_five_year_facility_energy_kwh"],
                 "",
+            )
+            self.assertEqual(
+                summary["hbf_total_write_bytes_across_seeds"],
+                "0",
+            )
+            self.assertEqual(
+                summary[
+                    "hbf_lifetime_years_100k_pe_waf1"],
+                "",
+            )
+            self.assertEqual(
+                summary[
+                    "hbf_meets_five_year_endurance_100k_pe_waf1"],
+                "True",
             )
             self.assertEqual(
                 len(tuple((output / "cells").rglob("*.json"))),
