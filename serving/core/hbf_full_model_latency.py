@@ -519,9 +519,10 @@ class HBFContextAttentionRankExecution:
 class HBFKernelExecutionOp:
     """One calibrated kernel in the ordered HBF batch execution plan.
 
-    ``latency_ns`` already includes the calibrated maximum of the compute,
-    HBF-read, and LPDDR rooflines.  The individual roofline fields and byte
-    counts are audit metadata, not additional serialized operations.
+    ``latency_ns`` includes one serialized fixed HBF access on demand,
+    followed by the calibrated maximum of compute, HBF bandwidth, and LPDDR
+    rooflines.  The individual roofline fields and byte counts are audit
+    metadata, not additional serialized operations.
     """
 
     kind: str
@@ -710,7 +711,7 @@ class FullModelHBFLatencyModel:
     def _hbf_read_seconds(
             self, byte_count: float, *,
             include_fixed_latency: bool = True) -> float:
-        """Return HBF service while keeping fixed latency auditable.
+        """Return serialized HBF access plus bandwidth service.
 
         Perfect prefetch hides only the configured first-access latency.
         The byte transfer remains charged at the configured HBF bandwidth.
@@ -723,7 +724,22 @@ class FullModelHBFLatencyModel:
             raise ValueError("HBF read bytes must be non-negative")
         if byte_count == 0:
             return 0.0
-        fixed_seconds = (
+        return (
+            self._hbf_fixed_read_seconds(
+                byte_count,
+                include_fixed_latency=include_fixed_latency,
+            )
+            + self._hbf_bandwidth_seconds(byte_count)
+        )
+
+    def _hbf_fixed_read_seconds(
+            self, byte_count: float, *,
+            include_fixed_latency: bool = True) -> float:
+        if byte_count < 0:
+            raise ValueError("HBF read bytes must be non-negative")
+        if byte_count == 0:
+            return 0.0
+        return (
             self.hardware.hbf_read_latency_us * 1e-6
             if (
                 include_fixed_latency
@@ -731,9 +747,12 @@ class FullModelHBFLatencyModel:
             )
             else 0.0
         )
+
+    def _hbf_bandwidth_seconds(self, byte_count: float) -> float:
+        if byte_count < 0:
+            raise ValueError("HBF read bytes must be non-negative")
         return (
-            fixed_seconds
-            + byte_count
+            byte_count
             / (
                 self.hardware.hbf_read_bandwidth_gbps_per_card
                 * 1e9
@@ -757,7 +776,11 @@ class FullModelHBFLatencyModel:
             / (self.hardware.gpu_peak_tflops_per_card * 1e12)
             * wave_penalty
         )
-        hbf_seconds = self._hbf_read_seconds(hbf_read_bytes)
+        hbf_fixed_seconds = self._hbf_fixed_read_seconds(
+            hbf_read_bytes)
+        hbf_bandwidth_seconds = self._hbf_bandwidth_seconds(
+            hbf_read_bytes)
+        hbf_seconds = hbf_fixed_seconds + hbf_bandwidth_seconds
         lpddr_seconds = (
             lpddr_bytes
             / (self.hardware.lpddr_bandwidth_gbps_per_card * 1e9)
@@ -768,10 +791,17 @@ class FullModelHBFLatencyModel:
             "lpddr": lpddr_seconds,
         }
         dominant = max(roofs, key=roofs.get)
-        roof_seconds = roofs[dominant]
-        seconds = max(
-            fit.launch_floor_seconds,
-            roof_seconds * fit.eta(self.band),
+        calibrated_roof_seconds = max(
+            compute_seconds,
+            hbf_bandwidth_seconds,
+            lpddr_seconds,
+        )
+        seconds = (
+            hbf_fixed_seconds
+            + max(
+                fit.launch_floor_seconds,
+                calibrated_roof_seconds * fit.eta(self.band),
+            )
         )
         return KernelLatency(
             family=family,
@@ -996,17 +1026,28 @@ class FullModelHBFLatencyModel:
                 / (self.hardware.gpu_peak_tflops_per_card * 1e12)
                 * candidate_work[3]
             )
-            hbf_seconds = self._hbf_read_seconds(candidate_work[1])
+            hbf_fixed_seconds = self._hbf_fixed_read_seconds(
+                candidate_work[1])
+            hbf_bandwidth_seconds = self._hbf_bandwidth_seconds(
+                candidate_work[1])
             lpddr_seconds = (
                 candidate_work[2]
                 / (self.hardware.lpddr_bandwidth_gbps_per_card * 1e9)
             )
-            roof = max(compute_seconds, hbf_seconds, lpddr_seconds)
+            roof = max(
+                compute_seconds,
+                hbf_bandwidth_seconds,
+                lpddr_seconds,
+            )
             fit = self.base_provider._decode_fit(candidate)
             best_seconds = max(
                 best_seconds,
-                roof,
-                fit.launch_floor_seconds + roof * fit.eta(self.band),
+                hbf_fixed_seconds + roof,
+                (
+                    hbf_fixed_seconds
+                    + fit.launch_floor_seconds
+                    + roof * fit.eta(self.band)
+                ),
             )
         return KernelLatency(
             family="decode_attention",
@@ -1058,9 +1099,14 @@ class FullModelHBFLatencyModel:
             / (self.hardware.gpu_peak_tflops_per_card * 1e12)
             * prefill_work[3]
         )
-        prefill_hbf_seconds = self._hbf_read_seconds(
+        include_prefill_fixed_latency = (
+            decode.hbf_read_bytes == 0)
+        prefill_hbf_fixed_seconds = self._hbf_fixed_read_seconds(
             prefill_work[1],
-            include_fixed_latency=(decode.hbf_read_bytes == 0),
+            include_fixed_latency=include_prefill_fixed_latency,
+        )
+        prefill_hbf_bandwidth_seconds = self._hbf_bandwidth_seconds(
+            prefill_work[1],
         )
         prefill_lpddr_seconds = (
             prefill_work[2]
@@ -1068,12 +1114,13 @@ class FullModelHBFLatencyModel:
         )
         prefill_roof_seconds = max(
             prefill_compute_seconds,
-            prefill_hbf_seconds,
+            prefill_hbf_bandwidth_seconds,
             prefill_lpddr_seconds,
         )
         prefill_fit = self._fit("prefill_attention")
         latency_seconds = (
             decode.latency_seconds
+            + prefill_hbf_fixed_seconds
             + prefill_roof_seconds
             * prefill_fit.eta(self.band)
         )
@@ -1322,7 +1369,8 @@ class FullModelHBFLatencyModel:
             self, shape: HBFModelBatchShape) -> HBFModelBatchExecutionPlan:
         """Return the immutable ordered operations for ``shape``.
 
-        Kernel latencies are roofline-inclusive.  HBF/LPDDR byte fields are
+        Kernel latencies include the demand-read HBF fixed access and the
+        calibrated bandwidth/compute roofline. HBF/LPDDR byte fields are
         therefore diagnostics for conformance and accounting; callers must
         not serialize separate memory-delay operations in addition to the
         kernel latency.
@@ -1440,7 +1488,8 @@ class FullModelHBFLatencyModel:
                 kernel: KernelLatency, *,
                 kv_semantics: str = "not_applicable",
                 latency_semantics: str = (
-                    "calibrated_max_roofline_inclusive"),
+                    "serialized_hbf_fixed_access_plus_"
+                    "calibrated_max_roofline"),
         ) -> HBFKernelExecutionOp:
             return HBFKernelExecutionOp(
                 kind="kernel",
@@ -2169,9 +2218,12 @@ class FullModelHBFLatencyModel:
                 ),
                 "bandwidth_cost_retained_with_prefetch": True,
                 "semantics": (
-                    "perfect_prefetch_hides_fixed_latency"
+                    "perfect_prefetch_hides_serialized_fixed_latency"
                     if self.hardware.hbf_read_prefetch_enabled
-                    else "demand_read_charges_fixed_latency_once"
+                    else (
+                        "demand_read_serializes_fixed_latency_once_before_"
+                        "the_calibrated_kernel_roof"
+                    )
                 ),
             },
             "weight_location": "hbf",

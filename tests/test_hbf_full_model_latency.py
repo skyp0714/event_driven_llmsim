@@ -208,22 +208,22 @@ class FullModelHBFLatencyTests(unittest.TestCase):
         flops = 2.0 * 17 * 2_048 * 128
         hbf_bytes = 2 * 2_048 * 128
         lpddr_bytes = 2 * (17 * 2_048 + 17 * 128)
-        roof_seconds = max(
+        bandwidth_roof_seconds = max(
             flops / (self.hardware.npu_peak_tflops_per_card * 1e12),
-            (
-                self.hardware.hbf_read_latency_us * 1e-6
-                + hbf_bytes
-                / (
-                    self.hardware.hbf_read_bandwidth_gbps_per_card
-                    * 1e9
-                )
+            hbf_bytes
+            / (
+                self.hardware.hbf_read_bandwidth_gbps_per_card
+                * 1e9
             ),
             lpddr_bytes
             / (self.hardware.lpddr_bandwidth_gbps_per_card * 1e9),
         )
-        expected_per_layer = max(1, math.ceil(1e9 * max(
-            fit.launch_floor_seconds,
-            roof_seconds * fit.eta("central"),
+        expected_per_layer = max(1, math.ceil(1e9 * (
+            self.hardware.hbf_read_latency_us * 1e-6
+            + max(
+                fit.launch_floor_seconds,
+                bandwidth_roof_seconds * fit.eta("central"),
+            )
         )))
         self.assertEqual(row.router_ns, 48 * expected_per_layer)
         self.assertEqual(
@@ -323,6 +323,34 @@ class FullModelHBFLatencyTests(unittest.TestCase):
             demand_model._hbf_read_seconds(0),
             prefetch_model._hbf_read_seconds(0),
         )
+
+    def test_demand_latency_is_exposed_when_compute_is_dominant(self):
+        demand_model = self.models["tp4"]
+        prefetch_model = build_full_model_hbf_latency(
+            repo_root=REPO_ROOT,
+            hardware=dataclasses.replace(
+                self.hardware,
+                hbf_read_prefetch_enabled=True,
+            ),
+            layout=self.layouts["tp4"],
+        )
+        demand = demand_model._kernel(
+            "router",
+            flops=10 ** 15,
+            hbf_read_bytes=1,
+        )
+        prefetched = prefetch_model._kernel(
+            "router",
+            flops=10 ** 15,
+            hbf_read_bytes=1,
+        )
+
+        self.assertEqual(
+            demand.latency_ns - prefetched.latency_ns,
+            round(self.hardware.hbf_read_latency_us * 1_000),
+        )
+        self.assertEqual(demand.dominant_roof, "compute")
+        self.assertEqual(prefetched.dominant_roof, "compute")
 
     def test_prefetch_mode_is_explicit_in_latency_metadata(self):
         demand = self.models["tp4"].metadata()["hbf_read_access"]
@@ -485,7 +513,7 @@ class FullModelHBFLatencyTests(unittest.TestCase):
             pure_prefill.hbf_roof_ns + pure_decode.hbf_roof_ns,
         )
 
-    def test_mixed_attention_residual_dominated_matches_pure_sum(self):
+    def test_mixed_attention_residual_dominated_avoids_second_fixed_read(self):
         model = self.models["tp4"]
         mixed = model._attention(HBFModelBatchShape(
             total_tokens=17,
@@ -508,9 +536,14 @@ class FullModelHBFLatencyTests(unittest.TestCase):
             decode_lpddr_k=(0,),
         ))
         self.assertLessEqual(
-            abs(mixed.latency_ns - (
-                prefill.latency_ns + decode.latency_ns
-            )),
+            abs(
+                (
+                    mixed.latency_ns
+                    + round(
+                        self.hardware.hbf_read_latency_us * 1_000)
+                )
+                - (prefill.latency_ns + decode.latency_ns)
+            ),
             1,
         )
 
@@ -775,7 +808,10 @@ class FullModelHBFLatencyTests(unittest.TestCase):
         )
         self.assertTrue(all(
             operation.latency_semantics
-            == "calibrated_max_roofline_inclusive"
+            == (
+                "serialized_hbf_fixed_access_plus_"
+                "calibrated_max_roofline"
+            )
             for operation in plan.kernel_operations
         ))
         self.assertEqual(
