@@ -1,20 +1,10 @@
-"""Final-policy selection and plots for the SSD-staged HBF campaign.
+"""Frozen final-selection plots for the SSD-staged HBF campaign.
 
-This module intentionally accepts only the aggregate produced by
-``ssd_hbf_design_sweep``.  It does not merge the older direct HBM-to-HBF
-migration sweep.  Selection is auditable rather than hand-curated:
-
-* every comparable layout/active-memory group must contain the complete
-  canonical migration-policy roster;
-* every policy must contain demand/prefetch crossed with bulk/layerwise
-  restore execution;
-* the best-goodput candidate in each read/restore option is retained;
-* all candidates that are nondominated in goodput, runtime five-year TCO,
-  runtime five-year facility energy, and HBF wear are retained.
-
-The historical ``delay_1s`` spelling is an alias for ``delay_1000ms``.
-When both are present, the canonical record is used and the alias remains
-visible in the audit with an explicit exclusion reason.
+This module accepts only the aggregate produced by ``ssd_hbf_design_sweep``
+and an explicit pre-heldout selection manifest.  The manifest, rather than
+heldout measurements, chooses the eight rendered design coordinates.  Every
+other heldout coordinate remains visible in the audit CSV with an explicit
+exclusion reason.
 """
 
 from __future__ import annotations
@@ -32,23 +22,112 @@ from typing import Any, Mapping, Optional, Sequence
 from .core.hbf_comparison_workload import stable_json_sha256
 from .ssd_hbf_design_sweep import (
     BASELINE_CANDIDATE_KEYS,
-    CANONICAL_MIGRATION_POLICIES,
     ORACLE_CANDIDATE_KEY,
     REQUIRED_SESSION_RATE,
     SSD_HBF_CONTRACT_KEY,
     SSD_HBF_SWEEP_SCHEMA_VERSION,
     SUPPORTED_HBF_READ_MODES,
     SUPPORTED_LAYOUTS,
+    SUPPORTED_MIGRATION_POLICIES,
     SUPPORTED_RESTORE_EXECUTION_MODES,
 )
 
 
-FINAL_RESULTS_SCHEMA_VERSION = 2
-POLICY_SELECTION_SCHEMA_VERSION = 2
-PLOT_SOURCE_SCHEMA_VERSION = 2
-DELAY_POLICY_ALIASES = {"delay_1s": "delay_1000ms"}
+FINAL_RESULTS_SCHEMA_VERSION = 3
+POLICY_SELECTION_SCHEMA_VERSION = 3
+PLOT_SOURCE_SCHEMA_VERSION = 3
+FROZEN_SELECTION_SCHEMA_VERSION = 1
 CENTRAL_ENDURANCE_SCENARIO = "slc_100k_pe_waf1"
 RUNTIME_TCO_REPORT_SCHEMA = "ssd-hbf-runtime-tco-v1"
+FINAL_PLOT_DESIGN_CELL_COUNT = 8
+
+
+@dataclass(frozen=True)
+class PerformanceMetricSpec:
+    aggregate_key: str
+    row_field: str
+    plot_key: str
+    filename_stem: str
+    title: str
+    y_label: str
+    scale: float = 1.0
+    optional: bool = False
+    positive: bool = False
+    bounded_fraction: bool = False
+    log_scale: bool = False
+
+
+PERFORMANCE_METRIC_SPECS = (
+    PerformanceMetricSpec(
+        "first_ttft_p95_ns",
+        "first_ttft_p95_ns",
+        "first_ttft_p95_seconds",
+        "01_first_ttft_p95",
+        "First-turn TTFT p95",
+        "First TTFT p95 (s)",
+        scale=1e-9,
+        optional=True,
+        positive=True,
+        log_scale=True,
+    ),
+    PerformanceMetricSpec(
+        "resume_ttft_p95_ns",
+        "resume_ttft_p95_ns",
+        "resume_ttft_p95_seconds",
+        "02_resume_ttft_p95",
+        "Resume TTFT p95",
+        "Resume TTFT p95 (s)",
+        scale=1e-9,
+        positive=True,
+        log_scale=True,
+    ),
+    PerformanceMetricSpec(
+        "tpot_p95_ns",
+        "tpot_p95_ns",
+        "tpot_p95_milliseconds",
+        "03_tpot_p95",
+        "TPOT p95",
+        "TPOT p95 (ms/token)",
+        scale=1e-6,
+        positive=True,
+        log_scale=True,
+    ),
+    PerformanceMetricSpec(
+        "joint_slo_pass_fraction",
+        "joint_slo_pass_fraction",
+        "joint_slo_pass_fraction",
+        "04_joint_slo_pass_fraction",
+        "Joint TTFT+TPOT SLO attainment",
+        "Joint SLO pass fraction",
+        bounded_fraction=True,
+    ),
+    PerformanceMetricSpec(
+        "slo_request_goodput_per_second",
+        "slo_request_goodput_per_second",
+        "slo_request_goodput_per_second",
+        "05_slo_request_goodput",
+        "SLO request goodput",
+        "SLO-good requests/s",
+    ),
+    PerformanceMetricSpec(
+        "slo_good_output_tokens_per_second",
+        "goodput_mean",
+        "slo_output_token_goodput_per_second",
+        "06_slo_output_token_goodput",
+        "SLO output-token goodput",
+        "SLO-good output tokens/s",
+    ),
+    PerformanceMetricSpec(
+        "observed_request_throughput_per_second",
+        "observed_request_throughput_per_second",
+        "observed_request_throughput_per_second",
+        "07_observed_request_throughput",
+        "Observed inter-completion throughput",
+        "Observed requests/s",
+        positive=True,
+    ),
+)
+PERFORMANCE_PLOT_COUNT = len(PERFORMANCE_METRIC_SPECS)
 
 # The final aggregate carries the committed RuntimeTCOComparison shape here.
 # Extra uncertainty and per-seed fields are allowed alongside its core
@@ -70,23 +149,6 @@ _REQUIRED_OPTIONS = frozenset(
     for read_mode in SUPPORTED_HBF_READ_MODES
     for restore_mode in SUPPORTED_RESTORE_EXECUTION_MODES
 )
-_SELECTION_OBJECTIVES_WITH_RUNTIME = (
-    "goodput_max",
-    "runtime_five_year_tco_min",
-    "runtime_five_year_facility_energy_min",
-    "hbf_five_year_wear_min",
-)
-_SELECTION_OBJECTIVES_WITHOUT_RUNTIME = (
-    "goodput_max",
-    "hbf_five_year_wear_min",
-)
-MIN_FINAL_GOODPUT_RATIO_TO_BASELINE = 1.0
-_POLICY_PRIORITY = {
-    policy: index
-    for index, policy in enumerate(CANONICAL_MIGRATION_POLICIES)
-}
-
-
 class SSDHBFFinalResultsError(ValueError):
     """Raised when an aggregate cannot support final-result claims."""
 
@@ -146,8 +208,244 @@ def _is_sha256(value: object) -> bool:
     return all(character in "0123456789abcdef" for character in value)
 
 
-def _canonical_policy(policy: str) -> str:
-    return DELAY_POLICY_ALIASES.get(policy, policy)
+def _nonempty_string(value: object, path: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise SSDHBFFinalResultsError(f"{path} must be non-empty")
+    return value
+
+
+def _unique_ints(value: object, path: str) -> tuple[int, ...]:
+    values = tuple(_sequence(value, path))
+    if (
+        not values
+        or any(
+            isinstance(item, bool) or not isinstance(item, int)
+            for item in values
+        )
+        or len(values) != len(set(values))
+    ):
+        raise SSDHBFFinalResultsError(
+            f"{path} must contain unique integers")
+    return values
+
+
+@dataclass(frozen=True)
+class FrozenFinalSelection:
+    source_path: Path
+    source_file_sha256: str
+    source_payload_sha256: str
+    repo_root: Path
+    session_rate: float
+    discovery_seed_ids: tuple[int, ...]
+    discovery_aggregate_path: Path
+    discovery_aggregate_sha256: str
+    heldout_seed_ids: tuple[int, ...]
+    heldout_aggregate_path: Path
+    migration_policies: tuple[str, ...]
+    mixed_batch_latency_limit_ms: Optional[int]
+    coordinates: tuple[tuple[str, str, str, str], ...]
+
+
+def load_frozen_selection(
+        path: Path | str,
+        *,
+        repo_root: Optional[Path | str] = None,
+) -> FrozenFinalSelection:
+    """Load and verify the pre-heldout eight-coordinate selection."""
+
+    source_path = Path(path).expanduser().resolve()
+    root = (
+        Path(__file__).resolve().parents[1]
+        if repo_root is None
+        else Path(repo_root).expanduser().resolve()
+    )
+    try:
+        payload = source_path.read_bytes()
+        raw = json.loads(
+            payload,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"non-finite JSON constant {value}"),
+            ),
+        )
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        raise SSDHBFFinalResultsError(
+            f"cannot load frozen selection {source_path}: {exc}") from exc
+    selection = _mapping(raw, "selection")
+    if selection.get("schema_version") != FROZEN_SELECTION_SCHEMA_VERSION:
+        raise SSDHBFFinalResultsError(
+            "frozen selection schema is unsupported")
+    if selection.get("selection_status") != "frozen_before_heldout":
+        raise SSDHBFFinalResultsError(
+            "selection_status must be 'frozen_before_heldout'")
+    session_rate = _finite(
+        selection.get("session_rate"),
+        "selection.session_rate",
+        positive=True,
+    )
+    if not math.isclose(
+        session_rate,
+        REQUIRED_SESSION_RATE,
+        rel_tol=0.0,
+        abs_tol=0.0,
+    ):
+        raise SSDHBFFinalResultsError(
+            "frozen selection must use the pinned 3 sessions/s rate")
+
+    discovery = _mapping(
+        selection.get("discovery"), "selection.discovery")
+    discovery_seeds = _unique_ints(
+        discovery.get("seeds"), "selection.discovery.seeds")
+    if discovery.get("selection_metric") != (
+            "slo_good_output_tokens_per_second"):
+        raise SSDHBFFinalResultsError(
+            "discovery selection_metric is unsupported")
+    if discovery.get("selection_direction") != "maximize":
+        raise SSDHBFFinalResultsError(
+            "discovery selection_direction must be 'maximize'")
+    discovery_relative = Path(_nonempty_string(
+        discovery.get("aggregate_path"),
+        "selection.discovery.aggregate_path",
+    ))
+    discovery_path = (
+        discovery_relative
+        if discovery_relative.is_absolute()
+        else root / discovery_relative
+    ).resolve()
+    discovery_sha256 = discovery.get("aggregate_sha256")
+    if not _is_sha256(discovery_sha256):
+        raise SSDHBFFinalResultsError(
+            "selection.discovery.aggregate_sha256 is invalid")
+    try:
+        observed_discovery_sha256 = _sha256(discovery_path.read_bytes())
+    except OSError as exc:
+        raise SSDHBFFinalResultsError(
+            f"cannot read frozen discovery aggregate {discovery_path}: "
+            f"{exc}") from exc
+    if observed_discovery_sha256 != discovery_sha256:
+        raise SSDHBFFinalResultsError(
+            "frozen discovery aggregate hash does not match the manifest")
+
+    heldout = _mapping(
+        selection.get("heldout"), "selection.heldout")
+    heldout_seeds = _unique_ints(
+        heldout.get("seeds"), "selection.heldout.seeds")
+    if set(discovery_seeds) & set(heldout_seeds):
+        raise SSDHBFFinalResultsError(
+            "discovery and heldout seed sets must be disjoint")
+    heldout_relative = Path(_nonempty_string(
+        heldout.get("output_path"),
+        "selection.heldout.output_path",
+    ))
+    heldout_root = (
+        heldout_relative
+        if heldout_relative.is_absolute()
+        else root / heldout_relative
+    ).resolve()
+
+    raw_policies = tuple(_sequence(
+        selection.get("migration_policies"),
+        "selection.migration_policies",
+    ))
+    if (
+        not raw_policies
+        or any(
+            not isinstance(policy, str)
+            or policy not in SUPPORTED_MIGRATION_POLICIES
+            for policy in raw_policies
+        )
+        or len(raw_policies) != len(set(raw_policies))
+    ):
+        raise SSDHBFFinalResultsError(
+            "selection.migration_policies must contain unique supported "
+            "policies")
+    policies = tuple(str(policy) for policy in raw_policies)
+    mixed_limit = selection.get("mixed_batch_latency_limit_ms")
+    if (
+        mixed_limit is not None
+        and (
+            isinstance(mixed_limit, bool)
+            or not isinstance(mixed_limit, int)
+            or mixed_limit <= 0
+        )
+    ):
+        raise SSDHBFFinalResultsError(
+            "selection.mixed_batch_latency_limit_ms must be a positive "
+            "integer or null")
+
+    raw_coordinates = _sequence(
+        selection.get("restore_by_coordinate"),
+        "selection.restore_by_coordinate",
+    )
+    coordinates = []
+    for index, raw_coordinate in enumerate(raw_coordinates):
+        coordinate = _mapping(
+            raw_coordinate,
+            f"selection.restore_by_coordinate[{index}]",
+        )
+        if set(coordinate) != {
+            "migration_policy",
+            "hbf_layout",
+            "hbf_read_mode",
+            "restore_execution_mode",
+        }:
+            raise SSDHBFFinalResultsError(
+                "each frozen coordinate must contain exactly policy, "
+                "layout, read mode, and restore mode")
+        policy = coordinate.get("migration_policy")
+        layout = coordinate.get("hbf_layout")
+        read_mode = coordinate.get("hbf_read_mode")
+        restore_mode = coordinate.get("restore_execution_mode")
+        if policy not in policies:
+            raise SSDHBFFinalResultsError(
+                "frozen coordinate uses an undeclared migration policy")
+        if layout not in SUPPORTED_LAYOUTS:
+            raise SSDHBFFinalResultsError(
+                "frozen coordinate uses an unsupported layout")
+        if read_mode not in SUPPORTED_HBF_READ_MODES:
+            raise SSDHBFFinalResultsError(
+                "frozen coordinate uses an unsupported read mode")
+        if restore_mode not in SUPPORTED_RESTORE_EXECUTION_MODES:
+            raise SSDHBFFinalResultsError(
+                "frozen coordinate uses an unsupported restore mode")
+        coordinates.append((
+            str(policy),
+            str(layout),
+            str(read_mode),
+            str(restore_mode),
+        ))
+    frozen_coordinates = tuple(coordinates)
+    expected_projection = {
+        (policy, layout, read_mode)
+        for policy in policies
+        for layout in SUPPORTED_LAYOUTS
+        for read_mode in SUPPORTED_HBF_READ_MODES
+    }
+    observed_projection = {
+        coordinate[:3] for coordinate in frozen_coordinates}
+    if (
+        len(frozen_coordinates) != FINAL_PLOT_DESIGN_CELL_COUNT
+        or len(frozen_coordinates) != len(set(frozen_coordinates))
+        or observed_projection != expected_projection
+    ):
+        raise SSDHBFFinalResultsError(
+            "frozen selection must contain exactly one restore choice for "
+            "each policy/layout/read-mode coordinate")
+
+    return FrozenFinalSelection(
+        source_path=source_path,
+        source_file_sha256=_sha256(payload),
+        source_payload_sha256=stable_json_sha256(selection),
+        repo_root=root,
+        session_rate=session_rate,
+        discovery_seed_ids=discovery_seeds,
+        discovery_aggregate_path=discovery_path,
+        discovery_aggregate_sha256=str(discovery_sha256),
+        heldout_seed_ids=heldout_seeds,
+        heldout_aggregate_path=(heldout_root / "aggregate.json").resolve(),
+        migration_policies=policies,
+        mixed_batch_latency_limit_ms=mixed_limit,
+        coordinates=tuple(sorted(frozen_coordinates)),
+    )
 
 
 def _memory_identity(memory: Mapping[str, Any]) -> tuple[object, ...]:
@@ -199,6 +497,7 @@ def _stat_mean(
         path: str,
         *,
         positive: bool = False,
+        expected_seed_ids: Optional[tuple[int, ...]] = None,
 ) -> tuple[float, Optional[float], Optional[float]]:
     statistic = _mapping(
         metrics.get(metric_key), f"{path}.{metric_key}")
@@ -221,7 +520,111 @@ def _stat_mean(
         if lower > mean or upper < mean or lower > upper:
             raise SSDHBFFinalResultsError(
                 f"{path}.{metric_key} has an invalid confidence interval")
+    if expected_seed_ids is not None:
+        raw_seed_ids = _sequence(
+            statistic.get("seed_ids"),
+            f"{path}.{metric_key}.seed_ids",
+        )
+        seed_ids = tuple(raw_seed_ids)
+        if (
+            any(
+                isinstance(seed, bool) or not isinstance(seed, int)
+                for seed in seed_ids
+            )
+            or seed_ids != expected_seed_ids
+        ):
+            raise SSDHBFFinalResultsError(
+                f"{path}.{metric_key}.seed_ids must exactly match "
+                "grid.seeds")
+        raw_values = _sequence(
+            statistic.get("values"),
+            f"{path}.{metric_key}.values",
+        )
+        values = tuple(
+            _finite(
+                value,
+                f"{path}.{metric_key}.values[{index}]",
+            )
+            for index, value in enumerate(raw_values)
+        )
+        if len(values) != len(expected_seed_ids):
+            raise SSDHBFFinalResultsError(
+                f"{path}.{metric_key}.values must cover every grid seed")
+        values_mean = math.fsum(values) / len(values)
+        if not math.isclose(
+            values_mean,
+            mean,
+            rel_tol=1e-12,
+            abs_tol=1e-12,
+        ):
+            raise SSDHBFFinalResultsError(
+                f"{path}.{metric_key}.mean disagrees with seed values")
     return mean, lower, upper
+
+
+def _optional_stat_mean(
+        metrics: Mapping[str, Any],
+        metric_key: str,
+        path: str,
+        *,
+        positive: bool = False,
+        expected_seed_ids: Optional[tuple[int, ...]] = None,
+) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    if metrics.get(metric_key) is None:
+        return None, None, None
+    return _stat_mean(
+        metrics,
+        metric_key,
+        path,
+        positive=positive,
+        expected_seed_ids=expected_seed_ids,
+    )
+
+
+@dataclass(frozen=True)
+class AggregateStatistic:
+    mean: Optional[float]
+    ci95_lower: Optional[float]
+    ci95_upper: Optional[float]
+
+
+def _performance_statistics(
+        metrics: Mapping[str, Any],
+        path: str,
+        *,
+        expected_seed_ids: tuple[int, ...],
+) -> Mapping[str, AggregateStatistic]:
+    result = {}
+    for spec in PERFORMANCE_METRIC_SPECS:
+        if spec.optional:
+            mean, lower, upper = _optional_stat_mean(
+                metrics,
+                spec.aggregate_key,
+                path,
+                positive=spec.positive,
+                expected_seed_ids=expected_seed_ids,
+            )
+        else:
+            mean, lower, upper = _stat_mean(
+                metrics,
+                spec.aggregate_key,
+                path,
+                positive=spec.positive,
+                expected_seed_ids=expected_seed_ids,
+            )
+        if (
+            spec.bounded_fraction
+            and mean is not None
+            and not 0.0 <= mean <= 1.0
+        ):
+            raise SSDHBFFinalResultsError(
+                f"{path}.{spec.aggregate_key}.mean must be in [0, 1]")
+        result[spec.aggregate_key] = AggregateStatistic(
+            mean=mean,
+            ci95_lower=lower,
+            ci95_upper=upper,
+        )
+    return result
 
 
 @dataclass(frozen=True)
@@ -452,12 +855,19 @@ class FinalCandidate:
     canonical_migration_policy: str
     hbf_read_mode: str
     restore_execution_mode: str
+    mixed_batch_latency_limit_ms: Optional[int]
     baseline_candidate_key: str
     goodput_mean: float
     goodput_ci95_lower: Optional[float]
     goodput_ci95_upper: Optional[float]
     baseline_goodput_mean: float
     oracle_goodput_mean: float
+    first_ttft_p95_ns: Optional[float]
+    resume_ttft_p95_ns: Optional[float]
+    tpot_p95_ns: Optional[float]
+    joint_slo_pass_fraction: float
+    performance_statistics: Mapping[str, AggregateStatistic]
+    metrics_sha256: str
     runtime: Optional[RuntimeObjectives]
     wear: WearObjectives
     source_index: int
@@ -477,22 +887,16 @@ class FinalCandidate:
 
 
 @dataclass(frozen=True)
-class AliasCollapse:
-    excluded_key: str
-    retained_key: str
-    coordinate: tuple[str, str, str, str]
-
-
-@dataclass(frozen=True)
 class LoadedStagedResults:
     source_path: Path
     source_aggregate_sha256: str
     source_payload_sha256: str
     aggregate: Mapping[str, Any]
+    frozen_selection: FrozenFinalSelection
     session_rate: float
+    seed_ids: tuple[int, ...]
     references: Mapping[str, Mapping[str, Any]]
     candidates: tuple[FinalCandidate, ...]
-    alias_collapses: tuple[AliasCollapse, ...]
     runtime_available: bool
     reference_eligible: bool
     reference_eligibility_failures: tuple[str, ...]
@@ -502,18 +906,18 @@ class LoadedStagedResults:
 def _validate_reference(
         key: str,
         reference: Mapping[str, Any],
+        expected_seed_ids: tuple[int, ...],
 ) -> float:
-    goodput, _, _ = _stat_mean(
+    statistics = _performance_statistics(
         reference,
-        "slo_good_output_tokens_per_second",
         f"references.{key}",
-        positive=True,
+        expected_seed_ids=expected_seed_ids,
     )
-    _stat_mean(
-        reference,
-        "joint_slo_pass_fraction",
-        f"references.{key}",
-    )
+    goodput = statistics[
+        "slo_good_output_tokens_per_second"].mean
+    if goodput is None or goodput <= 0.0:
+        raise SSDHBFFinalResultsError(
+            f"references.{key} must have positive output-token goodput")
     return goodput
 
 
@@ -528,6 +932,7 @@ def _validate_design_spec(
     str,
     str,
     str,
+    Optional[int],
 ]:
     design = _mapping(raw, path)
     key = design.get("key")
@@ -540,8 +945,7 @@ def _validate_design_spec(
     policy = design.get("migration_policy")
     if (
         not isinstance(policy, str)
-        or _canonical_policy(policy)
-        not in CANONICAL_MIGRATION_POLICIES
+        or policy not in SUPPORTED_MIGRATION_POLICIES
     ):
         raise SSDHBFFinalResultsError(
             f"{path}.migration_policy is unsupported")
@@ -553,6 +957,18 @@ def _validate_design_spec(
     if restore_mode not in SUPPORTED_RESTORE_EXECUTION_MODES:
         raise SSDHBFFinalResultsError(
             f"{path}.restore_execution_mode is unsupported")
+    mixed_limit = design.get("mixed_batch_latency_limit_ms")
+    if (
+        mixed_limit is not None
+        and (
+            isinstance(mixed_limit, bool)
+            or not isinstance(mixed_limit, int)
+            or mixed_limit <= 0
+        )
+    ):
+        raise SSDHBFFinalResultsError(
+            f"{path}.mixed_batch_latency_limit_ms must be a positive "
+            "integer or null")
     for field, expected in (
         ("gpu_host_count", 1),
         ("hbf_host_count", 1),
@@ -572,6 +988,7 @@ def _validate_design_spec(
         str(policy),
         str(read_mode),
         str(restore_mode),
+        mixed_limit,
     )
 
 
@@ -580,6 +997,7 @@ def _candidate_from_row(
         index: int,
         references: Mapping[str, Mapping[str, Any]],
         reference_goodput: Mapping[str, float],
+        expected_seed_ids: tuple[int, ...],
         *,
         allow_ineligible_reference: bool,
 ) -> FinalCandidate:
@@ -593,6 +1011,7 @@ def _candidate_from_row(
         policy,
         read_mode,
         restore_mode,
+        mixed_limit,
     ) = _validate_design_spec(design_row.get("design"), f"{path}.design")
     baseline_key = design_row.get("baseline_candidate_key")
     expected_baseline = BASELINE_CANDIDATE_KEYS[restore_mode]
@@ -613,19 +1032,28 @@ def _candidate_from_row(
         raise SSDHBFFinalResultsError(
             f"{path} failed matched reference eligibility")
     metrics = _mapping(design_row.get("metrics"), f"{path}.metrics")
-    goodput, lower, upper = _stat_mean(
+    performance_statistics = _performance_statistics(
         metrics,
-        "slo_good_output_tokens_per_second",
         f"{path}.metrics",
+        expected_seed_ids=expected_seed_ids,
     )
+    goodput_statistic = performance_statistics[
+        "slo_good_output_tokens_per_second"]
+    goodput = goodput_statistic.mean
+    if goodput is None:
+        raise AssertionError("required goodput statistic is unavailable")
+    lower = goodput_statistic.ci95_lower
+    upper = goodput_statistic.ci95_upper
     if goodput < 0.0:
         raise SSDHBFFinalResultsError(
             f"{path} has negative SLO-good output-token goodput")
-    _stat_mean(
-        metrics,
-        "joint_slo_pass_fraction",
-        f"{path}.metrics",
-    )
+    joint_slo = performance_statistics[
+        "joint_slo_pass_fraction"].mean
+    first_ttft = performance_statistics["first_ttft_p95_ns"].mean
+    resume_ttft = performance_statistics["resume_ttft_p95_ns"].mean
+    tpot = performance_statistics["tpot_p95_ns"].mean
+    if joint_slo is None or resume_ttft is None or tpot is None:
+        raise AssertionError("required performance statistic is unavailable")
     runtime = _runtime_objectives(design_row, path)
     wear = _wear_objectives(design_row, path)
     return FinalCandidate(
@@ -634,102 +1062,31 @@ def _candidate_from_row(
         hbf_layout=layout,
         memory_identity=memory_identity,
         migration_policy=policy,
-        canonical_migration_policy=_canonical_policy(policy),
+        canonical_migration_policy=policy,
         hbf_read_mode=read_mode,
         restore_execution_mode=restore_mode,
+        mixed_batch_latency_limit_ms=mixed_limit,
         baseline_candidate_key=str(baseline_key),
         goodput_mean=goodput,
         goodput_ci95_lower=lower,
         goodput_ci95_upper=upper,
         baseline_goodput_mean=reference_goodput[str(baseline_key)],
         oracle_goodput_mean=reference_goodput[ORACLE_CANDIDATE_KEY],
+        first_ttft_p95_ns=first_ttft,
+        resume_ttft_p95_ns=resume_ttft,
+        tpot_p95_ns=tpot,
+        joint_slo_pass_fraction=joint_slo,
+        performance_statistics=performance_statistics,
+        metrics_sha256=stable_json_sha256(metrics),
         runtime=runtime,
         wear=wear,
         source_index=index,
     )
 
 
-def _alias_equivalent(
-        first: FinalCandidate,
-        second: FinalCandidate,
-) -> bool:
-    first_values = (
-        first.goodput_mean,
-        first.goodput_ci95_lower,
-        first.goodput_ci95_upper,
-        first.baseline_goodput_mean,
-        first.oracle_goodput_mean,
-        first.runtime,
-        first.wear,
-    )
-    second_values = (
-        second.goodput_mean,
-        second.goodput_ci95_lower,
-        second.goodput_ci95_upper,
-        second.baseline_goodput_mean,
-        second.oracle_goodput_mean,
-        second.runtime,
-        second.wear,
-    )
-    return first_values == second_values
-
-
-def _collapse_aliases(
-        candidates: Sequence[FinalCandidate],
-) -> tuple[tuple[FinalCandidate, ...], tuple[AliasCollapse, ...]]:
-    by_coordinate: dict[
-        tuple[str, str, str, str], list[FinalCandidate]
-    ] = {}
-    for candidate in candidates:
-        by_coordinate.setdefault(candidate.coordinate, []).append(candidate)
-    retained = []
-    collapses = []
-    for coordinate, coordinate_candidates in sorted(
-            by_coordinate.items()):
-        if len(coordinate_candidates) == 1:
-            retained.append(coordinate_candidates[0])
-            continue
-        original_policies = {
-            candidate.migration_policy
-            for candidate in coordinate_candidates
-        }
-        if (
-            len(coordinate_candidates) != 2
-            or original_policies
-            != {"delay_1s", "delay_1000ms"}
-        ):
-            raise SSDHBFFinalResultsError(
-                "duplicate canonical design coordinate "
-                f"{coordinate!r}")
-        canonical = next(
-            candidate for candidate in coordinate_candidates
-            if candidate.migration_policy == "delay_1000ms"
-        )
-        alias = next(
-            candidate for candidate in coordinate_candidates
-            if candidate.migration_policy == "delay_1s"
-        )
-        if not _alias_equivalent(canonical, alias):
-            raise SSDHBFFinalResultsError(
-                "delay_1s alias disagrees with delay_1000ms at "
-                f"{coordinate!r}")
-        retained.append(canonical)
-        collapses.append(AliasCollapse(
-            excluded_key=alias.key,
-            retained_key=canonical.key,
-            coordinate=coordinate,
-        ))
-    return (
-        tuple(sorted(retained, key=lambda candidate: candidate.key)),
-        tuple(sorted(
-            collapses,
-            key=lambda collapse: collapse.excluded_key,
-        )),
-    )
-
-
 def _validate_complete_roster(
         candidates: Sequence[FinalCandidate],
+        frozen_selection: FrozenFinalSelection,
 ) -> None:
     by_group: dict[str, list[FinalCandidate]] = {}
     for candidate in candidates:
@@ -739,7 +1096,7 @@ def _validate_complete_roster(
             "staged aggregate contains no design groups")
     expected = {
         (policy, read_mode, restore_mode)
-        for policy in CANONICAL_MIGRATION_POLICIES
+        for policy in frozen_selection.migration_policies
         for read_mode, restore_mode in _REQUIRED_OPTIONS
     }
     for group_id, rows in sorted(by_group.items()):
@@ -751,17 +1108,27 @@ def _validate_complete_roster(
             )
             for candidate in rows
         }
+        mixed_limits = {
+            candidate.mixed_batch_latency_limit_ms
+            for candidate in rows
+        }
+        if mixed_limits != {
+                frozen_selection.mixed_batch_latency_limit_ms}:
+            raise SSDHBFFinalResultsError(
+                f"design group {group_id} does not match the frozen "
+                "mixed-batch latency limit")
         if observed != expected:
             missing = sorted(expected - observed)
             extra = sorted(observed - expected)
             raise SSDHBFFinalResultsError(
-                f"incomplete canonical policy/option roster for "
+                f"incomplete frozen policy/option roster for "
                 f"{group_id}: missing={missing}, extra={extra}")
 
 
 def load_staged_aggregate(
         path: Path | str,
         *,
+        frozen_selection: FrozenFinalSelection,
         allow_ineligible_reference: bool = False,
 ) -> LoadedStagedResults:
     """Load one SSD-staged aggregate.
@@ -772,7 +1139,13 @@ def load_staged_aggregate(
     visibly marked as ineligible.
     """
 
+    if not isinstance(frozen_selection, FrozenFinalSelection):
+        raise SSDHBFFinalResultsError(
+            "frozen_selection must be a validated FrozenFinalSelection")
     source_path = Path(path).expanduser().resolve()
+    if source_path != frozen_selection.heldout_aggregate_path:
+        raise SSDHBFFinalResultsError(
+            "aggregate path does not match the frozen heldout output")
     try:
         payload = source_path.read_bytes()
         aggregate = json.loads(
@@ -836,7 +1209,7 @@ def load_staged_aggregate(
         grid.get("session_rate"), "grid.session_rate", positive=True)
     if not math.isclose(
         session_rate,
-        REQUIRED_SESSION_RATE,
+        frozen_selection.session_rate,
         rel_tol=0.0,
         abs_tol=0.0,
     ):
@@ -853,6 +1226,10 @@ def load_staged_aggregate(
     ):
         raise SSDHBFFinalResultsError(
             "grid.seeds must contain at least two unique integers")
+    seed_ids = tuple(int(seed) for seed in seeds)
+    if seed_ids != frozen_selection.heldout_seed_ids:
+        raise SSDHBFFinalResultsError(
+            "grid.seeds do not match the frozen heldout seed roster")
     raw_grid_designs = _sequence(grid.get("designs"), "grid.designs")
     if grid.get("design_count") != len(raw_grid_designs):
         raise SSDHBFFinalResultsError(
@@ -966,7 +1343,10 @@ def load_staged_aggregate(
             "baseline, and performance-only Oracle")
     reference_goodput = {
         key: _validate_reference(
-            key, _mapping(value, f"references.{key}"))
+            key,
+            _mapping(value, f"references.{key}"),
+            seed_ids,
+        )
         for key, value in references.items()
     }
     design_rows = _sequence(
@@ -980,6 +1360,7 @@ def load_staged_aggregate(
             index,
             references,
             reference_goodput,
+            seed_ids,
             allow_ineligible_reference=(
                 allow_ineligible_reference),
         )
@@ -1009,8 +1390,9 @@ def load_staged_aggregate(
         raise SSDHBFFinalResultsError(
             "runtime energy/TCO reports are only partially populated")
     runtime_available = runtime_presence == {True}
-    candidates, alias_collapses = _collapse_aliases(raw_candidates)
-    _validate_complete_roster(candidates)
+    candidates = tuple(sorted(
+        raw_candidates, key=lambda candidate: candidate.key))
+    _validate_complete_roster(candidates, frozen_selection)
 
     # A matched baseline is a physical reference and therefore cannot vary
     # with the design policy/read mode within a restore-mode cohort.
@@ -1040,13 +1422,14 @@ def load_staged_aggregate(
         source_aggregate_sha256=_sha256(payload),
         source_payload_sha256=stable_json_sha256(root),
         aggregate=root,
+        frozen_selection=frozen_selection,
         session_rate=session_rate,
+        seed_ids=seed_ids,
         references={
             key: _mapping(value, f"references.{key}")
             for key, value in references.items()
         },
         candidates=candidates,
-        alias_collapses=alias_collapses,
         runtime_available=runtime_available,
         reference_eligible=reference_eligible,
         reference_eligibility_failures=reference_failures,
@@ -1054,48 +1437,16 @@ def load_staged_aggregate(
     )
 
 
-def _dominates(
-        first: FinalCandidate,
-        second: FinalCandidate,
-        *,
-        runtime_available: bool,
-) -> bool:
-    no_worse = (
-        first.goodput_mean >= second.goodput_mean
-        and first.wear.five_year_budget_fraction
-        <= second.wear.five_year_budget_fraction
-    )
-    strictly_better = (
-        first.goodput_mean > second.goodput_mean
-        or first.wear.five_year_budget_fraction
-        < second.wear.five_year_budget_fraction
-    )
-    if runtime_available:
-        if first.runtime is None or second.runtime is None:
-            raise AssertionError("runtime cohort is partially populated")
-        no_worse = (
-            no_worse
-            and first.runtime.proposed_five_year_tco_usd
-            <= second.runtime.proposed_five_year_tco_usd
-            and first.runtime.proposed_five_year_facility_energy_kwh
-            <= second.runtime.proposed_five_year_facility_energy_kwh
-        )
-        strictly_better = (
-            strictly_better
-            or first.runtime.proposed_five_year_tco_usd
-            < second.runtime.proposed_five_year_tco_usd
-            or first.runtime.proposed_five_year_facility_energy_kwh
-            < second.runtime.proposed_five_year_facility_energy_kwh
-        )
-    return no_worse and strictly_better
-
-
 def _candidate_objectives(
         candidate: FinalCandidate,
 ) -> dict[str, Optional[float]]:
     runtime = candidate.runtime
     return {
-        "goodput_output_tokens_per_second": candidate.goodput_mean,
+        **{
+            spec.aggregate_key: candidate.performance_statistics[
+                spec.aggregate_key].mean
+            for spec in PERFORMANCE_METRIC_SPECS
+        },
         "runtime_five_year_tco_usd": (
             None if runtime is None
             else runtime.proposed_five_year_tco_usd
@@ -1110,436 +1461,166 @@ def _candidate_objectives(
     }
 
 
-def _policy_objectives(
-        candidates: Sequence[FinalCandidate],
-) -> dict[str, Any]:
-    ordered = tuple(sorted(
-        candidates,
-        key=lambda value: (
-            value.hbf_read_mode,
-            value.restore_execution_mode,
-        ),
-    ))
-    if (
-        len(ordered) != len(_REQUIRED_OPTIONS)
-        or {candidate.option for candidate in ordered}
-        != set(_REQUIRED_OPTIONS)
-    ):
-        raise SSDHBFFinalResultsError(
-            "policy summary requires all four read/restore options")
-    ratios = tuple(
-        candidate.goodput_mean / candidate.baseline_goodput_mean
-        for candidate in ordered
-    )
-    runtime_ratios = tuple(
-        None if candidate.runtime is None
-        else candidate.runtime.tco_ratio
-        for candidate in ordered
-    )
-    if any(value is None for value in runtime_ratios):
-        mean_runtime_tco_ratio = None
-    else:
-        mean_runtime_tco_ratio = math.fsum(
-            float(value) for value in runtime_ratios
-        ) / len(runtime_ratios)
-    signature = tuple(
-        (
-            candidate.option,
-            candidate.goodput_mean,
-            candidate.runtime,
-            candidate.wear,
-        )
-        for candidate in ordered
-    )
-    return {
-        "policy": ordered[0].canonical_migration_policy,
-        "candidate_keys": [
-            candidate.key for candidate in ordered],
-        "minimum_goodput_ratio_to_baseline": min(ratios),
-        "mean_goodput_ratio_to_baseline": (
-            math.fsum(ratios) / len(ratios)),
-        "mean_runtime_tco_ratio_to_baseline": (
-            mean_runtime_tco_ratio),
-        "maximum_five_year_wear_budget_fraction": max(
-            candidate.wear.five_year_budget_fraction
-            for candidate in ordered
-        ),
-        "robust_across_all_options": (
-            min(ratios)
-            >= MIN_FINAL_GOODPUT_RATIO_TO_BASELINE
-        ),
-        "_signature": signature,
-    }
-
-
-def _normalized_distance_to_ideal(
-        summary: Mapping[str, Any],
-        robust_summaries: Sequence[Mapping[str, Any]],
-        *,
-        runtime_available: bool,
-) -> float:
-    axes = (
-        ("mean_goodput_ratio_to_baseline", True),
-        ("maximum_five_year_wear_budget_fraction", False),
-    )
-    if runtime_available:
-        axes = (
-            axes[0],
-            ("mean_runtime_tco_ratio_to_baseline", False),
-            axes[1],
-        )
-    squared = []
-    for field, maximize in axes:
-        values = [float(row[field]) for row in robust_summaries]
-        lower = min(values)
-        upper = max(values)
-        observed = float(summary[field])
-        if math.isclose(lower, upper, rel_tol=0.0, abs_tol=1e-15):
-            cost = 0.0
-        elif maximize:
-            cost = (upper - observed) / (upper - lower)
-        else:
-            cost = (observed - lower) / (upper - lower)
-        squared.append(cost * cost)
-    return math.sqrt(math.fsum(squared) / len(squared))
-
-
 def select_meaningful_policies(
         loaded: LoadedStagedResults,
 ) -> dict[str, Any]:
-    """Select auditable policy-level performance, knee, and wear anchors."""
+    """Select exactly the coordinates frozen before heldout execution."""
 
     if not isinstance(loaded, LoadedStagedResults):
         raise SSDHBFFinalResultsError(
             "loaded must be a validated LoadedStagedResults")
-    candidates_by_group: dict[str, list[FinalCandidate]] = {}
+    frozen = loaded.frozen_selection
+    frozen_coordinates = set(frozen.coordinates)
+    by_coordinate: dict[
+        tuple[str, str, str, str], FinalCandidate
+    ] = {}
     for candidate in loaded.candidates:
-        candidates_by_group.setdefault(
-            candidate.group_id, []).append(candidate)
-
-    audit_by_key: dict[str, dict[str, Any]] = {}
-    group_reports = []
-    selected_keys = set()
-    for group_id, group_candidates in sorted(
-            candidates_by_group.items()):
-        option_winners: dict[str, list[str]] = {}
-        for read_mode, restore_mode in sorted(_REQUIRED_OPTIONS):
-            option_candidates = [
-                candidate for candidate in group_candidates
-                if (
-                    candidate.option == (read_mode, restore_mode)
-                    and candidate.goodput_mean > 0.0
-                )
-            ]
-            if not option_candidates:
-                raise SSDHBFFinalResultsError(
-                    "no positive-goodput policy remains for option "
-                    f"{read_mode}|{restore_mode} in {group_id}")
-            maximum = max(
-                candidate.goodput_mean
-                for candidate in option_candidates
-            )
-            winners = sorted(
-                candidate.key
-                for candidate in option_candidates
-                if candidate.goodput_mean == maximum
-            )
-            option_winners[
-                f"{read_mode}|{restore_mode}"
-            ] = winners
-
-        dominators: dict[str, list[str]] = {}
-        frontier = []
-        for candidate in group_candidates:
-            if candidate.goodput_mean <= 0.0:
-                dominators[candidate.key] = []
-                continue
-            dominating_keys = sorted(
-                other.key
-                for other in group_candidates
-                if (
-                    other.key != candidate.key
-                    and other.goodput_mean > 0.0
-                    and _dominates(
-                        other,
-                        candidate,
-                        runtime_available=loaded.runtime_available,
-                    )
-                )
-            )
-            dominators[candidate.key] = dominating_keys
-            if not dominating_keys:
-                frontier.append(candidate.key)
-        frontier = sorted(frontier)
-
-        candidates_by_policy: dict[
-            str, list[FinalCandidate]
-        ] = {}
-        for candidate in group_candidates:
-            candidates_by_policy.setdefault(
-                candidate.canonical_migration_policy,
-                [],
-            ).append(candidate)
-        policy_summaries = {
-            policy: _policy_objectives(rows)
-            for policy, rows in candidates_by_policy.items()
-        }
-        robust_summaries = [
-            summary for summary in policy_summaries.values()
-            if summary["robust_across_all_options"]
-        ]
-        if not robust_summaries:
+        coordinate = (
+            candidate.migration_policy,
+            candidate.hbf_layout,
+            candidate.hbf_read_mode,
+            candidate.restore_execution_mode,
+        )
+        if coordinate in by_coordinate:
             raise SSDHBFFinalResultsError(
-                "no migration policy meets the matched baseline in all "
-                f"four options for {group_id}")
+                f"duplicate heldout coordinate {coordinate!r}")
+        by_coordinate[coordinate] = candidate
+    missing = sorted(frozen_coordinates - set(by_coordinate))
+    if missing:
+        raise SSDHBFFinalResultsError(
+            f"heldout aggregate is missing frozen coordinates: {missing}")
+    selected_keys = {
+        by_coordinate[coordinate].key
+        for coordinate in frozen_coordinates
+    }
+    frozen_restore_by_projection = {
+        coordinate[:3]: coordinate[3]
+        for coordinate in frozen_coordinates
+    }
+    if len(selected_keys) != FINAL_PLOT_DESIGN_CELL_COUNT:
+        raise SSDHBFFinalResultsError(
+            "frozen selection did not resolve to exactly eight candidates")
 
-        def priority(summary: Mapping[str, Any]) -> int:
-            return _POLICY_PRIORITY[str(summary["policy"])]
-
-        maximum_goodput = max(
-            float(summary["mean_goodput_ratio_to_baseline"])
-            for summary in robust_summaries
+    audit_by_key = {}
+    for candidate in sorted(
+            loaded.candidates, key=lambda value: value.key):
+        selected = candidate.key in selected_keys
+        projection = (
+            candidate.migration_policy,
+            candidate.hbf_layout,
+            candidate.hbf_read_mode,
         )
-        performance = min(
-            (
-                summary for summary in robust_summaries
-                if math.isclose(
-                    float(summary[
-                        "mean_goodput_ratio_to_baseline"]),
-                    maximum_goodput,
-                    rel_tol=0.0,
-                    abs_tol=1e-12,
-                )
+        excluded_restore_sibling = (
+            not selected
+            and projection in frozen_restore_by_projection
+            and candidate.restore_execution_mode
+            != frozen_restore_by_projection[projection]
+        )
+        audit_by_key[candidate.key] = {
+            "candidate_key": candidate.key,
+            "group_id": candidate.group_id,
+            "hbf_layout": candidate.hbf_layout,
+            "migration_policy": candidate.migration_policy,
+            "canonical_migration_policy": (
+                candidate.canonical_migration_policy),
+            "hbf_read_mode": candidate.hbf_read_mode,
+            "restore_execution_mode": (
+                candidate.restore_execution_mode),
+            "mixed_batch_latency_limit_ms": (
+                candidate.mixed_batch_latency_limit_ms),
+            "objectives": _candidate_objectives(candidate),
+            "selected": selected,
+            "selection_reasons": (
+                [
+                    "exact_coordinate_in_frozen_pre_heldout_manifest:"
+                    f"{frozen.source_file_sha256}"
+                ]
+                if selected else []
             ),
-            key=priority,
-        )
-        endurance = min(
-            robust_summaries,
-            key=lambda summary: (
-                float(summary[
-                    "maximum_five_year_wear_budget_fraction"]),
-                (
-                    float(summary[
-                        "mean_runtime_tco_ratio_to_baseline"])
-                    if loaded.runtime_available
-                    else 0.0
-                ),
-                -float(summary[
-                    "mean_goodput_ratio_to_baseline"]),
-                priority(summary),
+            "exclusion_reasons": (
+                []
+                if selected else [
+                    (
+                        "restore_mode_not_frozen_from_discovery"
+                        if excluded_restore_sibling
+                        else
+                        "coordinate_not_in_frozen_pre_heldout_manifest"
+                    )
+                ]
             ),
-        )
-        knee_distances = {
-            str(summary["policy"]): _normalized_distance_to_ideal(
-                summary,
-                robust_summaries,
-                runtime_available=loaded.runtime_available,
-            )
-            for summary in robust_summaries
+            "dominators": [],
         }
-        knee = min(
-            robust_summaries,
-            key=lambda summary: (
-                knee_distances[str(summary["policy"])],
-                priority(summary),
-            ),
-        )
-        anchor_policies = {
-            "performance_across_all_options": str(
-                performance["policy"]),
-            "normalized_multiobjective_knee": str(knee["policy"]),
-            "minimum_wear_with_goodput_ge_baseline": str(
-                endurance["policy"]),
-        }
-        selected_policies = set(anchor_policies.values())
-        retained = {
-            candidate.key
-            for candidate in group_candidates
-            if candidate.canonical_migration_policy
-            in selected_policies
-        }
-        selected_keys.update(retained)
-        selected_signature_policy = {
-            policy_summaries[policy]["_signature"]: policy
-            for policy in selected_policies
-        }
-
-        for candidate in sorted(
-                group_candidates, key=lambda value: value.key):
-            selection_reasons = []
-            exclusion_reasons = []
-            option_key = (
-                f"{candidate.hbf_read_mode}|"
-                f"{candidate.restore_execution_mode}"
-            )
-            policy = candidate.canonical_migration_policy
-            summary = policy_summaries[policy]
-            if candidate.key in retained:
-                selection_reasons.extend(
-                    f"policy_anchor:{anchor_name}"
-                    for anchor_name, anchor_policy
-                    in sorted(anchor_policies.items())
-                    if anchor_policy == policy
-                )
-            elif not summary["robust_across_all_options"]:
-                exclusion_reasons.append(
-                    "policy_minimum_goodput_below_matched_baseline:"
-                    f"{summary['minimum_goodput_ratio_to_baseline']:.12g}"
-                )
-            else:
-                equivalent = selected_signature_policy.get(
-                    summary["_signature"])
-                if equivalent is not None:
-                    exclusion_reasons.append(
-                        "metric_equivalent_policy_not_retained:"
-                        f"{equivalent}")
-                else:
-                    exclusion_reasons.append(
-                        "not_a_policy_level_anchor")
-
-            if candidate.key in option_winners[option_key]:
-                if candidate.key in retained:
-                    selection_reasons.append(
-                        f"best_goodput_for_option:{option_key}")
-                else:
-                    exclusion_reasons.append(
-                        f"option_goodput_tie_not_retained:{option_key}")
-            if candidate.goodput_mean <= 0.0:
-                exclusion_reasons.append(
-                    "zero_slo_goodput_ineligible_for_final_selection")
-            elif candidate.key in frontier:
-                if candidate.key in retained:
-                    selection_reasons.append(
-                        "nondominated_on_declared_objectives")
-                else:
-                    exclusion_reasons.append(
-                        "individual_nondominated_but_not_policy_anchor")
-            else:
-                exclusion_reasons.append(
-                    "dominated_by:" + ",".join(
-                        dominators[candidate.key]))
-            audit_by_key[candidate.key] = {
-                "candidate_key": candidate.key,
-                "group_id": group_id,
-                "migration_policy": candidate.migration_policy,
-                "canonical_migration_policy": (
-                    candidate.canonical_migration_policy),
-                "hbf_read_mode": candidate.hbf_read_mode,
-                "restore_execution_mode": (
-                    candidate.restore_execution_mode),
-                "objectives": _candidate_objectives(candidate),
-                "selected": candidate.key in retained,
-                "selection_reasons": selection_reasons,
-                "exclusion_reasons": exclusion_reasons,
-                "dominators": dominators[candidate.key],
-            }
-        sample = group_candidates[0]
-        group_reports.append({
+    groups = []
+    by_group: dict[str, list[FinalCandidate]] = {}
+    for candidate in loaded.candidates:
+        by_group.setdefault(candidate.group_id, []).append(candidate)
+    for group_id, candidates in sorted(by_group.items()):
+        sample = candidates[0]
+        groups.append({
             "group_id": group_id,
             "hbf_layout": sample.hbf_layout,
             "active_memory_identity": list(sample.memory_identity),
-            "candidate_count_after_alias_collapse": len(
-                group_candidates),
-            "option_best_goodput_candidate_keys": option_winners,
-            "nondominated_candidate_keys": frontier,
-            "minimum_final_goodput_ratio_to_baseline": (
-                MIN_FINAL_GOODPUT_RATIO_TO_BASELINE),
-            "robust_policy_keys": sorted(
-                str(summary["policy"])
-                for summary in robust_summaries
+            "candidate_count": len(candidates),
+            "selected_candidate_keys": sorted(
+                candidate.key
+                for candidate in candidates
+                if candidate.key in selected_keys
             ),
-            "selected_policy_anchors": anchor_policies,
-            "policy_knee_distances": dict(sorted(knee_distances.items())),
-            "policy_summaries": [
-                {
-                    key: value
-                    for key, value in summary.items()
-                    if key != "_signature"
-                }
-                for summary in sorted(
-                    policy_summaries.values(),
-                    key=priority,
-                )
-            ],
-            "selected_candidate_keys": sorted(retained),
         })
-
-    for collapse in loaded.alias_collapses:
-        audit_by_key[collapse.excluded_key] = {
-            "candidate_key": collapse.excluded_key,
-            "group_id": collapse.coordinate[0],
-            "migration_policy": "delay_1s",
-            "canonical_migration_policy": "delay_1000ms",
-            "hbf_read_mode": collapse.coordinate[2],
-            "restore_execution_mode": collapse.coordinate[3],
-            "objectives": dict(
-                audit_by_key[collapse.retained_key]["objectives"]),
-            "selected": False,
-            "selection_reasons": [],
-            "exclusion_reasons": [
-                "canonical_alias_duplicate_of:"
-                f"{collapse.retained_key}"
-            ],
-            "dominators": [],
-        }
 
     report: dict[str, Any] = {
         "final_results_schema_version": FINAL_RESULTS_SCHEMA_VERSION,
         "schema_version": POLICY_SELECTION_SCHEMA_VERSION,
         "source": {
             "aggregate_path": str(loaded.source_path),
-            "aggregate_file_sha256": (
-                loaded.source_aggregate_sha256),
-            "aggregate_payload_sha256": (
-                loaded.source_payload_sha256),
+            "aggregate_file_sha256": loaded.source_aggregate_sha256,
+            "aggregate_payload_sha256": loaded.source_payload_sha256,
             "comparison_contract": SSD_HBF_CONTRACT_KEY,
             "session_rate": loaded.session_rate,
             "result_status": (
                 "audit_reference_ineligible"
-                if loaded.audit_mode
-                else "eligible_final"
+                if loaded.audit_mode else "eligible_final"
             ),
             "reference_eligible": loaded.reference_eligible,
             "reference_eligibility_failures": list(
                 loaded.reference_eligibility_failures),
+            "seed_ids": list(loaded.seed_ids),
+            "frozen_selection_path": str(frozen.source_path),
+            "frozen_selection_file_sha256": (
+                frozen.source_file_sha256),
+            "frozen_selection_payload_sha256": (
+                frozen.source_payload_sha256),
+            "discovery_aggregate_path": str(
+                frozen.discovery_aggregate_path),
+            "discovery_aggregate_sha256": (
+                frozen.discovery_aggregate_sha256),
         },
         "selection_algorithm": {
-            "scope": (
-                "migration policy within each identical HBF layout and "
-                "active-memory hardware/economic group; every selected "
-                "policy is rendered in all four read/restore options"),
-            "required_migration_policies": list(
-                CANONICAL_MIGRATION_POLICIES),
-            "required_read_restore_options": [
-                {
-                    "hbf_read_mode": read_mode,
-                    "restore_execution_mode": restore_mode,
-                }
-                for read_mode, restore_mode in sorted(_REQUIRED_OPTIONS)
-            ],
-            "objectives": list(
-                _SELECTION_OBJECTIVES_WITH_RUNTIME
-                if loaded.runtime_available
-                else _SELECTION_OBJECTIVES_WITHOUT_RUNTIME
-            ),
+            "selection_status": "frozen_before_heldout",
             "retention_rule": (
-                "retain the performance, normalized multiobjective-knee, "
-                "and minimum-wear policy anchors after requiring every "
-                "read/restore option to meet the matched baseline; exact "
-                "metric-equivalent policies use canonical policy order "
-                "as a deterministic representative"),
-            "minimum_goodput_ratio_to_baseline_in_every_option": (
-                MIN_FINAL_GOODPUT_RATIO_TO_BASELINE),
+                "exact membership in restore_by_coordinate from the "
+                "validated frozen selection manifest"),
+            "heldout_metrics_used_for_selection": False,
+            "rendered_design_cell_count": FINAL_PLOT_DESIGN_CELL_COUNT,
+            "migration_policies": list(frozen.migration_policies),
+            "mixed_batch_latency_limit_ms": (
+                frozen.mixed_batch_latency_limit_ms),
+            "frozen_coordinates": [
+                {
+                    "migration_policy": coordinate[0],
+                    "hbf_layout": coordinate[1],
+                    "hbf_read_mode": coordinate[2],
+                    "restore_execution_mode": coordinate[3],
+                }
+                for coordinate in frozen.coordinates
+            ],
             "oracle_semantics": (
-                "performance-only upper reference; excluded from "
-                "power, energy, TCO, endurance, and Pareto selection"),
-            "delay_alias_semantics": (
-                "delay_1s canonicalizes to delay_1000ms; a duplicate "
-                "alias is excluded without metric-based cherry-picking"),
+                "performance-only upper reference; excluded from power, "
+                "energy, TCO, and endurance"),
         },
         "runtime_objectives_available": loaded.runtime_available,
         "audit_mode": loaded.audit_mode,
-        "groups": group_reports,
+        "groups": groups,
         "selected_candidate_keys": sorted(selected_keys),
         "candidate_audit": [
             audit_by_key[key] for key in sorted(audit_by_key)
@@ -1549,12 +1630,25 @@ def select_meaningful_policies(
     return report
 
 
+_PERFORMANCE_PLOT_SOURCE_FIELDS = tuple(
+    field
+    for spec in PERFORMANCE_METRIC_SPECS
+    for field in (
+        spec.row_field,
+        f"{spec.row_field}_ci95_lower",
+        f"{spec.row_field}_ci95_upper",
+    )
+)
+
+
 _PLOT_SOURCE_FIELDS = (
     "plot_source_schema_version",
     "source_aggregate_sha256",
     "result_status",
     "reference_eligible",
     "reference_eligibility_failures",
+    "seed_count",
+    "seed_ids",
     "candidate_kind",
     "candidate_key",
     "group_id",
@@ -1570,9 +1664,7 @@ _PLOT_SOURCE_FIELDS = (
     "include_in_final_plots",
     "selection_reasons",
     "exclusion_reasons",
-    "goodput_mean",
-    "goodput_ci95_lower",
-    "goodput_ci95_upper",
+    *_PERFORMANCE_PLOT_SOURCE_FIELDS,
     "baseline_goodput_mean",
     "oracle_goodput_mean",
     "goodput_ratio_to_baseline",
@@ -1595,6 +1687,25 @@ _PLOT_SOURCE_FIELDS = (
 )
 
 
+def _performance_row_values(
+        statistics: Mapping[str, AggregateStatistic],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for spec in PERFORMANCE_METRIC_SPECS:
+        statistic = statistics[spec.aggregate_key]
+        result[spec.row_field] = (
+            "" if statistic.mean is None else statistic.mean)
+        result[f"{spec.row_field}_ci95_lower"] = (
+            "" if statistic.ci95_lower is None
+            else statistic.ci95_lower
+        )
+        result[f"{spec.row_field}_ci95_upper"] = (
+            "" if statistic.ci95_upper is None
+            else statistic.ci95_upper
+        )
+    return result
+
+
 def _reference_plot_rows(
         loaded: LoadedStagedResults,
 ) -> list[dict[str, Any]]:
@@ -1609,11 +1720,10 @@ def _reference_plot_rows(
                 )
     for key in sorted(loaded.references):
         reference = loaded.references[key]
-        goodput, lower, upper = _stat_mean(
+        performance_statistics = _performance_statistics(
             reference,
-            "slo_good_output_tokens_per_second",
             f"references.{key}",
-            positive=True,
+            expected_seed_ids=loaded.seed_ids,
         )
         is_oracle = key == ORACLE_CANDIDATE_KEY
         runtime = None if is_oracle else runtime_by_baseline.get(key)
@@ -1632,12 +1742,11 @@ def _reference_plot_rows(
             "include_in_final_plots": True,
             "selection_reasons": (
                 "performance_only_upper_reference"
-                if is_oracle else "matched_physical_baseline"
+                if is_oracle
+                else "matched_restore_mode_physical_baseline"
             ),
             "exclusion_reasons": "",
-            "goodput_mean": goodput,
-            "goodput_ci95_lower": lower,
-            "goodput_ci95_upper": upper,
+            **_performance_row_values(performance_statistics),
             "baseline_runtime_average_it_power_w": (
                 ""
                 if runtime is None
@@ -1679,16 +1788,110 @@ def _reference_plot_rows(
     return rows
 
 
+def _validate_selection_for_loaded(
+        loaded: LoadedStagedResults,
+        selection: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], ...]:
+    if selection.get("final_results_schema_version") != (
+            FINAL_RESULTS_SCHEMA_VERSION):
+        raise SSDHBFFinalResultsError(
+            "selection final-results schema is unsupported")
+    if selection.get("schema_version") != POLICY_SELECTION_SCHEMA_VERSION:
+        raise SSDHBFFinalResultsError(
+            "selection policy schema is unsupported")
+    claimed_digest = selection.get("policy_selection_sha256")
+    if not _is_sha256(claimed_digest):
+        raise SSDHBFFinalResultsError(
+            "selection has an invalid policy-selection hash")
+    unhashed = dict(selection)
+    unhashed.pop("policy_selection_sha256", None)
+    if stable_json_sha256(unhashed) != claimed_digest:
+        raise SSDHBFFinalResultsError(
+            "selection policy-selection hash does not match its payload")
+    source = _mapping(selection.get("source"), "selection.source")
+    if (
+        source.get("aggregate_file_sha256")
+        != loaded.source_aggregate_sha256
+        or source.get("aggregate_payload_sha256")
+        != loaded.source_payload_sha256
+        or source.get("frozen_selection_file_sha256")
+        != loaded.frozen_selection.source_file_sha256
+        or source.get("frozen_selection_payload_sha256")
+        != loaded.frozen_selection.source_payload_sha256
+    ):
+        raise SSDHBFFinalResultsError(
+            "selection does not belong to the loaded aggregate and frozen "
+            "manifest")
+    audit_values = tuple(
+        _mapping(row, "selection.candidate_audit[]")
+        for row in _sequence(
+            selection.get("candidate_audit"),
+            "selection.candidate_audit",
+        )
+    )
+    audit_keys = tuple(
+        str(row.get("candidate_key")) for row in audit_values)
+    expected_audit_keys = {
+        candidate.key for candidate in loaded.candidates
+    }
+    if (
+        len(audit_keys) != len(set(audit_keys))
+        or set(audit_keys) != expected_audit_keys
+    ):
+        raise SSDHBFFinalResultsError(
+            "selection candidate audit does not exactly cover the raw "
+            "design roster")
+    selected_keys = {
+        str(value)
+        for value in _sequence(
+            selection.get("selected_candidate_keys"),
+            "selection.selected_candidate_keys",
+        )
+    }
+    audited_selected_keys = {
+        str(row["candidate_key"])
+        for row in audit_values
+        if row.get("selected") is True
+    }
+    if (
+        selected_keys != audited_selected_keys
+        or len(selected_keys) != FINAL_PLOT_DESIGN_CELL_COUNT
+    ):
+        raise SSDHBFFinalResultsError(
+            "selection selected keys disagree with its candidate audit")
+    for row in audit_values:
+        selected = row.get("selected")
+        selection_reasons = _sequence(
+            row.get("selection_reasons"),
+            "selection.candidate_audit[].selection_reasons",
+        )
+        exclusion_reasons = _sequence(
+            row.get("exclusion_reasons"),
+            "selection.candidate_audit[].exclusion_reasons",
+        )
+        if selected is True:
+            if not selection_reasons or exclusion_reasons:
+                raise SSDHBFFinalResultsError(
+                    "selected audit rows require selection reasons and "
+                    "cannot contain exclusion reasons")
+        elif selected is False:
+            if selection_reasons or not exclusion_reasons:
+                raise SSDHBFFinalResultsError(
+                    "excluded audit rows require exclusion reasons and "
+                    "cannot contain selection reasons")
+        else:
+            raise SSDHBFFinalResultsError(
+                "candidate audit selected must be boolean")
+    return audit_values
+
+
 def build_plot_source_rows(
         loaded: LoadedStagedResults,
         selection: Mapping[str, Any],
 ) -> tuple[dict[str, Any], ...]:
     """Return deterministic full-audit rows; renderers filter selected."""
 
-    audit_values = _sequence(
-        selection.get("candidate_audit"),
-        "selection.candidate_audit",
-    )
+    audit_values = _validate_selection_for_loaded(loaded, selection)
     audit_by_key = {
         str(_mapping(row, "candidate_audit[]").get("candidate_key")):
         _mapping(row, "candidate_audit[]")
@@ -1702,17 +1905,8 @@ def build_plot_source_rows(
         audit = audit_by_key[key]
         candidate = candidate_by_key.get(key)
         if candidate is None:
-            collapse = next(
-                (
-                    value for value in loaded.alias_collapses
-                    if value.excluded_key == key
-                ),
-                None,
-            )
-            if collapse is None:
-                raise SSDHBFFinalResultsError(
-                    f"audit contains unknown candidate {key!r}")
-            candidate = candidate_by_key[collapse.retained_key]
+            raise SSDHBFFinalResultsError(
+                f"audit contains unknown candidate {key!r}")
         memory = candidate.memory_identity
         runtime = candidate.runtime
         rows.append({
@@ -1736,17 +1930,8 @@ def build_plot_source_rows(
                 audit["selection_reasons"]),
             "exclusion_reasons": "|".join(
                 audit["exclusion_reasons"]),
-            "goodput_mean": candidate.goodput_mean,
-            "goodput_ci95_lower": (
-                ""
-                if candidate.goodput_ci95_lower is None
-                else candidate.goodput_ci95_lower
-            ),
-            "goodput_ci95_upper": (
-                ""
-                if candidate.goodput_ci95_upper is None
-                else candidate.goodput_ci95_upper
-            ),
+            **_performance_row_values(
+                candidate.performance_statistics),
             "baseline_goodput_mean": (
                 candidate.baseline_goodput_mean),
             "oracle_goodput_mean": candidate.oracle_goodput_mean,
@@ -1825,6 +2010,10 @@ def build_plot_source_rows(
                 else "|".join(
                     loaded.reference_eligibility_failures)
                 if field == "reference_eligibility_failures"
+                else len(loaded.seed_ids)
+                if field == "seed_count"
+                else ",".join(str(seed) for seed in loaded.seed_ids)
+                if field == "seed_ids"
                 else row.get(field, "")
             )
             for field in _PLOT_SOURCE_FIELDS
@@ -1866,26 +2055,76 @@ def _write_csv_atomic(
 def _selected_design_rows(
         rows: Sequence[Mapping[str, Any]],
 ) -> list[Mapping[str, Any]]:
-    return [
+    selected = [
         row for row in rows
         if (
             row["candidate_kind"] == "design"
             and row["include_in_final_plots"] is True
         )
     ]
+    if len(selected) != FINAL_PLOT_DESIGN_CELL_COUNT:
+        raise SSDHBFFinalResultsError(
+            "plot source must select exactly "
+            f"{FINAL_PLOT_DESIGN_CELL_COUNT} design cells")
+    observed = {
+        (
+            row["hbf_layout"],
+            row["canonical_migration_policy"],
+            row["hbf_read_mode"],
+            row["restore_execution_mode"],
+        )
+        for row in selected
+    }
+    projected = {
+        coordinate[:3] for coordinate in observed}
+    if (
+        len(observed) != FINAL_PLOT_DESIGN_CELL_COUNT
+        or len(projected) != FINAL_PLOT_DESIGN_CELL_COUNT
+    ):
+        raise SSDHBFFinalResultsError(
+            "selected plot rows must contain one frozen restore choice per "
+            "policy/layout/read-mode coordinate")
+    return sorted(
+        selected,
+        key=lambda row: (
+            str(row["hbf_layout"]),
+            str(row["canonical_migration_policy"]),
+            str(row["hbf_read_mode"]),
+            str(row["restore_execution_mode"]),
+        ),
+    )
 
 
 def _short_label(row: Mapping[str, Any]) -> str:
+    read = "prefetch" if row["hbf_read_mode"] == "prefetch" else "demand"
+    layout = (
+        "TP4×2"
+        if row["hbf_layout"] == "tp4x2"
+        else "TP8-context"
+    )
+    policy = str(row["canonical_migration_policy"]).replace("_", " ")
     restore = (
         "stream"
         if row["restore_execution_mode"] == "layerwise_streaming"
         else "bulk"
     )
-    read = "prefetch" if row["hbf_read_mode"] == "prefetch" else "demand"
     return (
-        f"{row['canonical_migration_policy']} | {read}/{restore} | "
-        f"{row['hbf_layout']}"
+        f"{layout} | {policy} | {read} | {restore}"
     )
+
+
+def _reference_row(
+        rows: Sequence[Mapping[str, Any]],
+        candidate_key: str,
+) -> Mapping[str, Any]:
+    matches = [
+        row for row in rows
+        if row.get("candidate_key") == candidate_key
+    ]
+    if len(matches) != 1:
+        raise SSDHBFFinalResultsError(
+            f"plot source must contain one {candidate_key!r} reference")
+    return matches[0]
 
 
 def _load_pyplot():
@@ -1906,104 +2145,6 @@ def _save_figure(figure, path: Path) -> None:
         bbox_inches="tight",
     )
     temporary.replace(path)
-
-
-def _render_performance(
-        pyplot,
-        rows: Sequence[Mapping[str, Any]],
-        output_path: Path,
-) -> None:
-    selected = _selected_design_rows(rows)
-    labels = [_short_label(row) for row in selected]
-    values = [
-        float(row["goodput_ratio_to_baseline"])
-        for row in selected
-    ]
-    oracle = [
-        float(row["oracle_goodput_ratio_to_baseline"])
-        for row in selected
-    ]
-    height = max(4.0, 0.31 * len(selected) + 1.5)
-    figure, axis = pyplot.subplots(figsize=(10.5, height))
-    positions = list(range(len(selected)))
-    colors = [
-        "#4C78A8" if row["hbf_read_mode"] == "demand"
-        else "#F58518"
-        for row in selected
-    ]
-    axis.barh(positions, values, color=colors, alpha=0.88)
-    axis.scatter(
-        oracle,
-        positions,
-        color="#333333",
-        marker="|",
-        s=90,
-        label="Oracle / matched baseline",
-        zorder=3,
-    )
-    axis.axvline(
-        1.0, color="#666666", linestyle="--", linewidth=1,
-        label="Matched two-GPU baseline")
-    axis.set_yticks(positions, labels=labels, fontsize=7)
-    axis.invert_yaxis()
-    axis.set_xlabel("SLO-good output-token goodput / matched baseline")
-    audit_prefix = (
-        "AUDIT — reference eligibility failed\n"
-        if rows[0].get("result_status")
-        == "audit_reference_ineligible"
-        else ""
-    )
-    axis.set_title(
-        audit_prefix
-        + "Selected staged HBF policies: read and restore sensitivity")
-    axis.grid(axis="x", alpha=0.22)
-    axis.legend(fontsize=8, loc="best")
-    _save_figure(figure, output_path)
-    pyplot.close(figure)
-
-
-def _render_runtime(
-        pyplot,
-        rows: Sequence[Mapping[str, Any]],
-        output_path: Path,
-) -> None:
-    selected = _selected_design_rows(rows)
-    labels = [_short_label(row) for row in selected]
-    metrics = (
-        ("runtime_power_ratio_to_baseline", "Average IT power"),
-        ("runtime_energy_ratio_to_baseline", "5-year facility energy"),
-        ("runtime_tco_ratio_to_baseline", "5-year TCO"),
-    )
-    width = max(9.5, 0.44 * len(selected) + 3.0)
-    figure, axes = pyplot.subplots(
-        3, 1, figsize=(width, 8.0), sharex=True)
-    positions = list(range(len(selected)))
-    for axis, (field, title) in zip(axes, metrics):
-        axis.bar(
-            positions,
-            [float(row[field]) for row in selected],
-            color="#54A24B",
-            alpha=0.88,
-        )
-        axis.axhline(1.0, color="#666666", linestyle="--", linewidth=1)
-        axis.set_ylabel("Design / baseline")
-        axis.set_title(title, loc="left", fontsize=10)
-        axis.grid(axis="y", alpha=0.22)
-    axes[-1].set_xticks(
-        positions, labels=labels, rotation=55, ha="right", fontsize=7)
-    audit_prefix = (
-        "AUDIT — reference eligibility failed\n"
-        if rows[0].get("result_status")
-        == "audit_reference_ineligible"
-        else ""
-    )
-    figure.suptitle(
-        audit_prefix
-        + "Event-derived runtime power, energy, and TCO "
-        "(Oracle excluded)")
-    figure.tight_layout()
-    _save_figure(figure, output_path)
-    pyplot.close(figure)
 
 
 def _render_endurance(
@@ -2046,16 +2187,225 @@ def _render_endurance(
         axis.grid(axis="y", alpha=0.22)
     axes[-1].set_xticks(
         positions, labels=labels, rotation=55, ha="right", fontsize=7)
-    audit_prefix = (
-        "AUDIT — reference eligibility failed\n"
-        if rows[0].get("result_status")
-        == "audit_reference_ineligible"
-        else ""
-    )
     figure.suptitle(
-        audit_prefix
-        + "HBF endurance from measured recurring writes "
+        _audit_title_prefix(rows)
+        + "Frozen heldout coordinates: HBF endurance from recurring writes "
         "(uniform within-card spreading)")
+    figure.tight_layout()
+    _save_figure(figure, output_path)
+    pyplot.close(figure)
+
+
+def _audit_title_prefix(
+        rows: Sequence[Mapping[str, Any]],
+) -> str:
+    statuses = {row.get("result_status") for row in rows}
+    if len(statuses) != 1:
+        raise SSDHBFFinalResultsError(
+            "plot source contains inconsistent result status")
+    return (
+        "AUDIT — reference eligibility failed\n"
+        if statuses == {"audit_reference_ineligible"} else ""
+    )
+
+
+def _scaled_statistic_from_row(
+        row: Mapping[str, Any],
+        spec: PerformanceMetricSpec,
+) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    value = row[spec.row_field]
+    if value == "":
+        return None, None, None
+    mean = float(value) * spec.scale
+    lower_value = row[f"{spec.row_field}_ci95_lower"]
+    upper_value = row[f"{spec.row_field}_ci95_upper"]
+    lower = (
+        None if lower_value == "" else float(lower_value) * spec.scale)
+    upper = (
+        None if upper_value == "" else float(upper_value) * spec.scale)
+    return mean, lower, upper
+
+
+def _render_performance_metric(
+        pyplot,
+        rows: Sequence[Mapping[str, Any]],
+        spec: PerformanceMetricSpec,
+        output_path: Path,
+) -> None:
+    selected = _selected_design_rows(rows)
+    labels = [_short_label(row) for row in selected]
+    positions = list(range(len(selected)))
+    colors = [
+        "#4C78A8" if row["hbf_read_mode"] == "demand"
+        else "#F58518"
+        for row in selected
+    ]
+    width = max(11.0, 0.62 * len(selected) + 4.0)
+    figure, axis = pyplot.subplots(figsize=(width, 5.8))
+    any_value = False
+    for position, row, color in zip(positions, selected, colors):
+        mean, lower, upper = _scaled_statistic_from_row(row, spec)
+        if mean is None:
+            continue
+        any_value = True
+        yerr = None
+        if lower is not None and upper is not None:
+            yerr = [[max(0.0, mean - lower)], [max(0.0, upper - mean)]]
+        axis.bar(
+            position,
+            mean,
+            color=color,
+            alpha=0.88,
+            yerr=yerr,
+            capsize=4 if yerr is not None else 0,
+        )
+
+    seen_baseline_modes = set()
+    for position, row in zip(positions, selected):
+        baseline = _reference_row(
+            rows, str(row["baseline_candidate_key"]))
+        mean, lower, upper = _scaled_statistic_from_row(
+            baseline, spec)
+        if mean is None:
+            continue
+        mode = str(row["restore_execution_mode"])
+        yerr = None
+        if lower is not None and upper is not None:
+            yerr = [[max(0.0, mean - lower)], [max(0.0, upper - mean)]]
+        axis.errorbar(
+            [position],
+            [mean],
+            yerr=yerr,
+            fmt="x" if mode == "bulk" else "+",
+            color="#555555" if mode == "bulk" else "#111111",
+            markersize=8,
+            capsize=3,
+            label=(
+                f"Matched {mode.replace('_', ' ')} baseline"
+                if mode not in seen_baseline_modes else None
+            ),
+            zorder=4,
+        )
+        seen_baseline_modes.add(mode)
+
+    oracle = _reference_row(rows, ORACLE_CANDIDATE_KEY)
+    oracle_mean, oracle_lower, oracle_upper = (
+        _scaled_statistic_from_row(oracle, spec))
+    if oracle_mean is not None:
+        axis.axhline(
+            oracle_mean,
+            color="#111111",
+            linestyle=":",
+            linewidth=1.4,
+            label="Infinite-HBM Oracle",
+        )
+        if oracle_lower is not None and oracle_upper is not None:
+            axis.axhspan(
+                oracle_lower,
+                oracle_upper,
+                color="#111111",
+                alpha=0.06,
+            )
+    if not any_value:
+        axis.text(
+            0.5,
+            0.5,
+            "N/A — no eligible first-turn samples",
+            transform=axis.transAxes,
+            ha="center",
+            va="center",
+            fontsize=11,
+        )
+        axis.set_yticks([])
+    elif spec.log_scale:
+        axis.set_yscale("log")
+    if spec.bounded_fraction:
+        axis.set_ylim(0.0, 1.05)
+    axis.set_xticks(
+        positions, labels=labels, rotation=48, ha="right", fontsize=7)
+    axis.set_ylabel(spec.y_label)
+    axis.set_title(
+        _audit_title_prefix(rows)
+        + f"Frozen heldout coordinates: {spec.title}")
+    axis.grid(axis="y", alpha=0.22)
+    handles, _ = axis.get_legend_handles_labels()
+    if handles:
+        axis.legend(fontsize=8, loc="best")
+    figure.tight_layout()
+    _save_figure(figure, output_path)
+    pyplot.close(figure)
+
+
+def _render_power_energy(
+        pyplot,
+        rows: Sequence[Mapping[str, Any]],
+        output_path: Path,
+) -> None:
+    selected = _selected_design_rows(rows)
+    labels = [_short_label(row) for row in selected]
+    metrics = (
+        ("runtime_power_ratio_to_baseline", "Average IT power"),
+        ("runtime_energy_ratio_to_baseline", "5-year facility energy"),
+    )
+    positions = list(range(len(selected)))
+    width = max(10.0, 0.55 * len(selected) + 3.0)
+    figure, axes = pyplot.subplots(
+        2, 1, figsize=(width, 6.8), sharex=True)
+    for axis, (field, title) in zip(axes, metrics):
+        axis.bar(
+            positions,
+            [float(row[field]) for row in selected],
+            color="#54A24B",
+            alpha=0.88,
+        )
+        axis.axhline(1.0, color="#666666", linestyle="--", linewidth=1)
+        axis.set_ylabel("Design / matched baseline")
+        axis.set_title(title, loc="left", fontsize=10)
+        axis.grid(axis="y", alpha=0.22)
+    axes[-1].set_xticks(
+        positions, labels=labels, rotation=48, ha="right", fontsize=7)
+    figure.suptitle(
+        _audit_title_prefix(rows)
+        + "Frozen heldout coordinates: runtime power and energy")
+    figure.tight_layout()
+    _save_figure(figure, output_path)
+    pyplot.close(figure)
+
+
+def _render_five_year_tco(
+        pyplot,
+        rows: Sequence[Mapping[str, Any]],
+        output_path: Path,
+) -> None:
+    selected = _selected_design_rows(rows)
+    labels = [_short_label(row) for row in selected]
+    positions = list(range(len(selected)))
+    figure, axis = pyplot.subplots(
+        figsize=(max(10.0, 0.55 * len(selected) + 3.0), 5.4))
+    axis.bar(
+        positions,
+        [
+            float(row["runtime_tco_ratio_to_baseline"])
+            for row in selected
+        ],
+        color="#ECA82C",
+        alpha=0.9,
+    )
+    axis.axhline(
+        1.0,
+        color="#666666",
+        linestyle="--",
+        linewidth=1,
+        label="Matched two-GPU baseline",
+    )
+    axis.set_xticks(
+        positions, labels=labels, rotation=48, ha="right", fontsize=7)
+    axis.set_ylabel("Design / matched baseline")
+    axis.set_title(
+        _audit_title_prefix(rows)
+        + "Frozen heldout coordinates: 5-year TCO")
+    axis.grid(axis="y", alpha=0.22)
+    axis.legend(fontsize=8, loc="best")
     figure.tight_layout()
     _save_figure(figure, output_path)
     pyplot.close(figure)
@@ -2065,8 +2415,9 @@ def _render_endurance(
 class FinalPlotArtifacts:
     policy_selection_json: Path
     plot_source_csv: Path
-    performance_sensitivity_png: Optional[Path]
-    runtime_power_energy_tco_png: Optional[Path]
+    performance_metric_pngs: Mapping[str, Path]
+    runtime_power_energy_png: Optional[Path]
+    five_year_tco_png: Optional[Path]
     hbf_endurance_png: Optional[Path]
     rendered: bool
     matplotlib_available: bool
@@ -2078,6 +2429,15 @@ class FinalPlotArtifacts:
         for key, value in tuple(result.items()):
             if isinstance(value, Path):
                 result[key] = str(value)
+            elif isinstance(value, Mapping):
+                result[key] = {
+                    nested_key: (
+                        str(nested_value)
+                        if isinstance(nested_value, Path)
+                        else nested_value
+                    )
+                    for nested_key, nested_value in value.items()
+                }
         return result
 
 
@@ -2087,7 +2447,7 @@ def write_final_artifacts(
         *,
         render: bool = True,
 ) -> FinalPlotArtifacts:
-    """Write audited sources and, when requested, the three final graphs."""
+    """Write audited sources and exactly ten final graphs when rendered."""
 
     if render and not loaded.runtime_available:
         raise SSDHBFFinalResultsError(
@@ -2104,22 +2464,27 @@ def write_final_artifacts(
 
     pyplot = _load_pyplot() if render else None
     matplotlib_available = pyplot is not None
-    performance_path = runtime_path = endurance_path = None
+    performance_paths: dict[str, Path] = {}
+    power_energy_path = tco_path = endurance_path = None
     if render and pyplot is not None:
         prefix = "audit_" if loaded.audit_mode else ""
-        performance_path = (
-            root / f"{prefix}performance_sensitivity.png")
-        runtime_path = (
-            root / f"{prefix}runtime_power_energy_tco.png")
-        endurance_path = root / f"{prefix}hbf_endurance.png"
-        _render_performance(pyplot, rows, performance_path)
-        _render_runtime(pyplot, rows, runtime_path)
+        for spec in PERFORMANCE_METRIC_SPECS:
+            path = root / f"{prefix}{spec.filename_stem}.png"
+            _render_performance_metric(pyplot, rows, spec, path)
+            performance_paths[spec.plot_key] = path
+        power_energy_path = (
+            root / f"{prefix}08_power_energy.png")
+        tco_path = root / f"{prefix}09_five_year_tco.png"
+        endurance_path = root / f"{prefix}10_endurance.png"
+        _render_power_energy(pyplot, rows, power_energy_path)
+        _render_five_year_tco(pyplot, rows, tco_path)
         _render_endurance(pyplot, rows, endurance_path)
     return FinalPlotArtifacts(
         policy_selection_json=selection_path,
         plot_source_csv=source_path,
-        performance_sensitivity_png=performance_path,
-        runtime_power_energy_tco_png=runtime_path,
+        performance_metric_pngs=performance_paths,
+        runtime_power_energy_png=power_energy_path,
+        five_year_tco_png=tco_path,
         hbf_endurance_png=endurance_path,
         rendered=render and pyplot is not None,
         matplotlib_available=matplotlib_available,
@@ -2133,14 +2498,21 @@ def generate_final_results(
         aggregate_path: Path | str,
         output_dir: Path | str,
         *,
+        selection_config_path: Path | str,
+        repo_root: Optional[Path | str] = None,
         render: bool = True,
         allow_ineligible_reference_audit: bool = False,
 ) -> FinalPlotArtifacts:
     """Convenience API: strict load, select, export, and render."""
 
+    frozen_selection = load_frozen_selection(
+        selection_config_path,
+        repo_root=repo_root,
+    )
     return write_final_artifacts(
         load_staged_aggregate(
             aggregate_path,
+            frozen_selection=frozen_selection,
             allow_ineligible_reference=(
                 allow_ineligible_reference_audit),
         ),
@@ -2157,6 +2529,18 @@ def _parser() -> argparse.ArgumentParser:
         )
     )
     parser.add_argument("aggregate", type=Path)
+    parser.add_argument(
+        "--selection-config",
+        required=True,
+        type=Path,
+        help="pre-heldout frozen eight-coordinate selection JSON",
+    )
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path(__file__).resolve().parents[1],
+        help="repository root used to resolve paths in the selection JSON",
+    )
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument(
         "--render",
@@ -2184,6 +2568,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     artifacts = generate_final_results(
         args.aggregate,
         args.output_dir,
+        selection_config_path=args.selection_config,
+        repo_root=args.repo_root,
         render=args.render,
         allow_ineligible_reference_audit=(
             args.allow_ineligible_reference_audit),
@@ -2202,11 +2588,14 @@ if __name__ == "__main__":
 
 __all__ = [
     "CENTRAL_ENDURANCE_SCENARIO",
-    "DELAY_POLICY_ALIASES",
+    "FINAL_PLOT_DESIGN_CELL_COUNT",
     "FINAL_RESULTS_SCHEMA_VERSION",
     "FinalCandidate",
     "FinalPlotArtifacts",
+    "FrozenFinalSelection",
     "LoadedStagedResults",
+    "PERFORMANCE_METRIC_SPECS",
+    "PERFORMANCE_PLOT_COUNT",
     "POLICY_SELECTION_SCHEMA_VERSION",
     "PLOT_SOURCE_SCHEMA_VERSION",
     "RUNTIME_PROJECTION_METRIC_KEYS",
@@ -2214,6 +2603,7 @@ __all__ = [
     "SSDHBFFinalResultsError",
     "build_plot_source_rows",
     "generate_final_results",
+    "load_frozen_selection",
     "load_staged_aggregate",
     "main",
     "select_meaningful_policies",
