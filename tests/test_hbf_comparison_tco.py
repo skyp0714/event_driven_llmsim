@@ -117,7 +117,7 @@ def evaluate_with_provenance(values, **kwargs):
 def central_point():
     return SensitivityPoint(
         npu_logic_capex_ratio_to_gpu_logic=1.00,
-        hbf_subsystem_capex_ratio_to_hbm_stack=0.50,
+        hbf_subsystem_capex_ratio_to_hbm_stack=0.10,
         npu_logic_power_ratio_to_gpu_logic=1.00,
         hbf_subsystem_power_ratio_to_hbm_stack=3.50,
     )
@@ -333,8 +333,17 @@ class SensitivityTests(unittest.TestCase):
         media = cost.component("hbf_media_controller_subsystem")
         logic = cost.component("hbf_npu_logic")
         lpddr = cost.component("hbf_card_lpddr")
-        self.assertEqual(media.unit_capex_usd, 4_500.0)
-        self.assertEqual(media.unit_it_power_w, 300.0)
+        # Central HBF media/controller assumption: one HBF cube costs
+        # 0.10x one HBM cube and draws 3.5x its power.
+        self.assertAlmostEqual(
+            media.unit_capex_usd,
+            0.10 * anchors.hbm_stack_capex_usd_per_card,
+        )
+        self.assertAlmostEqual(
+            media.unit_it_power_w,
+            3.5 * anchors.hbm_stack_power_w_per_card,
+        )
+        self.assertAlmostEqual(media.unit_it_power_w, 490.0)
         whole_card_power = (
             logic.unit_it_power_w
             + media.unit_it_power_w
@@ -342,7 +351,7 @@ class SensitivityTests(unittest.TestCase):
         )
         self.assertAlmostEqual(
             whole_card_power / anchors.h100_card_power_w,
-            1.2358857142857143,
+            1.5073142857142858,
         )
 
     def test_hbf_power_sensitivity_changes_energy_opex_and_tco(self):

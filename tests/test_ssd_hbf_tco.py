@@ -354,9 +354,9 @@ class SSDHBFEconomicsTests(unittest.TestCase):
             central.hbm_credit_share_of_h100_purchase_price,
             1_350.0 / 3_320.0,
         )
-        self.assertEqual(
+        self.assertAlmostEqual(
             central.hbf_media_controller_capex_usd_per_card,
-            4_500.0,
+            0.10 * 30_000.0 * (1_350.0 / 3_320.0),
         )
         self.assertTrue(central.proposed_is_cheaper)
 
@@ -369,7 +369,9 @@ class SSDHBFEconomicsTests(unittest.TestCase):
             absolute.hbm_credit_usd_per_h100_card, 1_350.0)
         self.assertAlmostEqual(
             absolute.hbm_credit_share_of_h100_purchase_price, 0.045)
-        self.assertFalse(absolute.proposed_is_cheaper)
+        # At the 0.10x-HBM-cube central HBF price the proposal stays
+        # cheaper even under the pessimistic absolute-credit basis.
+        self.assertTrue(absolute.proposed_is_cheaper)
 
         legacy = cases["legacy_30pct_purchase_price_credit"]
         self.assertEqual(
@@ -384,7 +386,10 @@ class SSDHBFEconomicsTests(unittest.TestCase):
 
         optimistic = cases[
             "optimistic_hbf_price_equals_hbm_credit"]
-        self.assertTrue(optimistic.proposed_is_cheaper)
+        # HBF priced at parity with the HBM credit no longer wins: the
+        # 3.5x-HBM-stack power central (490 W per card) outweighs a
+        # capex-neutral swap over the five-year energy horizon.
+        self.assertFalse(optimistic.proposed_is_cheaper)
         self.assertLess(
             audit.central_hbf_media_controller_capex_usd_per_card,
             audit.break_even_hbf_media_controller_capex_usd_per_card,

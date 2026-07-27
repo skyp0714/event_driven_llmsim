@@ -104,8 +104,32 @@ PRICE_SOURCE_SEMANTICS = (
     "share of HBM, plus explicit HBF sensitivity assumptions; not a vendor "
     "HBF quote"
 )
-HBF_CAPEX_SENSITIVITY_CENTRAL_AXIS_VALUE = 0.50
+# Central per-card HBF media/controller assumption: one HBF cube costs
+# 0.10x one HBM cube and draws 3.5x its power, at equal cube count per
+# card (the 16x capacity ratio lives in the cube density, not the count).
+# The axis values below are therefore true ratios to the H100 HBM stack
+# under the default anchors.
+HBF_CAPEX_SENSITIVITY_CENTRAL_AXIS_VALUE = 0.10
 HBF_POWER_SENSITIVITY_CENTRAL_AXIS_VALUE = 3.50
+_DEFAULT_H100_CARD_CAPEX_USD = 30_000.0
+_DEFAULT_H100_CARD_POWER_W = 700.0
+_DEFAULT_HBM_MANUFACTURING_FRACTION = 1_350.0 / 3_320.0
+_DEFAULT_HBM_POWER_FRACTION = 0.20
+DEFAULT_HBM_STACK_CAPEX_USD_PER_CARD = (
+    _DEFAULT_H100_CARD_CAPEX_USD
+    * _DEFAULT_HBM_MANUFACTURING_FRACTION
+)
+DEFAULT_HBM_STACK_POWER_W_PER_CARD = (
+    _DEFAULT_H100_CARD_POWER_W * _DEFAULT_HBM_POWER_FRACTION
+)
+DEFAULT_HBF_MEDIA_CONTROLLER_CAPEX_USD_PER_CARD = (
+    DEFAULT_HBM_STACK_CAPEX_USD_PER_CARD
+    * HBF_CAPEX_SENSITIVITY_CENTRAL_AXIS_VALUE
+)
+DEFAULT_HBF_MEDIA_CONTROLLER_POWER_W_PER_CARD = (
+    DEFAULT_HBM_STACK_POWER_W_PER_CARD
+    * HBF_POWER_SENSITIVITY_CENTRAL_AXIS_VALUE
+)
 ORACLE_EXCLUSION_REASON = (
     "The Oracle assumes infinite HBM capacity, so it is an unphysical "
     "performance reference and its capacity cannot be assigned a finite BOM."
@@ -250,8 +274,13 @@ class HardwareAnchors(JSONSafeDataclass):
     hbm_capex_fraction_of_h100_card: float = 0.30
     hbm_power_fraction_of_h100_card: float = 0.20
     h100_hbm_capacity_bytes_per_card: int = 80_000_000_000
-    hbf_media_controller_capex_usd_per_card: float = 4_500.0
-    hbf_media_controller_power_w_per_card: float = 300.0
+    # Central assumption: one HBF cube = 0.10x one HBM cube CAPEX and
+    # 3.5x its power at equal cube count per card, so the per-card
+    # subsystem anchors derive from the HBM-stack anchors.
+    hbf_media_controller_capex_usd_per_card: float = (
+        DEFAULT_HBF_MEDIA_CONTROLLER_CAPEX_USD_PER_CARD)
+    hbf_media_controller_power_w_per_card: float = (
+        DEFAULT_HBF_MEDIA_CONTROLLER_POWER_W_PER_CARD)
     h100_purchase_price_source_url: str = (
         "https://siliconanalysts.com/data/ai-chip-costs")
     h100_tdp_source_url: str = (
@@ -641,16 +670,18 @@ class SensitivityAxes(JSONSafeDataclass):
     """Cartesian component-ratio sensitivity axes.
 
     The ``npu_logic_*`` names are retained for report compatibility.  Their
-    default singleton value is the full H100 GPU-logic anchor.  The HBF field
-    names are also retained for compatibility, but their values are normalized
-    around the independent HBF media/controller anchors: 0.50 means 1.0x the
-    CAPEX anchor and 3.50 means 1.0x the power anchor.
+    default singleton value is the full H100 GPU-logic anchor.  The HBF axis
+    values are per-cube ratios to the H100 HBM stack: under the default
+    anchors, 0.10 means the HBF media/controller subsystem costs 0.10x the
+    HBM stack, and 3.50 means it draws 3.5x the HBM-stack power.  The
+    normalization constants keep custom anchors scalable around those
+    central ratios.
     """
 
     npu_logic_capex_ratios_to_gpu_logic: tuple[float, ...] = (
         1.00,)
     hbf_subsystem_capex_ratios_to_hbm_stack: tuple[float, ...] = (
-        0.25, 0.50, 0.75)
+        0.05, 0.10, 0.20)
     npu_logic_power_ratios_to_gpu_logic: tuple[float, ...] = (
         1.00,)
     hbf_subsystem_power_ratios_to_hbm_stack: tuple[float, ...] = (
@@ -1395,17 +1426,18 @@ def proposed_hbf_cost(
             hbf_subsystem_capex,
             hbf_subsystem_power,
             (
-                "The full HBF media/controller subsystem uses an independent "
-                f"${anchors.hbf_media_controller_capex_usd_per_card:,.0f} "
-                "per-card CAPEX anchor and "
-                f"{anchors.hbf_media_controller_power_w_per_card:,.0f} W "
-                "power anchor. Compatibility sensitivity-axis values are "
-                "normalized around 0.50=1.0x CAPEX and 3.50=1.0x power. "
-                f"Installed capacity is "
+                "The HBF media/controller subsystem derives from the HBM "
+                "stack anchors as per-cube ratios: central 0.10x HBM-stack "
+                "CAPEX "
+                f"(${anchors.hbf_media_controller_capex_usd_per_card:,.0f} "
+                "per card) and 3.5x HBM-stack power "
+                f"({anchors.hbf_media_controller_power_w_per_card:,.0f} W "
+                "per card). Sensitivity-axis values are normalized around "
+                "0.10=1.0x CAPEX and 3.50=1.0x power. Installed capacity is "
                 f"{hbf_hardware_variant.hbf_capacity_bytes_per_card} bytes "
                 "per card, or "
                 f"{hbf_hardware_variant.hbf_capacity_ratio_to_hbm:g}x the "
-                "H100 HBM anchor."
+                "H100 HBM anchor (16x-denser cubes at equal cube count)."
             ),
         ),
         _bom_line(

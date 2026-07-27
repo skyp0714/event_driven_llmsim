@@ -59,7 +59,7 @@ class HBFDesignInputTests(unittest.TestCase):
             CENTRAL_SENSITIVITY_POINT,
             SensitivityPoint(
                 npu_logic_capex_ratio_to_gpu_logic=1.0,
-                hbf_subsystem_capex_ratio_to_hbm_stack=0.5,
+                hbf_subsystem_capex_ratio_to_hbm_stack=0.1,
                 npu_logic_power_ratio_to_gpu_logic=1.0,
                 hbf_subsystem_power_ratio_to_hbm_stack=3.5,
             ),

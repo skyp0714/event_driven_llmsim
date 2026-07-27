@@ -23,6 +23,8 @@ from .hbf_comparison_tco import (
     BOMLine,
     BYTES_PER_GIB,
     EvaluationAssumptions,
+    HBF_CAPEX_SENSITIVITY_CENTRAL_AXIS_VALUE,
+    HBF_POWER_SENSITIVITY_CENTRAL_AXIS_VALUE,
     HardwareAnchors,
     KWH_PER_WH,
     P4D4_CPU_MEMORY_BYTES_PER_HOST,
@@ -50,9 +52,11 @@ ORACLE_EXCLUSION_REASON = (
 
 CENTRAL_SENSITIVITY_POINT = SensitivityPoint(
     npu_logic_capex_ratio_to_gpu_logic=1.00,
-    hbf_subsystem_capex_ratio_to_hbm_stack=0.50,
+    hbf_subsystem_capex_ratio_to_hbm_stack=(
+        HBF_CAPEX_SENSITIVITY_CENTRAL_AXIS_VALUE),
     npu_logic_power_ratio_to_gpu_logic=1.00,
-    hbf_subsystem_power_ratio_to_hbm_stack=3.50,
+    hbf_subsystem_power_ratio_to_hbm_stack=(
+        HBF_POWER_SENSITIVITY_CENTRAL_AXIS_VALUE),
 )
 
 
