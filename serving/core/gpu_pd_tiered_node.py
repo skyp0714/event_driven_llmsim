@@ -25,8 +25,11 @@ from typing import Any, Iterable, Mapping, Optional
 from .gpu_pd_latency import P4D4GPUHardware
 from .gpu_pd_pool import P4D4ServingPool, PDServingRequest
 from .gpu_pd_tier_lifecycle import (
+    D_RESERVATION_FINAL_UPFRONT,
+    D_RESERVATION_PROMPT_UPFRONT,
     PrepareTicket,
     RESTORE_EXECUTION_BULK,
+    SUPPORTED_D_RESERVATION_POLICIES,
     SUPPORTED_TIER_POLICIES,
     SUPPORTED_RESTORE_EXECUTION_MODES,
     Tier,
@@ -187,10 +190,16 @@ class FiniteHBMTieredP4D4Node:
             max_prefill_chunk_tokens: int = 4_096,
             band: str = "central",
             restore_execution_mode: str = RESTORE_EXECUTION_BULK,
+            d_reservation_policy: str = D_RESERVATION_FINAL_UPFRONT,
             validate_every_event: bool = True,
             retain_detailed_history: bool = True) -> None:
         if policy not in SUPPORTED_TIER_POLICIES:
             raise ValueError(f"unsupported tier policy {policy!r}")
+        if d_reservation_policy not in (
+                SUPPORTED_D_RESERVATION_POLICIES):
+            raise ValueError(
+                "d_reservation_policy must be one of "
+                f"{SUPPORTED_D_RESERVATION_POLICIES}")
         if restore_execution_mode not in (
                 SUPPORTED_RESTORE_EXECUTION_MODES):
             raise ValueError(
@@ -205,6 +214,7 @@ class FiniteHBMTieredP4D4Node:
         self.node_id = node_id
         self.policy = policy
         self.restore_execution_mode = restore_execution_mode
+        self.d_reservation_policy = d_reservation_policy
         self.validate_every_event = validate_every_event
         self.calendar = (
             resource_calendar
@@ -220,6 +230,7 @@ class FiniteHBMTieredP4D4Node:
             cpu_capacity_bytes=cpu_capacity_bytes,
             ssd_capacity_bytes=ssd_capacity_bytes,
             restore_execution_mode=restore_execution_mode,
+            d_reservation_policy=d_reservation_policy,
             validate_every_event=validate_every_event,
         )
         self.pool = P4D4ServingPool(
@@ -404,9 +415,18 @@ class FiniteHBMTieredP4D4Node:
         p_bytes = self.hardware.kv_capacity_bytes_per_rank(
             call.input_tokens)
         needs_d = call.output_tokens > 1 or call.has_successor
+        # Mirror the lifecycle's admission sizing: prompt-upfront gates D
+        # admission on the prompt KV only; decode growth is charged by the
+        # lifecycle when the finished context is published.
+        d_admission_tokens = (
+            call.input_tokens + call.output_tokens - 1
+            if self.d_reservation_policy
+            == D_RESERVATION_FINAL_UPFRONT
+            else call.input_tokens
+        )
         d_target = (
             self.hardware.kv_capacity_bytes_per_rank(
-                call.input_tokens + call.output_tokens - 1)
+                d_admission_tokens)
             if needs_d else 0
         )
         reusable_d_destination = bool(
@@ -961,6 +981,7 @@ class FiniteHBMTieredP4D4Node:
             "node_id": self.node_id,
             "policy": self.policy,
             "restore_execution_mode": self.restore_execution_mode,
+            "d_reservation_policy": self.d_reservation_policy,
             "validate_every_event": self.validate_every_event,
             "capacity_owner": (
                 "TieredPDKVLifecycle is the sole P/D KV ledger; "

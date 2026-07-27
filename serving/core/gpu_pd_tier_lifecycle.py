@@ -34,6 +34,28 @@ SUPPORTED_RESTORE_EXECUTION_MODES = frozenset({
 })
 MAX_CONTEXT_TOKENS = 1_010_000
 
+# D-capacity reservation policies.
+#
+# ``final_context_upfront`` (the original behavior) reserves the request's
+# complete final context on D at admission time.  It can never overflow,
+# but under-utilizes D and gates admission on capacity the request only
+# needs at the very end of decode.
+#
+# ``prompt_upfront_growth_at_commit`` reserves only the prompt KV at
+# admission (the bytes the P-to-D handoff actually delivers).  Decode
+# growth is charged atomically when the finished context is published; if
+# free D capacity is insufficient at that instant, idle LRU D copies are
+# force-dropped (recompute-on-resume), modeling optimistic vLLM-style
+# admission with preemption-by-recompute under pressure.  Terminal calls
+# free their context at the same instant it would have grown, so their
+# transient decode growth is intentionally not charged.
+D_RESERVATION_FINAL_UPFRONT = "final_context_upfront"
+D_RESERVATION_PROMPT_UPFRONT = "prompt_upfront_growth_at_commit"
+SUPPORTED_D_RESERVATION_POLICIES = (
+    D_RESERVATION_FINAL_UPFRONT,
+    D_RESERVATION_PROMPT_UPFRONT,
+)
+
 
 class Tier(str, Enum):
     D = "d"
@@ -373,6 +395,8 @@ class ResumeSource:
 class TierLifecycleMetrics:
     session_restarts: int = 0
     d_drops: int = 0
+    d_growth_bytes_per_rank: int = 0
+    d_growth_forced_drops: int = 0
     d_to_cpu_started: int = 0
     d_to_ssd_started: int = 0
     cpu_to_ssd_started: int = 0
@@ -420,6 +444,7 @@ class TieredPDKVLifecycle:
             cpu_capacity_bytes: Optional[int] = None,
             ssd_capacity_bytes: Optional[int] = None,
             restore_execution_mode: str = RESTORE_EXECUTION_BULK,
+            d_reservation_policy: str = D_RESERVATION_FINAL_UPFRONT,
             validate_every_event: bool = True) -> None:
         hardware.validate()
         if policy not in SUPPORTED_TIER_POLICIES:
@@ -430,6 +455,11 @@ class TieredPDKVLifecycle:
             raise ValueError(
                 "restore_execution_mode must be one of "
                 f"{sorted(SUPPORTED_RESTORE_EXECUTION_MODES)}")
+        if d_reservation_policy not in (
+                SUPPORTED_D_RESERVATION_POLICIES):
+            raise ValueError(
+                "d_reservation_policy must be one of "
+                f"{SUPPORTED_D_RESERVATION_POLICIES}")
         if (
             isinstance(node_id, bool)
             or not isinstance(node_id, int)
@@ -443,6 +473,7 @@ class TieredPDKVLifecycle:
         self.node_id = node_id
         self.policy = policy
         self.restore_execution_mode = restore_execution_mode
+        self.d_reservation_policy = d_reservation_policy
         self.validate_every_event = validate_every_event
         self.calendar = (
             calendar if calendar is not None else ResourceCalendar())
@@ -1190,6 +1221,38 @@ class TieredPDKVLifecycle:
                 return after
         return self.next_event_ns()
 
+    def _force_drop_idle_d(
+            self, *, now_ns: int,
+            exclude_session: str) -> bool:
+        """Immediately drop one idle LRU D copy for commit-time growth.
+
+        Unlike :meth:`demote`, this never starts an asynchronous lower-tier
+        transfer: commit-time growth cannot wait, so the victim context is
+        lost and must recompute on its next resume.  This models
+        preemption-by-recompute under optimistic prompt-upfront admission.
+        """
+
+        for victim in self._eligible_lru(
+                Tier.D, exclude_sessions=(exclude_session,)):
+            record = self.sessions[victim.session_id]
+            source = self._primary_copy(record)
+            if (
+                source is None or source.tier != Tier.D
+                or record.state != TierSessionState.D_READY
+            ):
+                continue
+            source.retired = True
+            self._release_copy(source)
+            record.state = TierSessionState.LOST
+            record.tokens = 0
+            record.generation += 1
+            record.last_access_ns = now_ns
+            self.metrics.d_drops += 1
+            self.metrics.d_growth_forced_drops += 1
+            self._maybe_assert_invariants()
+            return True
+        return False
+
     def ensure_cpu_bounce_headroom(
             self, required_tokens: int, *, now_ns: int,
             protected_session: Optional[str] = None) -> Optional[int]:
@@ -1280,6 +1343,16 @@ class TieredPDKVLifecycle:
         p_bytes = self._per_rank_bytes(input_tokens)
         d_target = (
             self._per_rank_bytes(final_tokens) if needs_d else 0)
+        # Admission-time D sizing: the upfront policy gates on the final
+        # context, the prompt-upfront policy gates only on the prompt KV
+        # delivered by the P-to-D handoff.  Decode growth is charged at
+        # commit_d_ready under the prompt-upfront policy.
+        d_admission_target = (
+            d_target
+            if self.d_reservation_policy == D_RESERVATION_FINAL_UPFRONT
+            else (
+                self._per_rank_bytes(input_tokens) if needs_d else 0)
+        )
         p_owner = (
             f"node-{self.node_id}:p:prepare:{prepare_id}")
         d_owner = (
@@ -1297,8 +1370,8 @@ class TieredPDKVLifecycle:
             needs_d and not reusable_d)
         d_reserved = (
             0 if not needs_d
-            else d_target if full_d
-            else max(0, d_target - source.byte_count)
+            else d_admission_target if full_d
+            else max(0, d_admission_target - source.byte_count)
         )
         if (
             self.p_ledger.free_bytes < p_bytes
@@ -1904,6 +1977,37 @@ class TieredPDKVLifecycle:
             None if ticket.d_reuse_copy_id is None
             else self.copies.get(ticket.d_reuse_copy_id)
         )
+        if (
+            has_successor
+            and ticket.needs_d
+            and self.d_reservation_policy
+            == D_RESERVATION_PROMPT_UPFRONT
+        ):
+            removed_bytes = (
+                0 if ticket.d_owner is None
+                else self.d_ledger.owner_bytes(ticket.d_owner)
+            )
+            if (
+                reusable is not None
+                and reusable.pins == 0
+                and not ticket.full_d_reservation
+            ):
+                removed_bytes += self.d_ledger.owner_bytes(
+                    reusable.ledger_owner)
+            growth = max(
+                0,
+                ticket.d_target_bytes_per_rank - removed_bytes,
+            )
+            self.metrics.d_growth_bytes_per_rank += growth
+            while self.d_ledger.free_bytes < growth:
+                if not self._force_drop_idle_d(
+                        now_ns=now_ns,
+                        exclude_session=ticket.session_id):
+                    raise RuntimeError(
+                        "prompt-upfront D admission overflowed at "
+                        f"commit: growth={growth} bytes per rank has "
+                        f"free={self.d_ledger.free_bytes} and no "
+                        "idle D victim remains")
         if has_successor:
             next_version = record.version + 1
             if (
@@ -2365,11 +2469,14 @@ class TieredPDKVLifecycle:
 
 
 __all__ = [
+    "D_RESERVATION_FINAL_UPFRONT",
+    "D_RESERVATION_PROMPT_UPFRONT",
     "MAX_CONTEXT_TOKENS",
     "PrepareTicket",
     "RESTORE_EXECUTION_BULK",
     "RESTORE_EXECUTION_LAYERWISE",
     "ResumeSource",
+    "SUPPORTED_D_RESERVATION_POLICIES",
     "SSDExportStatus",
     "SSDExportTicket",
     "SUPPORTED_TIER_POLICIES",
