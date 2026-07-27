@@ -94,7 +94,7 @@ class LiveDormantPrefixScenarioTest(unittest.TestCase):
             EXPECTED_RESUME_PREFILL_SERVICE_NS_PER_EPOCH,
         )
         self.assertAlmostEqual(
-            service.resume_to_first_service_ratio, 0.983919827261605)
+            service.resume_to_first_service_ratio, 1.0171799325619386)
         self.assertEqual(service.declared_resume_cached_tokens, 120_336)
         self.assertEqual(service.operational_resume_hit_tokens, 120_335)
 

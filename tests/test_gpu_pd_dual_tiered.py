@@ -35,15 +35,17 @@ EXPECTED_32_CALL_SET_SHA256 = (
 EXPECTED_32_SESSION_SET_SHA256 = (
     "9e55735a822213008f526eeff838e41f7cb83710e6152b67a139ceee87e18b49"
 )
+# Pinned under the v2 kernel semantics (FlashDecoding decode model,
+# eta-on-compute with media streaming efficiency, capped launch floors).
 EXPECTED_32_COMPLETION_ORDER_SHA256 = {
     "hbm_lru_recompute": (
-        "64ef7232d53ea0bb966f4b691dcfc617fe344f46eb17696855f9406390038906"
+        "7617baa543bca36828e59f6c6888cba785d5f3928734caa39635b7fb35b67b6e"
     ),
     "ssd_direct": (
-        "dfb6f52f21b0e32a989687b4871a987445c9d825768a50a834f3e701e10dc27d"
+        "0c0d77361f242e2f891c9f96c0f21a5c0760d9e6c3684d4b6174aa3708b33cb5"
     ),
     "cpu_ssd": (
-        "dfb6f52f21b0e32a989687b4871a987445c9d825768a50a834f3e701e10dc27d"
+        "48f707f1219d87b37beae26916d70253bc503a8269c8d33b198063c87d4105b4"
     ),
 }
 

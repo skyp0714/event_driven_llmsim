@@ -48,7 +48,7 @@ class LivePressureScenarioTest(unittest.TestCase):
         )
         self.assertAlmostEqual(
             manifest.prefill_service.resume_to_first_service_ratio,
-            1.0082018268658028,
+            1.132992266509715,
         )
         self.assertEqual(
             manifest.kv_pressure.terminal_logical_kv_bytes_all_epochs,

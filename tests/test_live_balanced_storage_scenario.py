@@ -129,7 +129,7 @@ class LiveBalancedStorageScenarioTest(unittest.TestCase):
         )
         self.assertAlmostEqual(
             service.resume_to_first_service_ratio,
-            1.0000000029127045,
+            1.1691528639487239,
         )
 
     def test_custom_measurement_roster_and_seeded_plan_are_stable(self):

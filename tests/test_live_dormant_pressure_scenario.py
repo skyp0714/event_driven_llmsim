@@ -126,7 +126,7 @@ class LiveDormantPressureScenarioTest(unittest.TestCase):
         )
         self.assertAlmostEqual(
             service.resume_to_first_service_ratio,
-            1.009999325336282,
+            1.0449759856186969,
         )
         for epoch in self.scenario.epoch_sessions:
             self.assertEqual(len(epoch), EXPECTED_SESSIONS_PER_EPOCH)

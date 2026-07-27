@@ -121,7 +121,13 @@ class OnlineTraceCalibrationTests(unittest.TestCase):
             attribution = _generate(batch, directory)
 
             self.assertEqual(attribution["recompute_query_tokens"], 512)
+            # Under the v2 semantics the counterfactual half-size kernel
+            # carries a larger partial-wave penalty, so the clamped
+            # critical-path marginal can legitimately reach zero at this
+            # shape.  The node-sum marginal still attributes the frontier.
             self.assertGreater(
+                attribution["recompute_marginal_comp_node_sum_ns"], 0)
+            self.assertGreaterEqual(
                 attribution["recompute_marginal_comp_ns"], 0)
             self.assertLessEqual(
                 attribution["recompute_marginal_comp_ns"],

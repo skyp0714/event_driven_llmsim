@@ -25,6 +25,9 @@ from typing import Any, Mapping, Sequence
 from .h100_kernel_calibrated_prompt import (
     BF16_BYTES,
     H100_SMS,
+    KERNEL_SEMANTICS_V1,
+    KERNEL_SEMANTICS_V2,
+    MEDIA_STREAMING_EFFICIENCY,
     QWEN_EXPERT_INTERMEDIATE,
     QWEN_EXPERTS,
     QWEN_HEAD_DIM,
@@ -36,6 +39,7 @@ from .h100_kernel_calibrated_prompt import (
     QWEN_VOCAB_SIZE,
 )
 from .online_latency_model import (
+    DECODE_SPLITK_MIN_K_PER_SPLIT,
     H100_QWEN3_TP4_KERNEL_CALIBRATED,
     OnlineLatencyModelError,
     build_online_latency_model,
@@ -693,6 +697,9 @@ class FullModelHBFLatencyModel:
         self.layout = layout
         self.pcie_topology = topology
         self.band = base_provider.band
+        # Inherit the kernel semantics from the shared H100 provider so the
+        # HBM and HBF sides of any comparison always use one rule set.
+        self.semantics = base_provider.semantics
 
     def _fit(self, family: str):
         try:
@@ -785,24 +792,46 @@ class FullModelHBFLatencyModel:
             lpddr_bytes
             / (self.hardware.lpddr_bandwidth_gbps_per_card * 1e9)
         )
-        roofs = {
-            "compute": compute_seconds,
-            "hbf_read": hbf_seconds,
-            "lpddr": lpddr_seconds,
-        }
-        dominant = max(roofs, key=roofs.get)
-        calibrated_roof_seconds = max(
-            compute_seconds,
-            hbf_bandwidth_seconds,
-            lpddr_seconds,
-        )
-        seconds = (
-            hbf_fixed_seconds
-            + max(
-                fit.launch_floor_seconds,
-                calibrated_roof_seconds * fit.eta(self.band),
+        if self.semantics == KERNEL_SEMANTICS_V2:
+            # v2: the fitted residual describes compute inefficiency on the
+            # calibration device.  Memory terms on any medium pay one shared
+            # streaming efficiency instead of the whole kernel residual.
+            effective_terms = {
+                "compute": compute_seconds * fit.eta(self.band),
+                "hbf_read": (
+                    hbf_bandwidth_seconds
+                    / MEDIA_STREAMING_EFFICIENCY
+                ),
+                "lpddr": (
+                    lpddr_seconds / MEDIA_STREAMING_EFFICIENCY),
+            }
+            dominant = max(effective_terms, key=effective_terms.get)
+            seconds = (
+                hbf_fixed_seconds
+                + max(
+                    fit.launch_floor_for(self.semantics),
+                    *effective_terms.values(),
+                )
             )
-        )
+        else:
+            roofs = {
+                "compute": compute_seconds,
+                "hbf_read": hbf_seconds,
+                "lpddr": lpddr_seconds,
+            }
+            dominant = max(roofs, key=roofs.get)
+            calibrated_roof_seconds = max(
+                compute_seconds,
+                hbf_bandwidth_seconds,
+                lpddr_seconds,
+            )
+            seconds = (
+                hbf_fixed_seconds
+                + max(
+                    fit.launch_floor_seconds,
+                    calibrated_roof_seconds * fit.eta(self.band),
+                )
+            )
         return KernelLatency(
             family=family,
             latency_ns=self._ns(seconds),
@@ -964,6 +993,79 @@ class FullModelHBFLatencyModel:
             wave_penalty=work[3],
         )
 
+    def _splitk_decode_seconds(
+            self, *, batch_size: int, flops: float,
+            hbf_bytes: float, lpddr_bytes: float,
+            k_per_sequence: float) -> float:
+        """Model a split-K decode kernel over the HBF/LPDDR media mix.
+
+        Mirrors the online provider's FlashDecoding model: occupancy is
+        bounded by K length rather than batch size, the saturated legacy
+        residual bounds achieved bandwidth, and a split-reduction pass over
+        LPDDR-resident partials is charged explicitly.  The demand HBF
+        fixed access is serialized once, as in every other HBF kernel.
+        """
+
+        q_heads = self.layout.attention_q_heads_per_rank
+        base_blocks = max(1, batch_size * q_heads)
+        max_splits = max(1, math.ceil(
+            k_per_sequence / DECODE_SPLITK_MIN_K_PER_SPLIT))
+        split_count = min(
+            max_splits,
+            max(1, math.ceil(H100_SMS / base_blocks)),
+        )
+        occupancy = min(
+            1.0, base_blocks * split_count / H100_SMS)
+        saturated = self.base_provider._decode_saturated_fit
+        eta_bandwidth = max(1.0, saturated.eta(self.band))
+        compute_seconds = (
+            flops
+            / (self.hardware.gpu_peak_tflops_per_card * 1e12)
+        )
+        hbf_bandwidth_seconds = (
+            self._hbf_bandwidth_seconds(hbf_bytes)
+            / occupancy
+            * eta_bandwidth
+        )
+        lpddr_seconds = (
+            lpddr_bytes
+            / (self.hardware.lpddr_bandwidth_gbps_per_card * 1e9)
+            / occupancy
+            * eta_bandwidth
+        )
+        launch_seconds = (
+            self.base_provider.decode_attention_fits[0]
+            .launch_floor_seconds
+        )
+        reduction_seconds = 0.0
+        if split_count > 1:
+            partial_state_bytes = (
+                batch_size
+                * q_heads
+                * split_count
+                * (QWEN_HEAD_DIM + 2)
+                * ONLINE_SOFTMAX_ACCUMULATOR_BYTES
+            )
+            reduction_seconds = launch_seconds + (
+                2.0
+                * partial_state_bytes
+                / (
+                    self.hardware.lpddr_bandwidth_gbps_per_card
+                    * 1e9
+                    * MEDIA_STREAMING_EFFICIENCY
+                )
+            )
+        return (
+            self._hbf_fixed_read_seconds(hbf_bytes)
+            + launch_seconds
+            + max(
+                compute_seconds,
+                hbf_bandwidth_seconds,
+                lpddr_seconds,
+            )
+            + reduction_seconds
+        )
+
     def _decode_kernel_for_batch(
             self, *, hbf_k: Sequence[int],
             lpddr_k: Sequence[int],
@@ -1000,9 +1102,36 @@ class FullModelHBFLatencyModel:
             wave_penalty=work[3],
         )
 
-        # Decode has a separately fitted launch floor/residual. Re-evaluate
-        # every smaller batch at the same per-sequence media mix to preserve
-        # the calibrated monotone upper envelope.
+        if self.semantics == KERNEL_SEMANTICS_V2:
+            rank_k_per_sequence = max(
+                1.0,
+                effective_total
+                / batch_size
+                / self.layout.context_partition_factor,
+            )
+            best_seconds = self._splitk_decode_seconds(
+                batch_size=batch_size,
+                flops=work[0],
+                hbf_bytes=work[1],
+                lpddr_bytes=work[2],
+                k_per_sequence=rank_k_per_sequence,
+            )
+            return KernelLatency(
+                family="decode_attention",
+                latency_ns=self._ns(best_seconds),
+                latency_seconds=best_seconds,
+                flops=actual.flops,
+                hbf_read_bytes=actual.hbf_read_bytes,
+                lpddr_bytes=actual.lpddr_bytes,
+                compute_roof_ns=actual.compute_roof_ns,
+                hbf_roof_ns=actual.hbf_roof_ns,
+                lpddr_roof_ns=actual.lpddr_roof_ns,
+                dominant_roof=actual.dominant_roof,
+            )
+
+        # v1: decode has a separately fitted launch floor/residual.
+        # Re-evaluate every smaller batch at the same per-sequence media mix
+        # to preserve the calibrated monotone upper envelope.
         best_seconds = 0.0
         for candidate in range(1, batch_size + 1):
             fraction = candidate / batch_size
@@ -1118,11 +1247,20 @@ class FullModelHBFLatencyModel:
             prefill_lpddr_seconds,
         )
         prefill_fit = self._fit("prefill_attention")
+        if self.semantics == KERNEL_SEMANTICS_V2:
+            prefill_extra_seconds = max(
+                prefill_compute_seconds * prefill_fit.eta(self.band),
+                prefill_hbf_bandwidth_seconds
+                / MEDIA_STREAMING_EFFICIENCY,
+                prefill_lpddr_seconds / MEDIA_STREAMING_EFFICIENCY,
+            )
+        else:
+            prefill_extra_seconds = (
+                prefill_roof_seconds * prefill_fit.eta(self.band))
         latency_seconds = (
             decode.latency_seconds
             + prefill_hbf_fixed_seconds
-            + prefill_roof_seconds
-            * prefill_fit.eta(self.band)
+            + prefill_extra_seconds
         )
         latency_ns = self._ns(latency_seconds)
         combined_hbf_bytes = (
@@ -1267,8 +1405,11 @@ class FullModelHBFLatencyModel:
         )
         # Per head: combine two max/sum states and rescale/add/divide the two
         # D-dimensional partial outputs.  Transcendentals are counted as one
-        # analytical operation each; the calibrated residual below captures
-        # the empirical efficiency/launch floor.
+        # analytical operation each.  The merge is a streaming elementwise
+        # pass, so it uses the elementwise "norm" residual: the previous
+        # "prefill_attention" residual (7.6x) described FlashAttention
+        # compute inefficiency and inflated this bandwidth-bound kernel by
+        # nearly an order of magnitude.
         flops = (
             queries
             * owned_q_heads
@@ -1282,12 +1423,19 @@ class FullModelHBFLatencyModel:
             lpddr_bytes
             / (self.hardware.lpddr_bandwidth_gbps_per_card * 1e9)
         )
-        fit = self._fit("prefill_attention")
-        roof_seconds = max(compute_seconds, lpddr_seconds)
-        latency_seconds = max(
-            fit.launch_floor_seconds,
-            roof_seconds * fit.eta(self.band),
-        )
+        fit = self._fit("norm")
+        if self.semantics == KERNEL_SEMANTICS_V2:
+            latency_seconds = max(
+                fit.launch_floor_for(self.semantics),
+                compute_seconds * fit.eta(self.band),
+                lpddr_seconds / MEDIA_STREAMING_EFFICIENCY,
+            )
+        else:
+            roof_seconds = max(compute_seconds, lpddr_seconds)
+            latency_seconds = max(
+                fit.launch_floor_seconds,
+                roof_seconds * fit.eta(self.band),
+            )
         return KernelLatency(
             family="online_softmax_merge",
             latency_ns=self._ns(latency_seconds),
@@ -1303,6 +1451,42 @@ class FullModelHBFLatencyModel:
                 if compute_seconds >= lpddr_seconds
                 else "lpddr"
             ),
+        )
+
+    def _sampler_kernel(self, sequences: int) -> KernelLatency:
+        """One fitted launch floor plus a memory pass over rank logits."""
+
+        sampler_fit = self._fit("lm_head")
+        sampler_bytes = (
+            sequences
+            * (QWEN_VOCAB_SIZE // self.layout.tp_size)
+            * BF16_BYTES
+        )
+        lpddr_roof_seconds = (
+            sampler_bytes
+            / (self.hardware.lpddr_bandwidth_gbps_per_card * 1e9)
+        )
+        if self.semantics == KERNEL_SEMANTICS_V2:
+            sampler_seconds = max(
+                sampler_fit.launch_floor_for(self.semantics),
+                lpddr_roof_seconds / MEDIA_STREAMING_EFFICIENCY,
+            )
+        else:
+            sampler_seconds = max(
+                sampler_fit.launch_floor_seconds,
+                lpddr_roof_seconds,
+            )
+        return KernelLatency(
+            family="sampler",
+            latency_ns=self._ns(sampler_seconds),
+            latency_seconds=sampler_seconds,
+            flops=0.0,
+            hbf_read_bytes=0.0,
+            lpddr_bytes=float(sampler_bytes),
+            compute_roof_ns=0,
+            hbf_roof_ns=0,
+            lpddr_roof_ns=self._ns(lpddr_roof_seconds),
+            dominant_roof="lpddr",
         )
 
     def _moe(self, total_tokens: int) -> tuple[KernelLatency, ...]:
@@ -1457,29 +1641,7 @@ class FullModelHBFLatencyModel:
             QWEN_HIDDEN_SIZE,
             QWEN_VOCAB_SIZE // tp,
         )
-        sampler_fit = self._fit("lm_head")
-        sampler_bytes = (
-            sequences * (QWEN_VOCAB_SIZE // tp) * BF16_BYTES)
-        sampler_seconds = max(
-            sampler_fit.launch_floor_seconds,
-            sampler_bytes
-            / (self.hardware.lpddr_bandwidth_gbps_per_card * 1e9),
-        )
-        sampler = KernelLatency(
-            family="sampler",
-            latency_ns=self._ns(sampler_seconds),
-            latency_seconds=sampler_seconds,
-            flops=0.0,
-            hbf_read_bytes=0.0,
-            lpddr_bytes=float(sampler_bytes),
-            compute_roof_ns=0,
-            hbf_roof_ns=0,
-            lpddr_roof_ns=self._ns(
-                sampler_bytes
-                / (self.hardware.lpddr_bandwidth_gbps_per_card * 1e9)
-            ),
-            dominant_roof="lpddr",
-        )
+        sampler = self._sampler_kernel(sequences)
 
         kv_layout_semantics = self.layout.kv_layout_semantics
 
@@ -1764,32 +1926,7 @@ class FullModelHBFLatencyModel:
             QWEN_HIDDEN_SIZE,
             QWEN_VOCAB_SIZE // tp,
         )
-        sampler_fit = self._fit("lm_head")
-        sampler_bytes = (
-            sequences * (QWEN_VOCAB_SIZE // tp) * BF16_BYTES)
-        sampler_seconds = max(
-            sampler_fit.launch_floor_seconds,
-            sampler_bytes
-            / (self.hardware.lpddr_bandwidth_gbps_per_card * 1e9),
-        )
-        sampler = KernelLatency(
-            family="sampler",
-            latency_ns=self._ns(sampler_seconds),
-            latency_seconds=sampler_seconds,
-            flops=0.0,
-            hbf_read_bytes=0.0,
-            lpddr_bytes=float(sampler_bytes),
-            compute_roof_ns=0,
-            hbf_roof_ns=0,
-            lpddr_roof_ns=self._ns(
-                sampler_bytes
-                / (
-                    self.hardware.lpddr_bandwidth_gbps_per_card
-                    * 1e9
-                )
-            ),
-            dominant_roof="lpddr",
-        )
+        sampler = self._sampler_kernel(sequences)
 
         dense_per_layer = (
             2 * layernorm.latency_ns
@@ -2198,6 +2335,13 @@ class FullModelHBFLatencyModel:
             "schema_version": SCHEMA_VERSION,
             "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
             "execution_scope": "full_transformer_end_to_end",
+            "kernel_semantics": self.semantics,
+            "media_streaming_efficiency": (
+                MEDIA_STREAMING_EFFICIENCY
+                if self.semantics == KERNEL_SEMANTICS_V2 else None
+            ),
+            "decode_execution_model": (
+                self.base_provider.decode_execution_model),
             "layout": asdict(self.layout),
             "hardware": asdict(self.hardware),
             "compute_device": {

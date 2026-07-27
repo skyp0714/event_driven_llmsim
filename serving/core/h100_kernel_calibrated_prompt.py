@@ -21,6 +21,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import math
+import os
 import statistics
 from collections import OrderedDict
 from dataclasses import asdict, dataclass
@@ -32,6 +33,70 @@ H100_DENSE_BF16_FLOPS_PER_SECOND = 989.5e12
 H100_HBM_BYTES_PER_SECOND = 3.35e12
 H100_SMS = 132
 BF16_BYTES = 2
+
+# Kernel latency semantics.
+#
+# ``v1`` is the original behavior: one fitted residual multiplies the whole
+# max(compute, bytes) roofline, and the raw fitted launch floor applies.
+# Two known biases follow from v1: the residual of a kernel measured on HBM
+# is re-applied verbatim to a *different* medium's bandwidth roofline in the
+# HBF model (double-counting occupancy against LPDDR/HBF), and the legacy
+# per-op measurements embed per-op device synchronization, which inflates
+# elementwise-family floors (17-43 us) and residuals (eta 11-22) far beyond
+# real fused-kernel behavior.
+#
+# ``v2`` fixes both: the fitted residual applies to the compute roofline
+# only, every explicit memory roofline term (HBM, HBF, LPDDR) instead pays
+# one shared streaming efficiency, and fitted launch floors are capped at a
+# kernel-launch scale.  The raw fits are preserved unchanged; v2 is applied
+# at prediction time.
+KERNEL_SEMANTICS_V1 = "v1_eta_on_max_roofline"
+KERNEL_SEMANTICS_V2 = "v2_eta_on_compute_media_streaming"
+SUPPORTED_KERNEL_SEMANTICS = (
+    KERNEL_SEMANTICS_V1,
+    KERNEL_SEMANTICS_V2,
+)
+DEFAULT_KERNEL_SEMANTICS = KERNEL_SEMANTICS_V2
+KERNEL_SEMANTICS_ENV_VAR = "LLMSIM_KERNEL_SEMANTICS"
+KERNEL_SEMANTICS_ENV_ALIASES = {
+    "v1": KERNEL_SEMANTICS_V1,
+    "v2": KERNEL_SEMANTICS_V2,
+    KERNEL_SEMANTICS_V1: KERNEL_SEMANTICS_V1,
+    KERNEL_SEMANTICS_V2: KERNEL_SEMANTICS_V2,
+}
+
+# Achieved fraction of peak memory bandwidth for streaming access under the
+# v2 semantics.  Empirical anchor: the legacy TP4 GEMM families are
+# weight-streaming (bandwidth-bound) at small M, and their fitted residuals
+# imply 2.1-2.6 TB/s of the 3.35 TB/s HBM peak (eta 1.27-1.56).  v2 charges
+# this one streaming efficiency on every explicit memory roofline term
+# instead of multiplying a whole measured-kernel residual into another
+# medium's roofline.
+MEDIA_STREAMING_EFFICIENCY = 0.75
+
+# v2 cap for fitted launch floors.  The legacy per-op measurements include
+# per-op device synchronization, so their smallest-token latencies conflate
+# launch cost with the *source* model's own weight-streaming time (up to
+# 43 us).  Transferring those as absolute floors to a target model with
+# different weight shapes is a category error; the roofline terms already
+# charge the target model's actual bytes.  The cap keeps a realistic fused
+# kernel launch cost.
+LAUNCH_FLOOR_CAP_SECONDS = 5.0e-6
+
+
+def resolve_kernel_semantics(value: str | None = None) -> str:
+    """Return the requested kernel semantics, honoring the env override."""
+
+    raw = value
+    if raw is None:
+        raw = os.environ.get(
+            KERNEL_SEMANTICS_ENV_VAR, DEFAULT_KERNEL_SEMANTICS)
+    resolved = KERNEL_SEMANTICS_ENV_ALIASES.get(raw)
+    if resolved is None:
+        raise ValueError(
+            f"unsupported kernel semantics {raw!r}; supported: "
+            + ", ".join(SUPPORTED_KERNEL_SEMANTICS))
+    return resolved
 
 QWEN_HIDDEN_SIZE = 2_048
 QWEN_HEAD_DIM = 128
@@ -231,6 +296,45 @@ class KernelFit:
         if band == "slow":
             return self.eta_slow
         raise ValueError(f"unsupported calibration band: {band}")
+
+    def launch_floor_for(self, semantics: str) -> float:
+        if semantics == KERNEL_SEMANTICS_V1:
+            return self.launch_floor_seconds
+        return min(self.launch_floor_seconds, LAUNCH_FLOOR_CAP_SECONDS)
+
+
+def predict_kernel_seconds(
+        fit: "KernelFit", work: KernelWork, *, band: str,
+        semantics: str, include_floor: bool = True) -> float:
+    """Predict one kernel under the selected latency semantics.
+
+    v1 reproduces the original behavior byte-for-byte.  v2 applies the
+    fitted residual to the compute roofline only and charges the shared
+    streaming efficiency on the memory roofline term.
+    """
+
+    if semantics == KERNEL_SEMANTICS_V1:
+        floor = fit.launch_floor_seconds if include_floor else 0.0
+        return max(
+            floor,
+            work.roofline_seconds() * fit.eta(band),
+        )
+    if semantics != KERNEL_SEMANTICS_V2:
+        raise ValueError(
+            f"unsupported kernel semantics {semantics!r}")
+    floor = fit.launch_floor_for(semantics) if include_floor else 0.0
+    compute_seconds = (
+        work.flops
+        / H100_DENSE_BF16_FLOPS_PER_SECOND
+        * work.wave_penalty
+    )
+    media_seconds = work.bytes / (
+        H100_HBM_BYTES_PER_SECOND * MEDIA_STREAMING_EFFICIENCY)
+    return max(
+        floor,
+        compute_seconds * fit.eta(band),
+        media_seconds,
+    )
 
 
 @dataclass(frozen=True)
@@ -1203,12 +1307,21 @@ class H100KernelCalibratedPromptModel:
 
 __all__ = [
     "CALIBRATION_SOURCE_PATHS",
+    "DEFAULT_KERNEL_SEMANTICS",
     "H100KernelCalibratedPromptModel",
     "H100TP4Calibration",
+    "KERNEL_SEMANTICS_ENV_VAR",
+    "KERNEL_SEMANTICS_V1",
+    "KERNEL_SEMANTICS_V2",
     "KernelFit",
     "KernelWork",
     "LATENCY_CACHE_MAX_ENTRIES",
+    "LAUNCH_FLOOR_CAP_SECONDS",
     "LEGACY_PRODUCER_SOURCE_PATHS",
+    "MEDIA_STREAMING_EFFICIENCY",
+    "SUPPORTED_KERNEL_SEMANTICS",
     "_bottom_right_causal_pairs",
     "fit_h100_tp4_calibration",
+    "predict_kernel_seconds",
+    "resolve_kernel_semantics",
 ]

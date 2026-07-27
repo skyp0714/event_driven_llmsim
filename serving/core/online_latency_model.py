@@ -18,6 +18,7 @@ import hashlib
 import json
 import math
 import statistics
+import warnings
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -26,10 +27,14 @@ from typing import Any, Mapping, Sequence
 from .h100_kernel_calibrated_prompt import (
     BF16_BYTES,
     H100TP4Calibration,
+    H100_DENSE_BF16_FLOPS_PER_SECOND,
     H100_HBM_BYTES_PER_SECOND,
     H100_SMS,
+    KERNEL_SEMANTICS_V1,
+    KERNEL_SEMANTICS_V2,
     LLAMA70_ATTENTION,
     LLAMA70_SPEC,
+    MEDIA_STREAMING_EFFICIENCY,
     MIXTRAL_ATTENTION,
     MIXTRAL_SPEC,
     QWEN_EP,
@@ -50,7 +55,9 @@ from .h100_kernel_calibrated_prompt import (
     _elementwise_work,
     _gemm_work,
     fit_h100_tp4_calibration,
+    predict_kernel_seconds,
     qwen_long_context_experiment_contract,
+    resolve_kernel_semantics,
 )
 
 
@@ -64,6 +71,27 @@ TARGET_MODEL = "Qwen/Qwen3-30B-A3B-Instruct-2507"
 TARGET_MAX_CONTEXT = QWEN_VALIDATED_RUNTIME_MAX_MODEL_LEN
 TARGET_PREFILL_CHUNK = 131_072
 DECODE_SKEW_ALPHA = 0.093
+
+# Calibration-source coverage bounds used for extrapolation warnings.
+SOURCE_PREFILL_Q_MAX = 1_024
+SOURCE_PREFILL_K_MAX = 2_016
+SOURCE_DENSE_TOKENS_MAX = 2_048
+
+# FlashDecoding-style split-K execution (v2 semantics).  The legacy decode
+# sweep ran flash_attn_varlen_func without split-K, so a small decode batch
+# left most SMs idle and its fitted residuals encode that idle time (eta up
+# to 88 at batch 1, i.e. ~1% of peak bandwidth).  Production decode kernels
+# (FlashDecoding, FlashInfer) split the K dimension across CTAs, so
+# occupancy is limited by K length rather than batch size.  v2 models that
+# kernel: bandwidth-bound with a saturated-regime residual, an explicit
+# split-K occupancy term, and a split-reduction pass.
+DECODE_SPLITK_MIN_K_PER_SPLIT = 256
+DECODE_EXECUTION_LEGACY_NO_SPLITK = "legacy_varlen_no_splitk"
+DECODE_EXECUTION_FLASHDECODING_SPLITK = "flashdecoding_splitk"
+
+
+class CalibrationExtrapolationWarning(UserWarning):
+    """Emitted once per direction when a batch leaves calibrated coverage."""
 
 
 class OnlineLatencyModelError(ValueError):
@@ -483,7 +511,8 @@ class H100Qwen3OnlineLatencyModel:
     def __init__(
             self, *, calibration: H100TP4Calibration,
             decode_attention_fits: Sequence[DecodeAttentionFit],
-            band: str = "central", target_config_sha256: str) -> None:
+            band: str = "central", target_config_sha256: str,
+            semantics: str | None = None) -> None:
         if band not in {"fast", "central", "slow"}:
             raise OnlineLatencyModelError(
                 f"unsupported calibration band: {band!r}"
@@ -496,6 +525,55 @@ class H100Qwen3OnlineLatencyModel:
         self.decode_attention_fits = tuple(decode_attention_fits)
         self.band = band
         self.target_config_sha256 = target_config_sha256
+        self.semantics = resolve_kernel_semantics(semantics)
+        # The saturated decode residual anchors the v2 FlashDecoding model:
+        # the batch regime with the smallest fitted residual is the only one
+        # where the legacy kernel actually approached peak HBM bandwidth.
+        self._decode_saturated_fit = min(
+            self.decode_attention_fits,
+            key=lambda fit: fit.eta_central,
+        )
+        self._extrapolation_counts: dict[str, int] = {}
+        self._extrapolation_max_factor: dict[str, float] = {}
+
+    @property
+    def decode_execution_model(self) -> str:
+        if self.semantics == KERNEL_SEMANTICS_V2:
+            return DECODE_EXECUTION_FLASHDECODING_SPLITK
+        return DECODE_EXECUTION_LEGACY_NO_SPLITK
+
+    def _note_extrapolation(
+            self, key: str, observed: float, bound: float) -> None:
+        if bound <= 0 or observed <= bound:
+            return
+        factor = observed / bound
+        first = key not in self._extrapolation_counts
+        self._extrapolation_counts[key] = (
+            self._extrapolation_counts.get(key, 0) + 1)
+        self._extrapolation_max_factor[key] = max(
+            self._extrapolation_max_factor.get(key, 0.0), factor)
+        if first:
+            warnings.warn(
+                f"analytical latency extrapolates beyond calibrated "
+                f"coverage: {key} observed={observed:g} exceeds "
+                f"source bound {bound:g} ({factor:.1f}x); further "
+                "occurrences are counted silently (see "
+                "extrapolation_report())",
+                CalibrationExtrapolationWarning,
+                stacklevel=3,
+            )
+
+    def extrapolation_report(self) -> Mapping[str, Any]:
+        """Return runtime extrapolation counters (not part of provenance)."""
+
+        return {
+            key: {
+                "events": self._extrapolation_counts[key],
+                "max_factor_beyond_source": (
+                    self._extrapolation_max_factor[key]),
+            }
+            for key in sorted(self._extrapolation_counts)
+        }
 
     @staticmethod
     def _ns(seconds: float) -> int:
@@ -517,10 +595,8 @@ class H100Qwen3OnlineLatencyModel:
             raise OnlineLatencyModelError(
                 f"missing fitted H100 kernel family {family!r}"
             ) from exc
-        return max(
-            kernel_fit.launch_floor_seconds,
-            work.roofline_seconds() * kernel_fit.eta(self.band),
-        )
+        return predict_kernel_seconds(
+            kernel_fit, work, band=self.band, semantics=self.semantics)
 
     def _decode_fit(self, batch_size: int) -> DecodeAttentionFit:
         for fit in self.decode_attention_fits:
@@ -609,6 +685,32 @@ class H100Qwen3OnlineLatencyModel:
             raise OnlineLatencyModelError(
                 "recompute_q must align with prefill_q"
             )
+        if shape.prefill_q:
+            self._note_extrapolation(
+                "prefill_attention_query_tokens",
+                max(shape.prefill_q),
+                SOURCE_PREFILL_Q_MAX,
+            )
+            self._note_extrapolation(
+                "prefill_attention_k_tokens",
+                max(
+                    q + k
+                    for q, k in zip(shape.prefill_q, shape.prefill_k)
+                ),
+                SOURCE_PREFILL_K_MAX,
+            )
+        self._note_extrapolation(
+            "dense_total_tokens",
+            shape.total_tokens,
+            SOURCE_DENSE_TOKENS_MAX,
+        )
+        if shape.decode_k:
+            decode_fit = self._decode_fit(len(shape.decode_k))
+            self._note_extrapolation(
+                "decode_attention_k_per_sequence",
+                max(shape.decode_k),
+                decode_fit.source_k_per_sequence_max,
+            )
 
     def dense_latency_ns(
             self, layer_name: str, total_tokens: int,
@@ -663,10 +765,19 @@ class H100Qwen3OnlineLatencyModel:
                 * (QWEN_VOCAB_SIZE // QWEN_TP)
                 * BF16_BYTES
             )
-            seconds = max(
-                fit.launch_floor_seconds,
-                logits_bytes / H100_HBM_BYTES_PER_SECOND,
-            )
+            if self.semantics == KERNEL_SEMANTICS_V2:
+                seconds = max(
+                    fit.launch_floor_for(self.semantics),
+                    logits_bytes / (
+                        H100_HBM_BYTES_PER_SECOND
+                        * MEDIA_STREAMING_EFFICIENCY
+                    ),
+                )
+            else:
+                seconds = max(
+                    fit.launch_floor_seconds,
+                    logits_bytes / H100_HBM_BYTES_PER_SECOND,
+                )
         else:
             raise OnlineLatencyModelError(
                 f"unsupported calibrated dense layer: {layer_name!r}"
@@ -721,13 +832,94 @@ class H100Qwen3OnlineLatencyModel:
             seconds = (
                 self._decode_attention_seconds(
                     len(shape.decode_k), effective_total_k)
-                + (prefill_work.roofline_seconds()
-                 * prefill_fit.eta(self.band))
+                + predict_kernel_seconds(
+                    prefill_fit, prefill_work,
+                    band=self.band, semantics=self.semantics,
+                    include_floor=False,
+                )
             )
         return self._ns(seconds)
 
     @lru_cache(maxsize=131_072)
     def _decode_attention_seconds(
+            self, batch_size: int, total_k_tokens: int) -> float:
+        if self.semantics == KERNEL_SEMANTICS_V2:
+            return self._flashdecoding_decode_seconds(
+                batch_size, total_k_tokens)
+        return self._legacy_decode_envelope_seconds(
+            batch_size, total_k_tokens)
+
+    def _flashdecoding_decode_seconds(
+            self, batch_size: int, total_k_tokens: int) -> float:
+        """Model a split-K (FlashDecoding-class) decode attention kernel.
+
+        The legacy sweep's kernel launched one CTA per (sequence, Q head),
+        so small batches ran at a few percent of peak HBM bandwidth and the
+        fitted residuals encode that idle time.  Split-K kernels partition
+        each sequence's K dimension across additional CTAs, so occupancy is
+        bounded by K length, not batch size.  The model keeps the legacy
+        data's *saturated* residual (the batch regime that actually filled
+        the machine), an explicit occupancy term for genuinely short K, and
+        a split-reduction pass.
+        """
+
+        if batch_size <= 0 or total_k_tokens < batch_size:
+            raise OnlineLatencyModelError(
+                "invalid decode shape for split-K decode model"
+            )
+        q_heads = QWEN_Q_HEADS // QWEN_TP
+        work = _decode_work(
+            batch_size, total_k_tokens,
+            q_heads_per_rank=q_heads,
+            kv_heads_per_rank=QWEN_KV_HEADS // QWEN_TP,
+            head_dim=QWEN_HEAD_DIM,
+        )
+        base_blocks = batch_size * q_heads
+        k_per_sequence = total_k_tokens / batch_size
+        max_splits = max(1, math.ceil(
+            k_per_sequence / DECODE_SPLITK_MIN_K_PER_SPLIT))
+        split_count = min(
+            max_splits,
+            max(1, math.ceil(H100_SMS / base_blocks)),
+        )
+        occupancy = min(
+            1.0, base_blocks * split_count / H100_SMS)
+        saturated = self._decode_saturated_fit
+        eta_bandwidth = max(1.0, saturated.eta(self.band))
+        compute_seconds = (
+            work.flops / H100_DENSE_BF16_FLOPS_PER_SECOND)
+        bandwidth_seconds = (
+            work.bytes
+            / (H100_HBM_BYTES_PER_SECOND * occupancy)
+            * eta_bandwidth
+        )
+        # A single-kernel launch floor: the batch-1 legacy anchor is the
+        # only floor free of multi-sequence host-side batch preparation.
+        launch_seconds = (
+            self.decode_attention_fits[0].launch_floor_seconds)
+        reduction_seconds = 0.0
+        if split_count > 1:
+            partial_state_bytes = (
+                batch_size
+                * q_heads
+                * split_count
+                * (QWEN_HEAD_DIM + 2)
+                * 4
+            )
+            reduction_seconds = launch_seconds + (
+                2.0 * partial_state_bytes
+                / (
+                    H100_HBM_BYTES_PER_SECOND
+                    * MEDIA_STREAMING_EFFICIENCY
+                )
+            )
+        return (
+            launch_seconds
+            + max(compute_seconds, bandwidth_seconds)
+            + reduction_seconds
+        )
+
+    def _legacy_decode_envelope_seconds(
             self, batch_size: int, total_k_tokens: int) -> float:
         """Return a batch-monotone, roofline-bounded decode prediction.
 
@@ -1029,6 +1221,16 @@ class H100Qwen3OnlineLatencyModel:
             "schema_version": 2,
             "name": H100_QWEN3_TP4_KERNEL_CALIBRATED,
             "scope": "online_trace_comp_nodes_only",
+            "kernel_semantics": self.semantics,
+            "decode_execution_model": self.decode_execution_model,
+            "media_streaming_efficiency": (
+                MEDIA_STREAMING_EFFICIENCY
+                if self.semantics == KERNEL_SEMANTICS_V2 else None
+            ),
+            "decode_splitk_min_k_per_split": (
+                DECODE_SPLITK_MIN_K_PER_SPLIT
+                if self.semantics == KERNEL_SEMANTICS_V2 else None
+            ),
             "collectives_included_in_comp_time": False,
             "astra_collectives_remain_authoritative": True,
             "compute_accounting": {
@@ -1054,9 +1256,19 @@ class H100Qwen3OnlineLatencyModel:
             "source_sha256": base["source_sha256"],
             "producer_source_sha256": base["producer_source_sha256"],
             "kernel_equation": (
-                "prefill/dense: t=max(t_launch,eta*t_roof); "
-                "decode-attention: t=t_launch+eta*t_roof; "
-                "t_roof=max(F/P_peak*u,bytes/BW_peak)"
+                (
+                    "prefill/dense: t=max(t_launch,eta*t_roof); "
+                    "decode-attention: t=t_launch+eta*t_roof; "
+                    "t_roof=max(F/P_peak*u,bytes/BW_peak)"
+                )
+                if self.semantics == KERNEL_SEMANTICS_V1
+                else (
+                    "prefill/dense: t=max(t_launch_capped,"
+                    "eta*F/P_peak*u,bytes/(BW_peak*eff_media)); "
+                    "decode-attention: t=t_launch+"
+                    "max(F/P_peak,eta_sat*bytes/(BW_peak*occ_splitk))"
+                    "+t_split_reduce"
+                )
             ),
             "decode_attention_fits": [
                 asdict(fit) for fit in self.decode_attention_fits
@@ -1170,10 +1382,20 @@ def validate_online_latency_contract(
         )
 
 
-@lru_cache(maxsize=3)
 def build_online_latency_model(
         name: str, repo_root_text: str, target_config_sha256: str,
-        band: str = "central") -> H100Qwen3OnlineLatencyModel:
+        band: str = "central",
+        semantics: str | None = None) -> H100Qwen3OnlineLatencyModel:
+    return _build_online_latency_model_cached(
+        name, repo_root_text, target_config_sha256, band,
+        resolve_kernel_semantics(semantics),
+    )
+
+
+@lru_cache(maxsize=6)
+def _build_online_latency_model_cached(
+        name: str, repo_root_text: str, target_config_sha256: str,
+        band: str, semantics: str) -> H100Qwen3OnlineLatencyModel:
     repo_root = Path(repo_root_text)
     if name != H100_QWEN3_TP4_KERNEL_CALIBRATED:
         raise OnlineLatencyModelError(
@@ -1193,6 +1415,7 @@ def build_online_latency_model(
         decode_attention_fits=_fit_decode_attention(repo_root),
         band=band,
         target_config_sha256=target_config_sha256,
+        semantics=semantics,
     )
 
 
@@ -1236,6 +1459,10 @@ def write_online_latency_provenance(
 
 
 __all__ = [
+    "CalibrationExtrapolationWarning",
+    "DECODE_EXECUTION_FLASHDECODING_SPLITK",
+    "DECODE_EXECUTION_LEGACY_NO_SPLITK",
+    "DECODE_SPLITK_MIN_K_PER_SPLIT",
     "H100_QWEN3_TP4_KERNEL_CALIBRATED",
     "H100Qwen3OnlineLatencyModel",
     "OnlineBatchShape",

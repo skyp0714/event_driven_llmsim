@@ -192,7 +192,10 @@ class OnlineLatencyModelTests(unittest.TestCase):
         self.assertLess(cold_seconds, 60.0)
         self.assertGreater(final_seconds, cold_seconds)
         self.assertLess(final_seconds, 600.0)
-        self.assertGreater(decode_seconds, 0.05)
+        # v2 FlashDecoding semantics: a one-sequence 1M-context decode is
+        # HBM-bandwidth-bound (~0.5 GB of KV per rank per layer), not
+        # launch-bound, so the credible window is milliseconds.
+        self.assertGreater(decode_seconds, 0.005)
         self.assertLess(decode_seconds, 5.0)
         with self.assertRaisesRegex(
                 OnlineLatencyModelError, "scheduler-generated"):

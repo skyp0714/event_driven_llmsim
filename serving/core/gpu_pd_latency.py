@@ -14,9 +14,11 @@ from .h100_kernel_calibrated_prompt import (
     BF16_BYTES,
     H100_DENSE_BF16_FLOPS_PER_SECOND,
     H100_HBM_BYTES_PER_SECOND,
+    KernelWork,
     QWEN_EXPERTS,
     QWEN_HIDDEN_SIZE,
     QWEN_LAYERS,
+    predict_kernel_seconds,
 )
 from .hbf_full_model_latency import (
     COLLECTIVE_FIXED_LATENCY_SEMANTICS,
@@ -320,25 +322,24 @@ class P4D4LatencyModel:
         return int(math.ceil(seconds * 1e9))
 
     def _router_ns(self, total_tokens: int) -> int:
-        flops = (
-            2.0
-            * total_tokens
-            * QWEN_HIDDEN_SIZE
-            * QWEN_EXPERTS
-        )
-        hbm_bytes = BF16_BYTES * (
-            total_tokens * QWEN_HIDDEN_SIZE
-            + QWEN_HIDDEN_SIZE * QWEN_EXPERTS
-            + total_tokens * QWEN_EXPERTS
-        )
-        roof_seconds = max(
-            flops / H100_DENSE_BF16_FLOPS_PER_SECOND,
-            hbm_bytes / H100_HBM_BYTES_PER_SECOND,
+        work = KernelWork(
+            flops=(
+                2.0
+                * total_tokens
+                * QWEN_HIDDEN_SIZE
+                * QWEN_EXPERTS
+            ),
+            bytes=BF16_BYTES * (
+                total_tokens * QWEN_HIDDEN_SIZE
+                + QWEN_HIDDEN_SIZE * QWEN_EXPERTS
+                + total_tokens * QWEN_EXPERTS
+            ),
         )
         fit = self._provider.calibration.fits["router"]
-        seconds = max(
-            fit.launch_floor_seconds,
-            roof_seconds * fit.eta(self.band),
+        seconds = predict_kernel_seconds(
+            fit, work,
+            band=self.band,
+            semantics=self._provider.semantics,
         )
         return int(math.ceil(seconds * 1e9))
 

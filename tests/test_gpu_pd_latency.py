@@ -1,5 +1,10 @@
 import dataclasses
 import math
+
+from serving.core.h100_kernel_calibrated_prompt import (
+    LAUNCH_FLOOR_CAP_SECONDS,
+    MEDIA_STREAMING_EFFICIENCY,
+)
 from pathlib import Path
 import unittest
 
@@ -265,13 +270,13 @@ class P4D4LatencyTests(unittest.TestCase):
             + 2_048 * 128
             + 17 * 128
         )
-        roof_seconds = max(
-            flops / (989.5 * 1e12),
-            hbm_bytes / (3_350.0 * 1e9),
-        )
+        # v2 semantics: eta on compute only, media streaming efficiency on
+        # the HBM roofline, capped launch floor.
         expected_per_layer = math.ceil(1e9 * max(
-            fit.launch_floor_seconds,
-            roof_seconds * fit.eta("central"),
+            min(fit.launch_floor_seconds, LAUNCH_FLOOR_CAP_SECONDS),
+            flops / (989.5 * 1e12) * fit.eta("central"),
+            hbm_bytes / (
+                3_350.0 * 1e9 * MEDIA_STREAMING_EFFICIENCY),
         ))
         self.assertEqual(row.router_ns, 48 * expected_per_layer)
         self.assertEqual(

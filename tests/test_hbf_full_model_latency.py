@@ -3,6 +3,10 @@ import math
 from pathlib import Path
 import unittest
 
+from serving.core.h100_kernel_calibrated_prompt import (
+    LAUNCH_FLOOR_CAP_SECONDS,
+    MEDIA_STREAMING_EFFICIENCY,
+)
 from serving.core.hbf_full_model_latency import (
     HBFCollectiveExecutionOp,
     HBFKernelExecutionOp,
@@ -176,11 +180,13 @@ class FullModelHBFLatencyTests(unittest.TestCase):
         )
 
     def test_slow_lpddr_is_visible_in_full_model_latency(self):
+        # LPDDR-resident decode KV makes the LPDDR roofline the binding
+        # term under the v2 semantics; a wider LPDDR must then be faster.
         shape = HBFModelBatchShape(
             total_tokens=32,
-            prefill_q=(32,),
-            prefill_hbf_k=(125_000,),
-            prefill_lpddr_k=(0,),
+            decode_hbf_k=(0,) * 32,
+            decode_lpddr_k=(32_768,) * 32,
+            lm_head_sequences=32,
         )
         normal = self.models["tp4"].batch_latency(shape)
         fast_hardware = dataclasses.replace(
@@ -208,21 +214,30 @@ class FullModelHBFLatencyTests(unittest.TestCase):
         flops = 2.0 * 17 * 2_048 * 128
         hbf_bytes = 2 * 2_048 * 128
         lpddr_bytes = 2 * (17 * 2_048 + 17 * 128)
-        bandwidth_roof_seconds = max(
-            flops / (self.hardware.npu_peak_tflops_per_card * 1e12),
-            hbf_bytes
-            / (
-                self.hardware.hbf_read_bandwidth_gbps_per_card
-                * 1e9
-            ),
-            lpddr_bytes
-            / (self.hardware.lpddr_bandwidth_gbps_per_card * 1e9),
+        # v2 semantics: eta on compute only; memory rooflines pay the
+        # shared streaming efficiency; the fitted floor is capped.
+        compute_seconds = (
+            flops / (self.hardware.npu_peak_tflops_per_card * 1e12))
+        hbf_seconds = hbf_bytes / (
+            self.hardware.hbf_read_bandwidth_gbps_per_card
+            * 1e9
+            * MEDIA_STREAMING_EFFICIENCY
+        )
+        lpddr_seconds = lpddr_bytes / (
+            self.hardware.lpddr_bandwidth_gbps_per_card
+            * 1e9
+            * MEDIA_STREAMING_EFFICIENCY
         )
         expected_per_layer = max(1, math.ceil(1e9 * (
             self.hardware.hbf_read_latency_us * 1e-6
             + max(
-                fit.launch_floor_seconds,
-                bandwidth_roof_seconds * fit.eta("central"),
+                min(
+                    fit.launch_floor_seconds,
+                    LAUNCH_FLOOR_CAP_SECONDS,
+                ),
+                compute_seconds * fit.eta("central"),
+                hbf_seconds,
+                lpddr_seconds,
             )
         )))
         self.assertEqual(row.router_ns, 48 * expected_per_layer)
@@ -433,31 +448,33 @@ class FullModelHBFLatencyTests(unittest.TestCase):
             lpddr_k_lengths=mixed_shape.prefill_lpddr_k,
             causal_prefill=True,
         )
-        prefill_roof_seconds = max(
+        fit = model.base_provider.calibration.fits[
+            "prefill_attention"]
+        # v2 semantics: the prefill increment is eta-on-compute plus
+        # streaming-efficiency memory terms, without a second floor.
+        prefill_extra_seconds = max(
             (
                 work[0]
                 / (self.hardware.npu_peak_tflops_per_card * 1e12)
                 * work[3]
+                * fit.eta("central")
             ),
-            (
-                (
-                    self.hardware.hbf_read_latency_us * 1e-6
-                    + work[1]
-                    / (
-                        self.hardware.hbf_read_bandwidth_gbps_per_card
-                        * 1e9
-                    )
-                )
-                if work[1] > 0 else 0.0
+            work[1]
+            / (
+                self.hardware.hbf_read_bandwidth_gbps_per_card
+                * 1e9
+                * MEDIA_STREAMING_EFFICIENCY
             ),
             work[2]
-            / (self.hardware.lpddr_bandwidth_gbps_per_card * 1e9),
+            / (
+                self.hardware.lpddr_bandwidth_gbps_per_card
+                * 1e9
+                * MEDIA_STREAMING_EFFICIENCY
+            ),
         )
-        fit = model.base_provider.calibration.fits[
-            "prefill_attention"]
         expected_ns = math.ceil(1e9 * (
             decode.latency_seconds
-            + prefill_roof_seconds * fit.eta("central")
+            + prefill_extra_seconds
         ))
         self.assertEqual(mixed.latency_ns, expected_ns)
         self.assertLess(
