@@ -603,6 +603,35 @@ the bulk and streaming two-GPU finite-SSD baselines are rendered, and each
 design remains paired to the baseline with the same restore implementation.
 The infinite-HBM Oracle remains a performance-only reference.
 
+For load scaling, keep the layout fixed at TP8 and reuse the four discovery-
+frozen TP8 coordinates at every rate:
+
+```bash
+python -m serving.ssd_hbf_rate_sweep \
+  --output results/ssd-hbf-tp8-rate
+
+python -m serving.ssd_hbf_rate_plots \
+  --manifest results/ssd-hbf-tp8-rate/rate_sweep_manifest.json \
+  --output results/ssd-hbf-tp8-rate/plots
+```
+
+The rate wrapper uses the balanced causal-prefix scenario so both first-turn
+and resume TTFT are defined. Its default offered session rates are
+`[0.5, 1, 2, 3, 4, 5]`. It runs exactly the two frozen composite policies
+crossed with demand/prefetch; each coordinate retains the bulk or
+layerwise-streaming restore mode chosen before held-out evaluation. It never
+selects a different winner at a later rate.
+
+`ssd_hbf_rate_plots` verifies the top-level self-hash and every per-rate
+aggregate hash, rejects TP4 or incomplete series, and writes the auditable
+long-form `rate_plot_source.csv`. The primary 3-by-3 figure places the
+original seven performance metrics on offered-rate axes, followed by
+companion rate figures for runtime power/five-year energy/TCO and HBF
+write/endurance. Both finite-SSD baselines and the performance-only Oracle
+remain visible. A failed baseline/Oracle opportunity gate adds an `AUDIT`
+watermark and records the failures; it does not suppress the raw load-scaling
+curves.
+
 The plot source carries the original seven comparison metrics. Each is
 rendered as a separate PNG:
 
