@@ -22,6 +22,11 @@ from serving.core.hbf_comparison_workload import (
     SessionSpec,
     stable_json_sha256,
 )
+from serving.core.tracelab_comparison_scenarios import (
+    ArrivalRateContract,
+    BalancedCausalPrefixManifest,
+    TraceLabComparisonScenario,
+)
 from serving.ssd_hbf_design_sweep import (
     BASELINE_CANDIDATE_KEY,
     BASELINE_CANDIDATE_KEYS,
@@ -51,6 +56,7 @@ from serving.ssd_hbf_design_sweep import (
     parse_active_memory_spec,
     run_reference_cell,
     run_design_space,
+    validate_scenario_contract,
 )
 
 
@@ -198,10 +204,10 @@ class _FakeOfferedPlan:
     def __init__(self, seed: int) -> None:
         self.seed = seed
         self.returned_schedule = _scheduled_session(seed=seed)
+        self.requested_rates: list[float] = []
 
     def at_rate(self, rate: float):
-        if rate != REQUIRED_SESSION_RATE:
-            raise AssertionError("unexpected task rate")
+        self.requested_rates.append(rate)
         return self.returned_schedule
 
 
@@ -274,6 +280,51 @@ class SSDHBFDesignSweepTests(unittest.TestCase):
 
         self.assertFalse(default.allow_ineligible_reference_audit)
         self.assertTrue(audit.allow_ineligible_reference_audit)
+        self.assertEqual(default.layouts, ["tp8_context"])
+
+    def test_balanced_scenario_accepts_rates_from_its_arrival_contract(self):
+        manifest = object.__new__(BalancedCausalPrefixManifest)
+        object.__setattr__(manifest, "scenario_id", "balanced-test")
+        object.__setattr__(manifest, "equilibrium_workload", False)
+        object.__setattr__(
+            manifest, "measurement_request_identities", ROSTER)
+        object.__setattr__(
+            manifest,
+            "measurement_request_identities_sha256",
+            ROSTER_HASH,
+        )
+        object.__setattr__(
+            manifest,
+            "arrival_contract",
+            ArrivalRateContract(
+                rates=(3.0, 5.0),
+                maximum_rate=5.0,
+                enumerated_only=True,
+                rate_unit="sessions_per_second",
+                process="test",
+                first_arrival_semantics="test",
+                offer_order_semantics="test",
+            ),
+        )
+        object.__setattr__(
+            manifest, "to_dict", lambda: {"scenario_id": "balanced-test"})
+        scenario = TraceLabComparisonScenario(
+            workload=None,
+            manifest=manifest,
+            shuffle_session_starts=False,
+        )
+
+        contract = validate_scenario_contract(
+            scenario, session_rate=5.0)
+
+        self.assertEqual(contract["required_session_rate"], 5.0)
+        self.assertEqual(
+            contract["declared_session_rates"], [3.0, 5.0])
+        with self.assertRaisesRegex(
+                SSDHBFDesignSweepError,
+                "violates the scenario arrival contract"):
+            validate_scenario_contract(
+                scenario, session_rate=4.0)
 
     def test_grid_distinguishes_layouts_but_keeps_one_physical_host(self):
         grid = build_design_grid(
@@ -791,16 +842,23 @@ class SSDHBFDesignSweepTests(unittest.TestCase):
                 "_execution_inputs_sha256",
                 return_value="b" * 64,
             ),
-            self.assertRaisesRegex(
-                SSDHBFDesignSweepError, "rate=3.0"),
         ):
-            build_tasks(
+            rate_five_tasks = build_tasks(
                 repo_root=REPO_ROOT,
                 scenario=scenario,
                 designs=(self.tp4,),
                 seeds=(7, 11),
                 session_rate=5.0,
             )
+        self.assertEqual(len(rate_five_tasks), 6)
+        self.assertTrue(all(
+            task.session_rate == 5.0
+            for task in rate_five_tasks
+        ))
+        self.assertEqual(
+            scenario.plans[7].requested_rates, [5.0])
+        self.assertEqual(
+            scenario.plans[11].requested_rates, [5.0])
 
     def test_reference_eligibility_accepts_only_healthy_oracle_and_gap(self):
         accepted = evaluate_reference_eligibility(

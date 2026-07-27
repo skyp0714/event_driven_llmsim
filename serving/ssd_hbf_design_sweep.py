@@ -11,8 +11,8 @@ causal contract:
   policies checkpoint through local SSD; the explicit composite policies
   may instead send a stable D-HBM resume snapshot directly after that turn.
 
-Every seed builds one immutable long-cold-context schedule at exactly
-3 sessions/s.  The same tuple and exact measurement roster are passed to
+Every seed builds one immutable scenario schedule at one arrival rate declared
+by that scenario.  The same tuple and exact measurement roster are passed to
 the baseline, Oracle, and every design cell.
 """
 
@@ -95,6 +95,7 @@ from .core.ssd_hbf_runtime_energy import (
     evaluate_ssd_hbf_runtime_tco,
 )
 from .core.tracelab_comparison_scenarios import (
+    BalancedCausalPrefixManifest,
     LongColdContextStressManifest,
     TraceLabComparisonScenario,
     load_long_cold_context_stress_scenario,
@@ -546,17 +547,22 @@ def validate_design_workspace(
 
 def validate_scenario_contract(
         scenario: TraceLabComparisonScenario,
+        session_rate: float = REQUIRED_SESSION_RATE,
 ) -> dict[str, object]:
     if not isinstance(scenario, TraceLabComparisonScenario):
         raise SSDHBFDesignSweepError(
             "scenario must be TraceLabComparisonScenario")
     manifest = scenario.manifest
-    if not isinstance(manifest, LongColdContextStressManifest):
+    if not isinstance(
+            manifest,
+            (BalancedCausalPrefixManifest, LongColdContextStressManifest),
+    ):
         raise SSDHBFDesignSweepError(
-            "SSD-HBF sweep requires the pinned long-cold-context scenario")
+            "SSD-HBF sweep requires a pinned balanced-causal-prefix or "
+            "long-cold-context scenario")
     if manifest.equilibrium_workload:
         raise SSDHBFDesignSweepError(
-            "long-cold comparison must remain non-equilibrium")
+            "SSD-HBF comparison must remain non-equilibrium")
     roster = tuple(manifest.measurement_request_identities)
     if not roster or len(roster) != len(set(roster)):
         raise SSDHBFDesignSweepError(
@@ -565,13 +571,22 @@ def validate_scenario_contract(
     if roster_hash != manifest.measurement_request_identities_sha256:
         raise SSDHBFDesignSweepError(
             "measurement roster hash disagrees with scenario manifest")
-    manifest.arrival_contract.validate_rate(REQUIRED_SESSION_RATE)
+    rate = _finite_positive("session_rate", session_rate)
+    try:
+        manifest.arrival_contract.validate_rate(rate)
+    except ValueError as exc:
+        raise SSDHBFDesignSweepError(
+            f"session rate {rate:g} violates the scenario arrival "
+            f"contract: {exc}") from exc
     return {
         "scenario_id": manifest.scenario_id,
+        "scenario_manifest_type": type(manifest).__name__,
         "manifest_sha256": stable_json_sha256(manifest.to_dict()),
         "measurement_roster_sha256": roster_hash,
         "measurement_identity_count": len(roster),
-        "required_session_rate": REQUIRED_SESSION_RATE,
+        "required_session_rate": rate,
+        "declared_session_rates": list(
+            manifest.arrival_contract.rates),
     }
 
 
@@ -795,9 +810,6 @@ def run_reference_cell(
                 f"{restore_execution_mode!r}")
         reference_restore_mode = restore_execution_mode
     rate = _finite_positive("session_rate", session_rate)
-    if rate != REQUIRED_SESSION_RATE:
-        raise SSDHBFDesignSweepError(
-            f"corrected comparison requires rate={REQUIRED_SESSION_RATE}")
     thresholds = build_slo_thresholds(
         first_ttft_seconds=first_ttft_seconds,
         resume_ttft_seconds=resume_ttft_seconds,
@@ -838,9 +850,6 @@ def run_design_cell(
         tpot_milliseconds: float = DEFAULT_TPOT_MILLISECONDS,
 ) -> dict[str, object]:
     rate = _finite_positive("session_rate", session_rate)
-    if rate != REQUIRED_SESSION_RATE:
-        raise SSDHBFDesignSweepError(
-            f"corrected comparison requires rate={REQUIRED_SESSION_RATE}")
     thresholds = build_slo_thresholds(
         first_ttft_seconds=first_ttft_seconds,
         resume_ttft_seconds=resume_ttft_seconds,
@@ -903,11 +912,9 @@ def build_tasks(
         resume_ttft_seconds: float = DEFAULT_RESUME_TTFT_SECONDS,
         tpot_milliseconds: float = DEFAULT_TPOT_MILLISECONDS,
 ) -> tuple[_CellTask, ...]:
-    contract = validate_scenario_contract(scenario)
     rate = _finite_positive("session_rate", session_rate)
-    if rate != REQUIRED_SESSION_RATE:
-        raise SSDHBFDesignSweepError(
-            f"corrected comparison requires rate={REQUIRED_SESSION_RATE}")
+    contract = validate_scenario_contract(
+        scenario, session_rate=rate)
     design_values = tuple(designs)
     if not design_values:
         raise SSDHBFDesignSweepError("designs cannot be empty")
@@ -1458,10 +1465,8 @@ def aggregate_cell_records(
     ] = {}
     roster_hash: Optional[str] = None
     for record in records:
-        rate = float(record["session_rate"])
-        if rate != REQUIRED_SESSION_RATE:
-            raise SSDHBFDesignSweepError(
-                f"unexpected session rate {rate}")
+        rate = _finite_positive(
+            "record.session_rate", record["session_rate"])
         key = str(record["candidate_key"])
         seed = int(record["seed"])
         if key in BASELINE_RESTORE_MODES:
@@ -2201,7 +2206,8 @@ def run_design_space(
     ):
         raise SSDHBFDesignSweepError(
             "workers must be a positive integer")
-    scenario_contract = validate_scenario_contract(scenario)
+    scenario_contract = validate_scenario_contract(
+        scenario, session_rate=session_rate)
     tasks = build_tasks(
         repo_root=Path(repo_root).resolve(),
         scenario=scenario,
@@ -2327,7 +2333,7 @@ def _parser() -> argparse.ArgumentParser:
         description=(
             "Compare the two-GPU local-SSD baseline with the one-GPU "
             "local-SSD plus one-HBF staged-promotion design on the pinned "
-            "long-cold scenario at rate 3.0."
+            "scenario at one arrival-contract rate."
         )
     )
     parser.add_argument(
@@ -2344,7 +2350,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--layouts", nargs="+",
         choices=SUPPORTED_LAYOUTS,
-        default=list(SUPPORTED_LAYOUTS),
+        default=["tp8_context"],
     )
     parser.add_argument(
         "--policies", nargs="+",
@@ -2412,8 +2418,8 @@ def _parser() -> argparse.ArgumentParser:
         "--smoke",
         action="store_true",
         help=(
-            "use two layouts, two representative policies, one memory "
-            "point, and two seeds"
+            "use two representative policies, one memory point, and "
+            "two seeds"
         ),
     )
     parser.add_argument("--dry-run", action="store_true")
@@ -2431,9 +2437,6 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parser().parse_args(argv)
-    if args.rate != REQUIRED_SESSION_RATE:
-        raise SSDHBFDesignSweepError(
-            f"--rate must be exactly {REQUIRED_SESSION_RATE}")
     memories = tuple(parse_active_memory_spec(value) for value in (
         args.memory or ("lpddr:16:409.6",)
     ))
