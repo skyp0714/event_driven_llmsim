@@ -20,6 +20,7 @@ from .gpu_pd_latency import (
     P4D4_MODEL_LAYER_COUNT,
     P4D4GPUHardware,
     P4D4LatencyModel,
+    PDHandoffLatency,
 )
 from .hbf_full_model_latency import HBFModelBatchShape
 from .hbf_full_model_lifecycle import ResourceCalendar
@@ -27,6 +28,22 @@ from .hbf_full_model_lifecycle import ResourceCalendar
 
 MAX_P4D4_PREFILL_CHUNK_TOKENS = 131_072
 MAX_P4D4_SEQUENCES = 128
+
+# P-to-D KV handoff service models.
+#
+# ``serialized`` transfers the whole materialized KV after the finishing P
+# batch, fully exposed (the original behavior).  ``layerwise`` models the
+# production practice (DistServe/Mooncake-style) of streaming each layer's
+# KV as soon as that layer finishes: KV for layers 0..L-2 overlaps the
+# remaining compute of the same P batch, so only the fixed latency plus the
+# non-overlappable tail is exposed after batch completion.  The full byte
+# count still traverses the fabric for accounting.
+HANDOFF_OVERLAP_SERIALIZED = "serialized"
+HANDOFF_OVERLAP_LAYERWISE = "layerwise"
+SUPPORTED_HANDOFF_OVERLAP_MODES = (
+    HANDOFF_OVERLAP_SERIALIZED,
+    HANDOFF_OVERLAP_LAYERWISE,
+)
 
 
 class PDRequestState(str, Enum):
@@ -226,6 +243,8 @@ class PDPoolMetrics:
     handoff_bytes_per_rank: int = 0
     handoff_aggregate_bytes: int = 0
     handoff_service_ns: int = 0
+    handoff_exposed_ns: int = 0
+    handoff_overlap_hidden_ns: int = 0
     handoff_queue_delay_ns: int = 0
     max_p_batch_size: int = 0
     max_d_batch_size: int = 0
@@ -252,9 +271,14 @@ class P4D4ServingPool:
             d_max_num_seqs: Optional[int] = None,
             max_prefill_chunk_tokens: int = 4_096,
             band: str = "central",
+            handoff_overlap: str = HANDOFF_OVERLAP_LAYERWISE,
             validate_every_event: bool = True,
             retain_detailed_history: bool = True) -> None:
         hardware.validate()
+        if handoff_overlap not in SUPPORTED_HANDOFF_OVERLAP_MODES:
+            raise ValueError(
+                "handoff_overlap must be one of "
+                f"{SUPPORTED_HANDOFF_OVERLAP_MODES}")
         if isinstance(node_id, bool) or not isinstance(node_id, int):
             raise ValueError("node_id must be an integer")
         if node_id < 0:
@@ -315,6 +339,7 @@ class P4D4ServingPool:
         self.p_max_num_seqs = resolved_stage_limits["p"]
         self.d_max_num_seqs = resolved_stage_limits["d"]
         self.max_prefill_chunk_tokens = max_prefill_chunk_tokens
+        self.handoff_overlap = handoff_overlap
         self.validate_every_event = validate_every_event
         self.retain_detailed_history = retain_detailed_history
         self.model = P4D4LatencyModel(
@@ -597,9 +622,42 @@ class P4D4ServingPool:
         self._completed_request_ids.append(request.request_id)
         self.metrics.completed_requests += 1
 
+    def _handoff_exposed_ns(
+            self, latency: PDHandoffLatency,
+            p_batch: Optional[PDServingBatch]) -> int:
+        """Return the post-P-completion exposed handoff duration.
+
+        In layerwise mode, KV for layers 0..L-2 streams while the finishing
+        P batch executes its remaining layers, so only the fixed peer
+        latency plus the non-overlappable transfer tail stays exposed.  The
+        overlap window is bounded by the finishing batch's own per-layer
+        compute; earlier chunks' windows are conservatively ignored.
+        """
+
+        if (
+            self.handoff_overlap != HANDOFF_OVERLAP_LAYERWISE
+            or latency.latency_ns == 0
+            or p_batch is None
+        ):
+            return latency.latency_ns
+        fixed_ns = int(math.ceil(
+            self.hardware.pd_peer_fixed_latency_us * 1e3))
+        transfer_ns = max(0, latency.latency_ns - fixed_ns)
+        phases = self.model.batch_phase_latency(p_batch.shape)
+        layer_count = phases.layer_count
+        overlap_window_ns = (layer_count - 1) * phases.layer_ns
+        per_layer_transfer_ns = -(-transfer_ns // layer_count)
+        exposed_transfer_ns = max(
+            per_layer_transfer_ns,
+            transfer_ns - overlap_window_ns,
+        )
+        return fixed_ns + exposed_transfer_ns
+
     def _start_handoff(
-            self, request: PDServingRequest, ready_ns: int) -> None:
+            self, request: PDServingRequest, ready_ns: int,
+            p_batch: Optional[PDServingBatch] = None) -> None:
         latency = self.model.handoff_latency(request.handoff_tokens)
+        exposed_ns = self._handoff_exposed_ns(latency, p_batch)
         job_id = self._next_handoff_id
         self._next_handoff_id += 1
         if latency.latency_ns == 0:
@@ -614,7 +672,7 @@ class P4D4ServingPool:
                 namespace=f"gpu-pd-handoff-node-{self.node_id}",
                 demands={
                     self._handoff_resource(): (
-                        latency.latency_ns,
+                        exposed_ns,
                         latency.aggregate_bytes,
                     ),
                 },
@@ -638,6 +696,9 @@ class P4D4ServingPool:
         self.metrics.handoff_bytes_per_rank += latency.bytes_per_rank
         self.metrics.handoff_aggregate_bytes += latency.aggregate_bytes
         self.metrics.handoff_service_ns += latency.latency_ns
+        self.metrics.handoff_exposed_ns += exposed_ns
+        self.metrics.handoff_overlap_hidden_ns += (
+            latency.latency_ns - exposed_ns)
         self.metrics.handoff_queue_delay_ns += start_ns - ready_ns
         if completion_ns == ready_ns:
             self._finish_handoff(job)
@@ -690,7 +751,8 @@ class P4D4ServingPool:
                 request.state = PDRequestState.HANDOFF
                 request.stage_ready_ns = batch.completion_ns
             if request.output_tokens > 1 or request.has_successor:
-                self._start_handoff(request, batch.completion_ns)
+                self._start_handoff(
+                    request, batch.completion_ns, p_batch=batch)
         worker.inflight = None
         worker.completed_batches += 1
 
@@ -910,6 +972,7 @@ class P4D4ServingPool:
             "p_max_num_seqs": self.p_max_num_seqs,
             "d_max_num_seqs": self.d_max_num_seqs,
             "max_prefill_chunk_tokens": self.max_prefill_chunk_tokens,
+            "handoff_overlap": self.handoff_overlap,
             "validate_every_event": self.validate_every_event,
             "retain_detailed_history": self.retain_detailed_history,
             "retained_batch_count": len(self.batch_history),
@@ -936,8 +999,11 @@ class P4D4ServingPool:
 
 
 __all__ = [
+    "HANDOFF_OVERLAP_LAYERWISE",
+    "HANDOFF_OVERLAP_SERIALIZED",
     "MAX_P4D4_PREFILL_CHUNK_TOKENS",
     "MAX_P4D4_SEQUENCES",
+    "SUPPORTED_HANDOFF_OVERLAP_MODES",
     "P4D4ServingPool",
     "PDBatchItem",
     "PDHandoffJob",
