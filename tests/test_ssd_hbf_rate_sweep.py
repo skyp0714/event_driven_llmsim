@@ -106,6 +106,8 @@ class SSDHBFRateSweepTests(unittest.TestCase):
             "scenario_manifest_type": (
                 "BalancedCausalPrefixManifest"),
             "manifest_sha256": "a" * 64,
+            "measurement_roster_sha256": "b" * 64,
+            "measurement_identity_count": 12,
             "declared_session_rates": list(
                 BALANCED_DEFAULT_RATES),
         }
@@ -116,6 +118,11 @@ class SSDHBFRateSweepTests(unittest.TestCase):
             output.mkdir(parents=True, exist_ok=True)
             aggregate = {
                 "rates": [{"session_rate": rate}],
+                "scenario": {
+                    **scenario_contract,
+                    "required_session_rate": rate,
+                },
+                "execution_inputs_sha256": "c" * 64,
                 "test_payload": f"rate-{rate:g}",
             }
             path = output / "aggregate.json"
@@ -158,6 +165,8 @@ class SSDHBFRateSweepTests(unittest.TestCase):
             self.assertEqual(manifest["rates"], [1.0, 3.0, 5.0])
             self.assertEqual(manifest["seeds"], [201, 202, 203])
             self.assertEqual(len(manifest["designs"]), 4)
+            self.assertEqual(
+                manifest["execution_inputs_sha256"], "c" * 64)
             self.assertEqual(run.call_count, 3)
             self.assertEqual(
                 [
@@ -203,6 +212,66 @@ class SSDHBFRateSweepTests(unittest.TestCase):
         self.assertIsNone(args.seeds)
         self.assertEqual(
             args.selection, DEFAULT_FROZEN_SELECTION_PATH)
+
+    def test_wrapper_rejects_execution_source_drift_between_rates(self):
+        scenario = SimpleNamespace(
+            manifest=SimpleNamespace(
+                arrival_contract=SimpleNamespace(rates=(1.0, 3.0)),
+            ),
+        )
+        scenario_contract = {
+            "scenario_id": "balanced-test",
+            "scenario_manifest_type": "BalancedCausalPrefixManifest",
+            "manifest_sha256": "a" * 64,
+            "measurement_roster_sha256": "b" * 64,
+            "measurement_identity_count": 12,
+            "declared_session_rates": [1.0, 3.0],
+        }
+
+        def drifting_run_design_space(**kwargs):
+            rate = kwargs["session_rate"]
+            output = Path(kwargs["output_root"])
+            output.mkdir(parents=True, exist_ok=True)
+            aggregate = {
+                "rates": [{"session_rate": rate}],
+                "scenario": {
+                    **scenario_contract,
+                    "required_session_rate": rate,
+                },
+                "execution_inputs_sha256": (
+                    "c" * 64 if rate == 1.0 else "d" * 64),
+            }
+            path = output / "aggregate.json"
+            path.write_text(
+                json.dumps(aggregate, sort_keys=True),
+                encoding="utf-8",
+            )
+            return aggregate, path
+
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch(
+                    "serving.ssd_hbf_rate_sweep."
+                    "validate_scenario_contract",
+                    return_value=scenario_contract,
+                ),
+                patch(
+                    "serving.ssd_hbf_rate_sweep.run_design_space",
+                    side_effect=drifting_run_design_space,
+                ),
+                self.assertRaisesRegex(
+                    SSDHBFDesignSweepError,
+                    "changed between rate points",
+                ),
+            ):
+                run_rate_sweep(
+                    repo_root=REPO_ROOT,
+                    output_root=Path(directory) / "rates",
+                    scenario=scenario,
+                    rates=(1.0, 3.0),
+                    seeds=(201, 202),
+                    require_runtime_energy=False,
+                )
 
 
 if __name__ == "__main__":

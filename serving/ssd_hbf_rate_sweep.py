@@ -44,9 +44,9 @@ from .ssd_hbf_design_sweep import (
 )
 
 
-SSD_HBF_RATE_SWEEP_SCHEMA_VERSION = 1
+SSD_HBF_RATE_SWEEP_SCHEMA_VERSION = 2
 SSD_HBF_RATE_SWEEP_CONTRACT_KEY = (
-    "ssd-hbf-tp8-frozen-selection-rate-sweep-v1")
+    "ssd-hbf-tp8-frozen-selection-rate-sweep-v2")
 TP8_CONTEXT_LAYOUT = "tp8_context"
 DEFAULT_FROZEN_SELECTION_PATH = Path(
     "configs/experiments/ssd_hbf_final_selection.json")
@@ -290,6 +290,7 @@ def run_rate_sweep(
     rate_aggregates = []
     scenario_contract = validate_scenario_contract(
         scenario, session_rate=rate_values[0])
+    execution_inputs_sha256 = None
     for rate in rate_values:
         rate_root = output / f"rate-{rate:g}"
         aggregate, aggregate_path = run_design_space(
@@ -316,6 +317,48 @@ def run_rate_sweep(
         ):
             raise SSDHBFDesignSweepError(
                 f"per-rate aggregate disagrees with requested rate {rate:g}")
+        aggregate_scenario = aggregate.get("scenario")
+        if not isinstance(aggregate_scenario, Mapping):
+            raise SSDHBFDesignSweepError(
+                f"per-rate aggregate lacks scenario provenance at rate "
+                f"{rate:g}")
+        scenario_fields = (
+            "scenario_id",
+            "scenario_manifest_type",
+            "manifest_sha256",
+            "measurement_roster_sha256",
+            "measurement_identity_count",
+            "declared_session_rates",
+        )
+        mismatched_scenario_fields = [
+            field for field in scenario_fields
+            if aggregate_scenario.get(field) != scenario_contract.get(field)
+        ]
+        if aggregate_scenario.get("required_session_rate") != rate:
+            mismatched_scenario_fields.append("required_session_rate")
+        if mismatched_scenario_fields:
+            raise SSDHBFDesignSweepError(
+                f"per-rate scenario provenance mismatch at rate {rate:g}: "
+                f"{sorted(set(mismatched_scenario_fields))}")
+        aggregate_execution_hash = aggregate.get(
+            "execution_inputs_sha256")
+        if (
+            not isinstance(aggregate_execution_hash, str)
+            or len(aggregate_execution_hash) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in aggregate_execution_hash
+            )
+        ):
+            raise SSDHBFDesignSweepError(
+                f"per-rate aggregate has invalid execution input hash at "
+                f"rate {rate:g}")
+        if execution_inputs_sha256 is None:
+            execution_inputs_sha256 = aggregate_execution_hash
+        elif aggregate_execution_hash != execution_inputs_sha256:
+            raise SSDHBFDesignSweepError(
+                "execution source or hardware config changed between "
+                "rate points")
         try:
             relative_path = aggregate_path.relative_to(output)
         except ValueError as exc:
@@ -336,6 +379,10 @@ def run_rate_sweep(
             "manifest_type": scenario_contract[
                 "scenario_manifest_type"],
             "manifest_sha256": scenario_contract["manifest_sha256"],
+            "measurement_roster_sha256": scenario_contract[
+                "measurement_roster_sha256"],
+            "measurement_identity_count": scenario_contract[
+                "measurement_identity_count"],
             "declared_session_rates": scenario_contract[
                 "declared_session_rates"],
         },
@@ -352,6 +399,7 @@ def run_rate_sweep(
         "designs": [
             design.to_json_dict() for design in selection.designs],
         "rate_aggregates": rate_aggregates,
+        "execution_inputs_sha256": execution_inputs_sha256,
         "reference_eligibility_required": require_eligibility,
         "runtime_energy_tco_required": require_runtime_energy,
     }
