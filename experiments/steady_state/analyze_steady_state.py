@@ -126,6 +126,12 @@ def aggregate(rows: list[dict]) -> list[dict]:
                 (c.get("preloaded") or {}).get(tier) for c in cells])
             record[f"preloaded_{tier}_mean"] = mean
 
+        # Peak HBF occupancy drives the retention refresh term.
+        for key in ("hbf_reserved_bytes_peak", "peak_used_bytes"):
+            mean, _ = mean_ci([
+                (c.get("peak_bytes") or {}).get(key) for c in cells])
+            record[f"peak_{key}_mean"] = mean
+
         # HBF write accounting, carried through for the endurance panel.
         writes = [c.get("hbf_write_accounting") for c in cells]
         writes = [w for w in writes if isinstance(w, dict)]

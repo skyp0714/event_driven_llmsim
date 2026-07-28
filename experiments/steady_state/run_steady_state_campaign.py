@@ -13,8 +13,10 @@ pool.  Reaching that equilibrium by simulation would cost a full W of warmup
 -- an order of magnitude more work than the measurement window it enables --
 so the resident population is injected directly at t=0 via the lifecycles'
 `preload_session`, at the placement the policy would have produced:
-LRU-ordered fill of D-HBM, then CPU, then SSD for the tiering baseline, and
-HBF residency for the migrated sessions of the HBF system.
+LRU-ordered fill of D-HBM, then CPU, then SSD for the tiering baseline; for
+the HBF system a maturity-correlated split in which the most mature half of
+the population (by context tokens) is HBF-resident and the remainder fills
+the GPU ladder youngest-first (D-HBM, then CPU, then SSD).
 
 The measurement ends on a call count, not a simulated duration, so cost is
 bounded by construction.
@@ -39,6 +41,9 @@ from typing import Any, Sequence
 SCRIPT_ROOT = Path(__file__).resolve().parent
 if str(SCRIPT_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPT_ROOT))
+SESSION_SCALING_ROOT = SCRIPT_ROOT.parent / "session_scaling"
+if str(SESSION_SCALING_ROOT) not in sys.path:
+    sys.path.insert(0, str(SESSION_SCALING_ROOT))
 
 import phase_breakdown  # noqa: E402
 import run_session_scaling_campaign as C  # noqa: E402
@@ -47,9 +52,14 @@ REPO_ROOT = C.REPO_ROOT
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 FAMILIES = ("claude", "codex")
-SYSTEMS = ("baseline_cpu_ssd", "oracle_infinite_hbm", "hbf_tp8_context")
+SYSTEMS = (
+    "baseline_cpu_ssd",
+    "oracle_infinite_hbm",
+    "hbf_tp8_context",
+    "hbf_tp4x2",
+)
 DEFAULT_RATES = (0.0005, 0.001, 0.002, 0.004, 0.008, 0.016)
 DEFAULT_SEEDS = (101, 102, 103)
 DEFAULT_MEASURED_CALLS = 6_000
@@ -280,21 +290,72 @@ def preload_population(system, system_key, residents, now_ns):
                 last_access_ns=max(0, now_ns - rank * 1_000_000))
             placed[tier.value] += 1
         return placed
-    # HBF hybrid: residents live on the HBF host.  The hybrid keeps its
-    # lifecycles on the node rather than the system.
+    # HBF hybrid: the equilibrium of a maturity-aware policy is a
+    # correlated split, not full HBF residency.  The HBF host's bound is
+    # decode occupancy rather than media capacity, so only half the
+    # resident population lives there -- the most mature half by context.
+    # The remainder mirrors the GPU-side ladder the staged policy leaves
+    # behind: the youngest sessions are still hot in D-HBM, the next ones
+    # sit on CPU, and the durable overflow is an SSD checkpoint.  Read
+    # most-mature-first that is HBF -> SSD -> CPU -> D-HBM.
+    node = getattr(system, "node", None)
     lifecycle = getattr(system, "hbf_lifecycle", None)
     if lifecycle is None:
-        lifecycle = system.node.hbf_lifecycle
-    for rank, resident in enumerate(order):
+        lifecycle = node.hbf_lifecycle
+    gpu_lifecycle = node.gpu_lifecycle
+    recency_rank = {
+        resident["session"].session_id: rank
+        for rank, resident in enumerate(order)
+    }
+
+    def access_ns(resident):
+        return max(
+            0,
+            now_ns
+            - recency_rank[resident["session"].session_id] * 1_000_000,
+        )
+
+    mature = sorted(order, key=lambda r: -r["context_tokens"])
+    hbf_budget = (len(mature) + 1) // 2
+    gpu_side = []
+    for resident in mature[:hbf_budget]:
         try:
             lifecycle.preload_session(
                 resident["session"].session_id, resident["context_tokens"],
                 now_ns=now_ns,
-                last_access_ns=max(0, now_ns - rank * 1_000_000))
+                last_access_ns=access_ns(resident))
         except RuntimeError:
-            placed["skipped"] += 1
+            gpu_side.append(resident)
             continue
         placed["hbf"] += 1
+    gpu_side.extend(mature[hbf_budget:])
+    # Youngest-first fill keeps the freshest sessions in D-HBM and pushes
+    # the more mature remainder down to CPU and then SSD.
+    gpu_side.sort(key=lambda r: r["context_tokens"])
+    for resident in gpu_side:
+        tokens = resident["context_tokens"]
+        session_id = resident["session"].session_id
+        per_rank = gpu_lifecycle._per_rank_bytes(tokens)
+        aggregate = gpu_lifecycle._aggregate_bytes(tokens)
+        if gpu_lifecycle.d_ledger.free_bytes >= per_rank:
+            tier = Tier.D
+        elif gpu_lifecycle.cpu_ledger.free_bytes >= aggregate:
+            tier = Tier.CPU
+        elif gpu_lifecycle.ssd_ledger.free_bytes >= aggregate:
+            tier = Tier.SSD
+        else:
+            placed["skipped"] += 1
+            continue
+        gpu_lifecycle.preload_session(
+            session_id, tokens, tier=tier,
+            now_ns=now_ns,
+            last_access_ns=access_ns(resident))
+        lifecycle.preload_gpu_session(
+            session_id, tokens,
+            now_ns=now_ns,
+            durable_ssd=(tier == Tier.SSD),
+            last_access_ns=access_ns(resident))
+        placed[tier.value] += 1
     return placed
 
 

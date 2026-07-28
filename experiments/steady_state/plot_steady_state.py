@@ -24,11 +24,13 @@ from matplotlib.axes import Axes  # noqa: E402
 SCRIPT_ROOT = Path(__file__).resolve().parent
 
 SYSTEM_ORDER = (
-    "baseline_cpu_ssd", "oracle_infinite_hbm", "hbf_tp8_context")
+    "baseline_cpu_ssd", "oracle_infinite_hbm", "hbf_tp8_context",
+    "hbf_tp4x2")
 STYLE = {
     "baseline_cpu_ssd": ("#B3423B", "o", "2xHBM + CPU/SSD tiering"),
     "oracle_infinite_hbm": ("#6B6B6B", "s", "Infinite-HBM Oracle"),
     "hbf_tp8_context": ("#2E6DA4", "^", "HBM + HBF (tp8_context)"),
+    "hbf_tp4x2": ("#3F8F5F", "v", "HBM + HBF (tp4x2)"),
 }
 FAMILY_LABEL = {
     "claude": "Claude Code sessions",

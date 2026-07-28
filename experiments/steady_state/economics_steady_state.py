@@ -12,6 +12,14 @@ design has no ramp and no drain: the resident population is installed at t=0
 and the run is cut at the horizon, so the entire window is steady state and
 the write rate it yields is the one the cards would actually see.
 
+Write volume carries both terms.  The simulator observes only the KV that
+turns commit, but flash retention is finite: under a retention window of `w`,
+every byte still resident after `w` must be rewritten to stay readable, and
+that rewrite spends a program/erase cycle exactly like a workload write.  How
+much it adds is a property of the trace -- bytes leave HBF when their session
+ends -- so the refresh term is the share of resident byte-time older than the
+window, taken from the measured session-lifetime distribution.
+
 The Oracle still has no TCO.  Infinite HBM is not a bill of materials, so it
 stays a performance-only reference.
 """
@@ -20,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from functools import lru_cache
 import json
 import os
 import sys
@@ -42,6 +51,11 @@ HBF_CARDS = 8
 # whole per-card HBF minus the per-card model weights.
 HBF_KV_REGION_BYTES_PER_CARD = 1_280_000_000_000 - 7_680_585_728
 SLO_LEVEL = "tight"
+SECONDS_PER_DAY = 86_400.0
+# Flash retention window assumed for the refresh term.  A KV cache only has to
+# outlive its session, and the measured p90 session is under seven hours, so a
+# day is already generous for this workload.
+RETENTION_WINDOW_S = SECONDS_PER_DAY
 
 WRITE_BYTE_KEYS = (
     "write_total_physical_write_bytes_mean",
@@ -65,6 +79,35 @@ def load_aggregate(root: Path) -> list[dict]:
             except (TypeError, ValueError):
                 row[key] = None
     return rows
+
+
+@lru_cache(maxsize=64)
+def stale_byte_share(family: str, window_s: float) -> float:
+    """Fraction of resident HBF bytes older than the retention window.
+
+    In steady state a session of lifetime T contributes T seconds of byte
+    residency, of which max(0, T - w) sits past the window.  The instantaneous
+    share of resident bytes needing refresh is therefore
+    E[max(0, T - w)] / E[T] over the session-lifetime distribution.
+    """
+
+    import run_steady_state_campaign as steady
+
+    _, lifetimes = steady.load_pool(family)
+    seconds = [value / 1e9 for value in lifetimes]
+    total = sum(seconds)
+    if total <= 0:
+        return 0.0
+    return sum(max(0.0, value - window_s) for value in seconds) / total
+
+
+def refresh_bytes_per_second(
+        occupied_bytes: float, family: str, window_s: float) -> float:
+    """Rewrite rate needed to keep past-window bytes readable."""
+
+    if occupied_bytes <= 0 or window_s <= 0:
+        return 0.0
+    return occupied_bytes * stale_byte_share(family, window_s) / window_s
 
 
 def hbf_write_bytes(row: dict) -> float:
@@ -130,9 +173,13 @@ def main() -> int:
         hbf_tco = (
             hbf_cost.capex_usd + hbf_cost.five_year_electricity_opex_usd)
 
-        write_bytes = hbf_write_bytes(hbf)
+        workload_write_bytes = hbf_write_bytes(hbf)
         # No ramp, no drain: the window is the steady state by construction.
         window = hbf.get("measurement_window_s_mean") or 0.0
+        occupied = hbf.get("peak_hbf_reserved_bytes_peak_mean") or 0.0
+        refresh_write_bytes = refresh_bytes_per_second(
+            occupied, family, RETENTION_WINDOW_S) * window
+        write_bytes = workload_write_bytes + refresh_write_bytes
         record = {
             "family": family,
             "rate": rate,
@@ -156,10 +203,24 @@ def main() -> int:
             "hbf_over_baseline_tco": hbf_tco / base_tco,
             "hbf_over_baseline_goodput_per_dollar": (
                 (hbf_good / hbf_tco) / (base_good / base_tco)),
+            "hbf_occupied_bytes": occupied,
+            "retention_window_h": RETENTION_WINDOW_S / 3600.0,
+            "stale_byte_share": stale_byte_share(family, RETENTION_WINDOW_S),
+            "hbf_workload_write_bytes": workload_write_bytes,
+            "hbf_refresh_write_bytes": refresh_write_bytes,
             "hbf_write_bytes": write_bytes,
+            "refresh_share_of_writes": (
+                refresh_write_bytes / write_bytes if write_bytes else None),
             "measurement_window_s": window,
+            "hbf_workload_tb_per_day": (
+                workload_write_bytes / window * SECONDS_PER_DAY / 1e12
+                if window else None),
+            "hbf_refresh_tb_per_day": (
+                refresh_write_bytes / window * SECONDS_PER_DAY / 1e12
+                if window else None),
             "hbf_write_tb_per_day": (
-                write_bytes / window * 86_400 / 1e12 if window else None),
+                write_bytes / window * SECONDS_PER_DAY / 1e12
+                if window else None),
         }
         for label, rated, waf in (
             ("slc_100k_waf1", 100_000.0, 1.0),
@@ -185,20 +246,25 @@ def main() -> int:
     (args.root / "economics.json").write_text(
         json.dumps(out, indent=2, sort_keys=True) + "\n")
 
-    print(f"{'family':8} {'rate':>7} {'base tok/s':>11} {'HBF tok/s':>11} "
-          f"{'HBF/base':>9} {'base TCO $M':>12} {'HBF TCO $M':>11} "
-          f"{'tok/$ ratio':>12} {'HBF TB/day':>11} {'life yr WAF2':>13}")
+    print(f"\nretention window = {RETENTION_WINDOW_S / 3600:.0f} h;  "
+          f"write volume = workload commits + retention refresh")
+    print(f"{'':32}{'--------- TB/day ---------':^37}")
+    print(f"{'family':8}{'rate':>7}{'HBF/base':>9}{'tok/$':>8}"
+          f"{'occ TB':>9}{'workload':>10}{'refresh':>9}{'total':>9}"
+          f"{'refresh%':>10}{'yr WAF1':>10}{'yr WAF2':>10}{'yr WAF4':>10}")
     for r in out:
-        life = r["endurance_years_slc_100k_waf2"]
-        print(f"{r['family']:8} {r['rate']:7.4f} "
-              f"{r['baseline_goodput_tok_s']:11.1f} "
-              f"{r['hbf_goodput_tok_s']:11.1f} "
-              f"{r['hbf_over_baseline_goodput']:9.3f} "
-              f"{r['baseline_tco_usd']/1e6:12.3f} "
-              f"{r['hbf_tco_usd']/1e6:11.3f} "
-              f"{r['hbf_over_baseline_goodput_per_dollar']:12.3f} "
-              f"{(r['hbf_write_tb_per_day'] or 0):11.2f} "
-              f"{(life if life else float('nan')):13.1f}")
+        nan = float("nan")
+        print(f"{r['family']:8}{r['rate']:7.4f}"
+              f"{r['hbf_over_baseline_goodput']:9.3f}"
+              f"{r['hbf_over_baseline_goodput_per_dollar']:8.3f}"
+              f"{r['hbf_occupied_bytes']/1e12:9.2f}"
+              f"{(r['hbf_workload_tb_per_day'] or 0):10.2f}"
+              f"{(r['hbf_refresh_tb_per_day'] or 0):9.2f}"
+              f"{(r['hbf_write_tb_per_day'] or 0):9.2f}"
+              f"{(r['refresh_share_of_writes'] or 0):10.1%}"
+              f"{(r['endurance_years_slc_100k_waf1'] or nan):10.1f}"
+              f"{(r['endurance_years_slc_100k_waf2'] or nan):10.1f}"
+              f"{(r['endurance_years_slc_100k_waf4'] or nan):10.1f}")
     print(f"\nwrote {args.root/'economics.csv'}")
     return 0
 
