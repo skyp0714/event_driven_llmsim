@@ -81,9 +81,9 @@ TPOT_SLO_MILLISECONDS = 300.0
 # preregistered threshold sets; the tighter ones keep resolution once the
 # loose one saturates.  All are computed from the same per-call data.
 SLO_LEVELS = {
-    "loose": (30.0, 30.0, 300.0),
-    "medium": (10.0, 5.0, 150.0),
-    "tight": (5.0, 2.0, 100.0),
+    "loose": (10.0, 10.0, 150.0),
+    "medium": (5.0, 5.0, 100.0),
+    "tight": (3.0, 3.0, 50.0),
 }
 
 # Pinned engine configuration, identical for every system.

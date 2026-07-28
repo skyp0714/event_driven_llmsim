@@ -52,7 +52,7 @@ REPO_ROOT = C.REPO_ROOT
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 FAMILIES = ("claude", "codex")
 SYSTEMS = (
     "baseline_cpu_ssd",

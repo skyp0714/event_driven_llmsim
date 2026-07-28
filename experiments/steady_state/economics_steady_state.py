@@ -50,7 +50,7 @@ HBF_CARDS = 8
 # tp8_context stores one physical KV copy, so the writable KV region is the
 # whole per-card HBF minus the per-card model weights.
 HBF_KV_REGION_BYTES_PER_CARD = 1_280_000_000_000 - 7_680_585_728
-SLO_LEVEL = "tight"
+SLO_LEVEL = "medium"
 SECONDS_PER_DAY = 86_400.0
 # Flash retention window assumed for the refresh term.  A KV cache only has to
 # outlive its session, and the measured p90 session is under seven hours, so a
@@ -146,10 +146,21 @@ def main() -> int:
     active_memory = lpddr_active_memory(
         capacity_gib_per_card=16.0, bandwidth_gbps_per_card=409.6)
     out = []
-    for (family, rate) in sorted(by_point):
+    # One record per HBF layout: the layouts' goodput can differ by
+    # double digits (codex 0.008: tp4x2 544 vs tp8 465 tok/s), so a
+    # single hardcoded layout would silently mismatch any table that
+    # quotes the other one's performance.
+    hbf_layout_systems = (
+        ("hbf_tp8_context", "tp8"),
+        ("hbf_tp4x2", "tp4x2"),
+    )
+    for (family, rate), (hbf_system, tco_layout) in (
+            (point, layout)
+            for point in sorted(by_point)
+            for layout in hbf_layout_systems):
         point = by_point[(family, rate)]
         base = point.get("baseline_cpu_ssd")
-        hbf = point.get("hbf_tp8_context")
+        hbf = point.get(hbf_system)
         oracle = point.get("oracle_infinite_hbm")
         if not (base and hbf):
             continue
@@ -158,7 +169,7 @@ def main() -> int:
         if base_good <= 0:
             continue
         report = evaluate_ssd_hbf_tco(
-            hbf_layout="tp8",
+            hbf_layout=tco_layout,
             active_memory=active_memory,
             baseline_slo_good_output_tokens_per_second=base_good,
             proposed_slo_good_output_tokens_per_second=hbf_good,
@@ -183,6 +194,7 @@ def main() -> int:
         record = {
             "family": family,
             "rate": rate,
+            "hbf_system": hbf_system,
             "slo_level": SLO_LEVEL,
             "target_concurrency": base.get("target_concurrency_mean"),
             "baseline_goodput_tok_s": base_good,
@@ -254,7 +266,7 @@ def main() -> int:
           f"{'refresh%':>10}{'yr WAF1':>10}{'yr WAF2':>10}{'yr WAF4':>10}")
     for r in out:
         nan = float("nan")
-        print(f"{r['family']:8}{r['rate']:7.4f}"
+        print(f"{r['family']:8}{r['rate']:7.4f} {r['hbf_system']:16}"
               f"{r['hbf_over_baseline_goodput']:9.3f}"
               f"{r['hbf_over_baseline_goodput_per_dollar']:8.3f}"
               f"{r['hbf_occupied_bytes']/1e12:9.2f}"

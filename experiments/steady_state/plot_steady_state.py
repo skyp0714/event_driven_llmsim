@@ -36,8 +36,8 @@ FAMILY_LABEL = {
     "claude": "Claude Code sessions",
     "codex": "Codex sessions",
 }
-SLO_LEVEL = "tight"
-SLO_CAPTION = "SLO: first 5 s / resume 2 s / TPOT 100 ms"
+SLO_LEVEL = "medium"
+SLO_CAPTION = "SLO medium: TTFT 5 s / TPOT 100 ms"
 
 
 def _floatify(rows):
@@ -172,15 +172,25 @@ def panel_goodput_per_dollar(ax: Axes, econ_rows):
                 va="center", transform=ax.transAxes, fontsize=8)
         ax.set_axis_off()
         return
-    econ_rows = sorted(econ_rows, key=lambda r: r["rate"])
-    rates = [r["rate"] for r in econ_rows]
-    for key, system in (
-        ("baseline_goodput_per_musd", "baseline_cpu_ssd"),
-        ("hbf_goodput_per_musd", "hbf_tp8_context"),
-    ):
+    by_system = defaultdict(list)
+    for row in econ_rows:
+        by_system[row.get("hbf_system", "hbf_tp8_context")].append(row)
+    baseline_rows = sorted(
+        next(iter(by_system.values())), key=lambda r: r["rate"])
+    colour, marker, label = STYLE["baseline_cpu_ssd"]
+    ax.plot([r["rate"] for r in baseline_rows],
+            [r.get("baseline_goodput_per_musd") for r in baseline_rows],
+            marker=marker, color=colour, linewidth=1.9, markersize=5,
+            label=label)
+    for system in ("hbf_tp8_context", "hbf_tp4x2"):
+        rows_l = sorted(
+            by_system.get(system, ()), key=lambda r: r["rate"])
+        if not rows_l:
+            continue
         colour, marker, label = STYLE[system]
-        values = [r.get(key) for r in econ_rows]
-        ax.plot(rates, values, marker=marker, color=colour, linewidth=1.9,
+        ax.plot([r["rate"] for r in rows_l],
+                [r.get("hbf_goodput_per_musd") for r in rows_l],
+                marker=marker, color=colour, linewidth=1.9,
                 markersize=5, label=label)
     _finish(ax, ylabel="SLO-good tokens/s per $M of 5-yr TCO",
             title="Goodput per dollar", note=SLO_CAPTION)
@@ -312,6 +322,13 @@ def build_family_figure(
         include_saturated: bool = False):
     rows = [r for r in agg if r["family"] == family]
     econ_rows = [r for r in econ if r["family"] == family]
+    # The TCO and endurance panels describe one HBF build; the tp8 rows
+    # are the canonical single-copy layout.  Goodput-per-dollar keeps
+    # every layout's rows and draws one line per layout.
+    econ_tp8 = [
+        r for r in econ_rows
+        if r.get("hbf_system", "hbf_tp8_context") == "hbf_tp8_context"
+    ]
     if not rows:
         return []
     if not include_saturated:
@@ -324,6 +341,7 @@ def build_family_figure(
                   f"(goodput peaks at {cutoff:g})")
         rows = [r for r in rows if r["rate"] <= cutoff]
         econ_rows = [r for r in econ_rows if r["rate"] <= cutoff]
+        econ_tp8 = [r for r in econ_tp8 if r["rate"] <= cutoff]
 
     written = []
     singles = (
@@ -341,13 +359,13 @@ def build_family_figure(
         plt.close(fig)
         written.append(path)
 
-    for name, fn in (
-        ("goodput_per_dollar", panel_goodput_per_dollar),
-        ("tco", panel_tco),
-        ("write_endurance", panel_endurance),
+    for name, fn, econ_payload in (
+        ("goodput_per_dollar", panel_goodput_per_dollar, econ_rows),
+        ("tco", panel_tco, econ_tp8),
+        ("write_endurance", panel_endurance, econ_tp8),
     ):
         fig, ax = plt.subplots(figsize=(5.6, 4.0))
-        fn(ax, econ_rows)
+        fn(ax, econ_payload)
         fig.tight_layout()
         path = out_dir / f"{family}_{name}.png"
         fig.savefig(path, dpi=180)
@@ -367,8 +385,8 @@ def build_family_figure(
     panel_tpot(axes[0][1], rows, econ_rows)
     panel_goodput(axes[0][2], rows, econ_rows)
     panel_goodput_per_dollar(axes[0][3], econ_rows)
-    panel_tco(axes[1][0], econ_rows)
-    panel_endurance(axes[1][1], econ_rows)
+    panel_tco(axes[1][0], econ_tp8)
+    panel_endurance(axes[1][1], econ_tp8)
     panel_phases(axes[1][2], rows)
     panel_turn_latency(axes[1][3], rows, econ_rows)
     fig.suptitle(
