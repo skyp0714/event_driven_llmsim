@@ -111,6 +111,8 @@ class SSDPromotionPolicy:
     min_context_tokens: int = 0
     demotion_hysteresis: float = 0.0
     rank_mode: str = "context"
+    tpot_safe_context_tokens: int = 0
+    tpot_safe_slack: float = 1.5
 
     def __post_init__(self) -> None:
         if not isinstance(self.key, str) or not self.key:
@@ -264,6 +266,14 @@ class SSDPromotionPolicy:
                 mode="load_aware",
                 retry_ns=50_000_000,
                 demotion_hysteresis=2.0,
+            )
+        if key == "load_aware_demote_h2_safe":
+            return cls(
+                key=key,
+                mode="load_aware",
+                retry_ns=50_000_000,
+                demotion_hysteresis=2.0,
+                tpot_safe_context_tokens=150_000,
             )
         if key == "load_aware_density":
             return cls(
@@ -1146,7 +1156,8 @@ class SSDStagedGPUHBFNode:
             if (
                 start_direct
                 and self.promotion_policy.load_aware_admission
-                and not self._load_aware_allows_promotion(now_ns)
+                and not self._load_aware_allows_promotion(
+                    now_ns, total_tokens=total_tokens)
             ):
                 start_direct = False
                 self.metrics.promotion_load_deferrals += 1
@@ -1432,12 +1443,30 @@ class SSDStagedGPUHBFNode:
             default=0,
         )
 
-    def _load_aware_allows_promotion(self, now_ns: int) -> bool:
-        """Compare only causally visible queue and calendar pressure."""
+    def _load_aware_allows_promotion(
+            self, now_ns: int, *,
+            total_tokens: Optional[int] = None) -> bool:
+        """Compare only causally visible queue and calendar pressure.
+
+        A session below ``tpot_safe_context_tokens`` decodes fast enough
+        on HBF to pass a tight per-token bar, and its resume there never
+        restores -- it passes both SLO axes on HBF while the GPU side is
+        prefill-saturated.  Such sessions get a slackened gate: they may
+        promote while the HBF side is up to ``tpot_safe_slack`` times the
+        GPU score rather than strictly quieter.
+        """
 
         gpu_score, hbf_score = self._load_scores(now_ns)
         if hbf_score == 0.0:
             return True
+        safe_tokens = self.promotion_policy.tpot_safe_context_tokens
+        if (
+            safe_tokens
+            and total_tokens is not None
+            and total_tokens <= safe_tokens
+        ):
+            return hbf_score <= (
+                gpu_score * self.promotion_policy.tpot_safe_slack)
         return hbf_score <= (
             gpu_score * (1.0 - self.promotion_policy.load_hysteresis)
         )
@@ -1596,9 +1625,15 @@ class SSDStagedGPUHBFNode:
                 continue
             if session_id in self._import_by_session:
                 continue
+            intent_placement = self.hbf_lifecycle.sessions.get(
+                session_id)
             if (
                 self.promotion_policy.load_aware_admission
-                and not self._load_aware_allows_promotion(now_ns)
+                and not self._load_aware_allows_promotion(
+                    now_ns,
+                    total_tokens=(
+                        None if intent_placement is None
+                        else intent_placement.total_tokens))
             ):
                 self.metrics.promotion_load_deferrals += 1
                 self._queue_intent_retry(
