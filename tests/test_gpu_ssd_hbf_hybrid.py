@@ -905,6 +905,90 @@ class SSDStagedGPUHBFTests(unittest.TestCase):
             worker.waiting.pop()
         self.assertTrue(node._load_aware_allows_promotion(0))
 
+    def test_demote_session_releases_hbf_placement(self):
+        node = self.make_node()
+        node.hbf_lifecycle.preload_session(
+            "resident", 4_096, now_ns=0)
+        node.hbf_lifecycle.demote_session("resident", now_ns=0)
+
+        record = node.hbf_lifecycle.sessions["resident"]
+        self.assertIs(record.state, PlacementState.EVICTED)
+        self.assertIsNone(record.group_id)
+        self.assertEqual(record.committed_hbf_tokens, 0)
+        self.assertEqual(
+            node.hbf_lifecycle.metrics.load_demotions, 1)
+        with self.assertRaises(RuntimeError):
+            node.hbf_lifecycle.demote_session("resident", now_ns=0)
+        node.assert_invariants()
+
+    def test_overloaded_hbf_demotes_short_resident_to_gpu(self):
+        node = self.make_node(policy="load_aware_demote")
+        self.assertEqual(
+            node.promotion_policy.demotion_hysteresis, 0.5)
+        node.hbf_lifecycle.preload_session("long", 60_000, now_ns=0)
+        node.hbf_lifecycle.preload_session("short", 512, now_ns=0)
+        for session_id in ("long", "short"):
+            node.sessions[session_id] = HybridSession(
+                session_id=session_id,
+                last_internal_call_index=0,
+            )
+            node._last_submitted_call_index[session_id] = 0
+        node.calendar.reserve_parallel(
+            arrival_ns=0,
+            job_id=88_888,
+            kind="test-hbf-load",
+            namespace="test",
+            demands={
+                "hbf-group-0-npu": (1_000_000_000, 0),
+            },
+        )
+
+        resume = self.runtime_call(
+            1,
+            1,
+            0,
+            input_tokens=512 + 32,
+            output_tokens=2,
+            prefix_reuse_tokens=512,
+            session_id="short",
+        )
+        node.submit(resume, now_ns=0)
+
+        self.assertEqual(node.metrics.hbf_load_demotions, 1)
+        self.assertEqual(node.metrics.gpu_calls, 1)
+        self.assertEqual(node.metrics.hbf_calls, 0)
+        self.assertIs(
+            node.hbf_lifecycle.sessions["long"].state,
+            PlacementState.HBF_READY)
+        node.run_until_idle()
+        self.assertIs(
+            resume.state, HybridCallState.INTERNAL_COMPLETE)
+
+    def test_balanced_load_keeps_short_resident_on_hbf(self):
+        node = self.make_node(policy="load_aware_demote")
+        node.hbf_lifecycle.preload_session("long", 60_000, now_ns=0)
+        node.hbf_lifecycle.preload_session("short", 512, now_ns=0)
+        for session_id in ("long", "short"):
+            node.sessions[session_id] = HybridSession(
+                session_id=session_id,
+                last_internal_call_index=0,
+            )
+            node._last_submitted_call_index[session_id] = 0
+
+        resume = self.runtime_call(
+            1,
+            1,
+            0,
+            input_tokens=512 + 32,
+            output_tokens=2,
+            prefix_reuse_tokens=512,
+            session_id="short",
+        )
+        node.submit(resume, now_ns=0)
+
+        self.assertEqual(node.metrics.hbf_load_demotions, 0)
+        self.assertEqual(node.metrics.hbf_calls, 1)
+
     def test_preload_gpu_session_registers_routing_records(self):
         node = self.make_node()
         kv_bytes = node.hbf_lifecycle.kv_bytes_per_token

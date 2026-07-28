@@ -251,6 +251,7 @@ class SSDHBFDesignSweepTests(unittest.TestCase):
             - set(CANONICAL_MIGRATION_POLICIES),
             {
                 "delay_1s",
+                "load_aware_demote",
                 "composite",
                 "composite_adaptive",
                 "composite_ready",

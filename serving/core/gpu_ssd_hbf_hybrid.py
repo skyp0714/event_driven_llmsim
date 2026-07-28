@@ -109,6 +109,7 @@ class SSDPromotionPolicy:
     human_gap_broadcast: bool = False
     load_aware_admission: bool = False
     min_context_tokens: int = 0
+    demotion_hysteresis: float = 0.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.key, str) or not self.key:
@@ -167,6 +168,17 @@ class SSDPromotionPolicy:
         ):
             raise ValueError(
                 "load_hysteresis must be in [0, 1]")
+        if (
+            isinstance(self.demotion_hysteresis, bool)
+            or not isinstance(self.demotion_hysteresis, (int, float))
+            or not math.isfinite(float(self.demotion_hysteresis))
+            or float(self.demotion_hysteresis) < 0.0
+        ):
+            raise ValueError(
+                "demotion_hysteresis must be non-negative")
+        if self.demotion_hysteresis and not self.load_aware_admission:
+            raise ValueError(
+                "demotion requires load-aware admission")
         if (
             not isinstance(self.allowed_gap_types, tuple)
             or any(
@@ -230,6 +242,13 @@ class SSDPromotionPolicy:
                 key=key,
                 mode="load_aware",
                 retry_ns=50_000_000,
+            )
+        if key == "load_aware_demote":
+            return cls(
+                key=key,
+                mode="load_aware",
+                retry_ns=50_000_000,
+                demotion_hysteresis=0.5,
             )
         if key in {
             "composite",
@@ -323,6 +342,7 @@ class SSDStagedHybridMetrics:
     direct_migrations_stale: int = 0
     human_gap_broadcasts: int = 0
     human_gap_broadcast_intents: int = 0
+    hbf_load_demotions: int = 0
     max_pending_calls: int = 0
 
 
@@ -612,6 +632,11 @@ class SSDStagedGPUHBFNode:
             self.hbf_lifecycle.register_session(
                 call.session_id, now_ns=self.current_ns)
         placement = self.hbf_lifecycle.sessions[call.session_id]
+        if self._should_demote_for_load(
+                placement, now_ns=self.current_ns):
+            self.hbf_lifecycle.demote_session(
+                call.session_id, now_ns=self.current_ns)
+            self.metrics.hbf_load_demotions += 1
         operational_reuse = min(
             call.prefix_reuse_tokens,
             placement.total_tokens,
@@ -1271,6 +1296,16 @@ class SSDStagedGPUHBFNode:
     def _load_aware_allows_promotion(self, now_ns: int) -> bool:
         """Compare only causally visible queue and calendar pressure."""
 
+        gpu_score, hbf_score = self._load_scores(now_ns)
+        if hbf_score == 0.0:
+            return True
+        return hbf_score <= (
+            gpu_score * (1.0 - self.promotion_policy.load_hysteresis)
+        )
+
+    def _load_scores(
+            self, now_ns: int, *,
+            include_pressure: bool = True) -> tuple[float, float]:
         # Both queue sums count outstanding work items per server; neither
         # side is normalised by worker count so the scales stay comparable
         # across layouts (tp8 has one HBF worker, tp4 has two).
@@ -1323,22 +1358,63 @@ class SSDStagedGPUHBFNode:
             ),
             default=0.0,
         )
-        gpu_score = (
-            float(gpu_queue_work)
-            + gpu_backlog / scale_ns
-            + gpu_hbm_pressure
+        gpu_dynamic = float(gpu_queue_work) + gpu_backlog / scale_ns
+        hbf_dynamic = float(hbf_queue_work) + hbf_backlog / scale_ns
+        if not include_pressure:
+            return gpu_dynamic, hbf_dynamic
+        return (
+            gpu_dynamic + gpu_hbm_pressure,
+            hbf_dynamic + hbf_lpddr_pressure + hbf_media_pressure,
         )
-        hbf_score = (
-            float(hbf_queue_work)
-            + hbf_backlog / scale_ns
-            + hbf_lpddr_pressure
-            + hbf_media_pressure
+
+    def _should_demote_for_load(
+            self, placement, *, now_ns: int) -> bool:
+        """Demote an idle HBF resident on strong, persistent imbalance.
+
+        The band is deliberately wider than the promotion gate's so the
+        two valves cannot flap a session back and forth: promotion needs
+        the HBF side to be the quieter one, demotion needs it to be
+        overloaded by ``demotion_hysteresis`` beyond parity.  Only the
+        short half of the HBF population (below the resident median
+        context) is eligible -- their GPU recompute is cheap, and the
+        long sessions are the ones whose avoided restore pays for HBF
+        residency in the first place.
+        """
+
+        hysteresis = self.promotion_policy.demotion_hysteresis
+        if not hysteresis:
+            return False
+        if (
+            placement.state != PlacementState.HBF_READY
+            or placement.append_job_ids
+            or placement.lpddr_tokens != 0
+            or placement.committed_hbf_tokens <= 0
+        ):
+            return False
+        # Only dynamic load counts here: media occupancy is residency,
+        # not overload, and against an idle GPU (score zero) any static
+        # pressure term would demote unconditionally.  The floor of one
+        # queued work item keeps an idle-but-occupied HBF host quiet.
+        gpu_score, hbf_score = self._load_scores(
+            now_ns, include_pressure=False)
+        if hbf_score <= max(1.0, gpu_score * (1.0 + hysteresis)):
+            return False
+        resident_tokens = sorted(
+            record.total_tokens
+            for record in self.hbf_lifecycle.sessions.values()
+            if record.state == PlacementState.HBF_READY
         )
-        if hbf_score == 0.0:
-            return True
-        return hbf_score <= (
-            gpu_score * (1.0 - self.promotion_policy.load_hysteresis)
+        if len(resident_tokens) < 2:
+            return False
+        median = (
+            resident_tokens[len(resident_tokens) // 2]
+            if len(resident_tokens) % 2
+            else (
+                resident_tokens[len(resident_tokens) // 2 - 1]
+                + resident_tokens[len(resident_tokens) // 2]
+            ) / 2
         )
+        return placement.total_tokens < median
 
     def _promotion_priority(
             self, item: tuple[str, SSDPromotionIntent]) -> tuple:

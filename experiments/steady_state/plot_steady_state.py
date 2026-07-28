@@ -111,11 +111,11 @@ def panel_resume_ttft(ax: Axes, agg, econ):
         if p50:
             ax.plot([p[0] for p in p50], [p[1] for p in p50], marker=marker,
                     color=colour, linewidth=1.9, markersize=5,
-                    label=f"{label} p50")
+                    label=label)
         if p99:
             ax.plot([p[0] for p in p99], [p[1] for p in p99], marker=marker,
                     color=colour, linewidth=1.3, markersize=4,
-                    linestyle="--", alpha=0.8, label=f"{label} p99")
+                    linestyle="--", alpha=0.8)
     _finish(ax, ylabel="Resume TTFT (s)",
             title="Resume TTFT: p50 (solid), p99 (dashed)", logy=True)
 
@@ -128,11 +128,11 @@ def panel_tpot(ax: Axes, agg, econ):
         if p50:
             ax.plot([p[0] for p in p50], [p[1] for p in p50], marker=marker,
                     color=colour, linewidth=1.9, markersize=5,
-                    label=f"{label} p50")
+                    label=label)
         if p99:
             ax.plot([p[0] for p in p99], [p[1] for p in p99], marker=marker,
                     color=colour, linewidth=1.3, markersize=4,
-                    linestyle="--", alpha=0.8, label=f"{label} p99")
+                    linestyle="--", alpha=0.8)
     _finish(ax, ylabel="TPOT (ms/token)",
             title="Inter-token latency: p50 (solid), p99 (dashed)", logy=True)
 
@@ -151,11 +151,11 @@ def panel_turn_latency(ax: Axes, agg, econ):
         if mean:
             ax.plot([p[0] for p in mean], [p[1] for p in mean],
                     marker=marker, color=colour, linewidth=1.9,
-                    markersize=5, label=f"{label} mean")
+                    markersize=5, label=label)
         if p99:
             ax.plot([p[0] for p in p99], [p[1] for p in p99], marker=marker,
                     color=colour, linewidth=1.3, markersize=4,
-                    linestyle="--", alpha=0.8, label=f"{label} p99")
+                    linestyle="--", alpha=0.8)
     _finish(ax, ylabel="Turn latency (s)",
             title="Turn latency: mean (solid), p99 (dashed)", logy=True)
 

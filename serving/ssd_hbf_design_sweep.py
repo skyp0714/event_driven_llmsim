@@ -160,6 +160,7 @@ SUPPORTED_MIGRATION_POLICIES = (
     "delay_30s",
     "delay_300s",
     "load_aware",
+    "load_aware_demote",
     "never",
     "composite",
     "composite_adaptive",

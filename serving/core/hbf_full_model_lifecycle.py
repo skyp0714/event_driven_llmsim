@@ -868,6 +868,7 @@ class LifecycleMetrics:
     preloaded_sessions: int = 0
     preloaded_gpu_sessions: int = 0
     capacity_evictions: int = 0
+    load_demotions: int = 0
     gpu_ready_hbm_pressure_evictions: int = 0
     gpu_ready_hbm_pressure_evicted_bytes: int = 0
     gpu_retained_bytes_peak: int = 0
@@ -1610,6 +1611,44 @@ class FullModelHBFLifecycle:
         victim.generation += 1
         self.metrics.capacity_evictions += 1
         return True
+
+    def demote_session(self, session_id: str, *, now_ns: int) -> None:
+        """Release one idle HBF placement because of load, not capacity.
+
+        The load-aware gate is a one-way valve without this: media
+        capacity never binds on flash, so an overloaded HBF host keeps
+        every resident it has.  Demotion takes the same exit as capacity
+        eviction -- the placement lands in ``EVICTED`` and the next
+        resume recomputes on the GPU -- so the cost model is already the
+        one the eviction path pays.
+        """
+
+        self.advance(now_ns)
+        record = self.sessions[session_id]
+        if (
+            record.state != PlacementState.HBF_READY
+            or record.append_job_ids
+            or record.lpddr_tokens != 0
+            or record.committed_hbf_tokens <= 0
+            or record.group_id is None
+        ):
+            raise RuntimeError(
+                "demotion requires an idle committed HBF placement: "
+                f"{record.state}")
+        self._release_group(
+            record.group_id,
+            self._record_committed_card_bytes(record))
+        record.state = PlacementState.EVICTED
+        record.group_id = None
+        record.committed_hbf_tokens = 0
+        self.lpddr_ledger.release(
+            self.lpddr_owner(record.session_id))
+        record.committed_per_card_bytes = 0
+        record.last_access_ns = now_ns
+        record.generation += 1
+        self.metrics.load_demotions += 1
+        if self.validate_every_event:
+            self.assert_invariants()
 
     def _ensure_capacity(
             self, group_id: int,
