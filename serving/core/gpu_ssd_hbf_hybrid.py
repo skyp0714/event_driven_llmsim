@@ -46,6 +46,7 @@ from .gpu_pd_tiered_node import (
     FiniteHBMTieredP4D4Node,
     TieredCallState,
     TieredNodeCall,
+    TieredSessionLineage,
 )
 from .hbf_comparison_metrics import CompletedRequest
 from .hbf_comparison_workload import (
@@ -669,6 +670,22 @@ class SSDStagedGPUHBFNode:
             restarted_gpu_lineage = True
         gpu_call_index = self._next_gpu_call_index.get(
             call.session_id, 0)
+        if (
+            gpu_call_index == 0
+            and not restarted_gpu_lineage
+            and operational_reuse > 0
+            and call.session_id not in self.gpu_node.sessions
+        ):
+            # The session's first GPU-side call is a resume: it has been
+            # living on the HBF host and is coming back with KV that is
+            # genuinely reusable.  This index counts calls on this node, not
+            # turns in the conversation, so leaving it at zero would assert a
+            # first turn that reuses an earlier prefix.  Open the GPU lineage
+            # one call in instead, with both node cursors agreeing.
+            self.gpu_node.sessions[call.session_id] = TieredSessionLineage(
+                session_id=call.session_id, last_call_index=0)
+            self.gpu_node._last_submitted_call_index[call.session_id] = 0
+            gpu_call_index = 1
         tier_call = TieredNodeCall(
             request_id=call.request_id,
             session_id=call.session_id,
