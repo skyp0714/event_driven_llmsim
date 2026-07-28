@@ -1,0 +1,50 @@
+{
+  "cohort_shuffle_seed": 20260727,
+  "cohorts_are_nested": true,
+  "engine": {
+    "d_max_num_seqs": 128,
+    "max_num_batched_tokens": 131072,
+    "max_num_seqs": 128,
+    "max_prefill_chunk_tokens": 131072,
+    "p_max_num_seqs": 32,
+    "validate_every_event": false
+  },
+  "hbf_active_memory": {
+    "bandwidth_gbps_per_card": 409.6,
+    "capacity_gib_per_card": 16.0
+  },
+  "load_axis": "cohort_session_count",
+  "load_axis_rationale": "arrival rate saturates once the arrival span is negligible against session lifetime; cohort size sweeps concurrent KV residency directly",
+  "migration_policy": "load_aware",
+  "partition_fractions": "25% warmup / 50% measurement / 25% guard",
+  "repo_root": "/home/hnpark2/event_driven_sim_claude",
+  "role_shuffle_seed": 20260728,
+  "schema_version": 1,
+  "seeds": [
+    101,
+    102,
+    103
+  ],
+  "session_counts": [
+    64,
+    128,
+    192,
+    256,
+    384,
+    512,
+    768,
+    1024
+  ],
+  "session_rate_fixed": 1.0,
+  "slo": {
+    "first_ttft_seconds": 30.0,
+    "resume_ttft_seconds": 30.0,
+    "tpot_milliseconds": 300.0
+  },
+  "systems": [
+    "baseline_cpu_ssd",
+    "oracle_infinite_hbm",
+    "hbf_tp8_context"
+  ],
+  "trace_path": "/home/hnpark2/llmsim-data/tracelab-schema3-sps0.2-final.jsonl"
+}

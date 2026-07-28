@@ -219,6 +219,18 @@ class HBFServerHardware:
     npu_peak_tflops_per_card: float = 989.5
     lpddr_capacity_bytes_per_card: int = 64 * 1024 ** 3
     lpddr_bandwidth_gbps_per_card: float = 204.8
+    # On-package activation memory.  Zero disables the tier, which is the
+    # default and reproduces the original LPDDR-only activation path.  When
+    # enabled, a kernel whose activation working set fits in this capacity
+    # is served at this bandwidth instead of round-tripping LPDDR -- the
+    # behavior of a real accelerator's L2 for the small elementwise
+    # activations that dominate the dense path.
+    sram_capacity_bytes_per_card: int = 0
+    sram_bandwidth_gbps_per_card: float = 0.0
+    # Fuse the EP dispatch all-gather and combine reduce-scatter into one
+    # logical collective.  Byte volume is unchanged; the fusion saves one
+    # end-to-end fixed collective latency per layer, not bandwidth.
+    fused_ep_collectives: bool = False
     intra_fabric_bandwidth_gbps_per_card: float = 50.0
     intra_fabric_fixed_latency_us: float = 3.0
     pcie_root_count: int = 2
@@ -256,10 +268,35 @@ class HBFServerHardware:
         value.validate()
         return value
 
+    @property
+    def sram_enabled(self) -> bool:
+        return (
+            self.sram_capacity_bytes_per_card > 0
+            and self.sram_bandwidth_gbps_per_card > 0.0
+        )
+
     def validate(self) -> None:
         if not isinstance(self.hbf_read_prefetch_enabled, bool):
             raise ValueError(
                 "hardware.hbf_read_prefetch_enabled must be a boolean")
+        if not isinstance(self.fused_ep_collectives, bool):
+            raise ValueError(
+                "hardware.fused_ep_collectives must be a boolean")
+        _nonnegative_float(
+            "hardware.sram_bandwidth_gbps_per_card",
+            self.sram_bandwidth_gbps_per_card)
+        if (
+            isinstance(self.sram_capacity_bytes_per_card, bool)
+            or not isinstance(self.sram_capacity_bytes_per_card, int)
+            or self.sram_capacity_bytes_per_card < 0
+        ):
+            raise ValueError(
+                "hardware.sram_capacity_bytes_per_card must be a "
+                "non-negative integer")
+        if (self.sram_capacity_bytes_per_card > 0) != (
+                self.sram_bandwidth_gbps_per_card > 0.0):
+            raise ValueError(
+                "SRAM capacity and bandwidth must be set together")
         for name in ("pcie_card_to_root", "pcie_nic_to_root"):
             if not isinstance(getattr(self, name), tuple):
                 raise ValueError(
@@ -766,6 +803,28 @@ class FullModelHBFLatencyModel:
             )
         )
 
+    def _activation_seconds(self, byte_count: float) -> float:
+        """Serve activation traffic from on-package SRAM when it fits.
+
+        The dense path is a chain of small elementwise kernels whose working
+        set is a few megabytes.  Without an on-package tier every one of
+        them round-trips LPDDR, which is not how a real accelerator with an
+        L2 behaves.  A kernel whose activation bytes fit in the configured
+        capacity is therefore served at SRAM bandwidth; anything larger
+        spills and pays LPDDR.  Disabled by default.
+        """
+
+        if byte_count <= 0:
+            return 0.0
+        if (
+            self.hardware.sram_enabled
+            and byte_count <= self.hardware.sram_capacity_bytes_per_card
+        ):
+            return byte_count / (
+                self.hardware.sram_bandwidth_gbps_per_card * 1e9)
+        return byte_count / (
+            self.hardware.lpddr_bandwidth_gbps_per_card * 1e9)
+
     def _kernel(
             self, family: str, *, flops: float,
             hbf_read_bytes: float = 0.0, lpddr_bytes: float = 0.0,
@@ -788,10 +847,7 @@ class FullModelHBFLatencyModel:
         hbf_bandwidth_seconds = self._hbf_bandwidth_seconds(
             hbf_read_bytes)
         hbf_seconds = hbf_fixed_seconds + hbf_bandwidth_seconds
-        lpddr_seconds = (
-            lpddr_bytes
-            / (self.hardware.lpddr_bandwidth_gbps_per_card * 1e9)
-        )
+        lpddr_seconds = self._activation_seconds(lpddr_bytes)
         if self.semantics == KERNEL_SEMANTICS_V2:
             # v2: the fitted residual describes compute inefficiency on the
             # calibration device.  Memory terms on any medium pay one shared
@@ -1581,6 +1637,20 @@ class FullModelHBFLatencyModel:
         )
         return up, activation, down
 
+    def _collective_fixed_ns(self, route: str) -> int:
+        """Return the end-to-end fixed latency one collective pays."""
+
+        fixed_us = max(
+            self.pcie_topology.card_fixed_latency_us,
+            self.pcie_topology.root_fixed_latency_us,
+        )
+        if route == CROSS_ROOT_ROUTE:
+            fixed_us = max(
+                fixed_us,
+                self.pcie_topology.inter_root_fixed_latency_us,
+            )
+        return int(math.ceil(fixed_us * 1e3))
+
     def _collective_ns(
             self, payload_bytes: int, *,
             rank_multiplier: float, route: str) -> int:
@@ -1992,16 +2062,32 @@ class FullModelHBFLatencyModel:
                 rank_multiplier=2.0 * (tp - 1) / tp,
                 route=standard_collective_route,
             )
-            allgather_per_layer_ns = self._collective_ns(
-                allgather_local_chunk,
-                rank_multiplier=tp - 1,
-                route=standard_collective_route,
-            )
-            reduce_scatter_per_layer_ns = self._collective_ns(
-                allreduce_payload,
-                rank_multiplier=(tp - 1) / tp,
-                route=standard_collective_route,
-            )
+            if self.hardware.fused_ep_collectives:
+                # One fused dispatch/combine: the same bytes cross the
+                # fabric, but the pair pays a single end-to-end fixed
+                # collective latency instead of two.
+                fused_ns = self._collective_ns(
+                    allgather_local_chunk,
+                    rank_multiplier=tp - 1,
+                    route=standard_collective_route,
+                ) + self._collective_ns(
+                    allreduce_payload,
+                    rank_multiplier=(tp - 1) / tp,
+                    route=standard_collective_route,
+                ) - self._collective_fixed_ns(standard_collective_route)
+                allgather_per_layer_ns = max(0, fused_ns)
+                reduce_scatter_per_layer_ns = 0
+            else:
+                allgather_per_layer_ns = self._collective_ns(
+                    allgather_local_chunk,
+                    rank_multiplier=tp - 1,
+                    route=standard_collective_route,
+                )
+                reduce_scatter_per_layer_ns = self._collective_ns(
+                    allreduce_payload,
+                    rank_multiplier=(tp - 1) / tp,
+                    route=standard_collective_route,
+                )
             allreduce_bytes_per_layer = int(
                 2.0 * (tp - 1) / tp * allreduce_payload)
             allgather_bytes_per_layer = (

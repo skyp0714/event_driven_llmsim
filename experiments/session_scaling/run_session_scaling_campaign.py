@@ -165,6 +165,10 @@ def _build_system(system_key: str, hardware):
     raise ValueError(f"unknown system {system_key!r}")
 
 
+def _mean(values: Sequence[float]) -> float:
+    return statistics.fmean(values) if values else float("nan")
+
+
 def _percentile(values: Sequence[float], q: float) -> float:
     if not values:
         return float("nan")
@@ -279,7 +283,7 @@ def run_cell(task: dict) -> dict:
     peak_rss_mb = resource.getrusage(
         resource.RUSAGE_SELF).ru_maxrss / 1024.0
 
-    first, resume, tpot = [], [], []
+    first, resume, tpot, turn_latency = [], [], [], []
     passes = scored = 0
     level_passes = {name: 0 for name in SLO_LEVELS}
     level_output_tokens = {name: 0 for name in SLO_LEVELS}
@@ -299,6 +303,10 @@ def run_cell(task: dict) -> dict:
             if call.output_tokens > 1 else 0.0
         )
         tpot.append(per_token_ms)
+        # Service time for one call: release -> completion, with the
+        # tool/human wait that follows it excluded.
+        turn_latency.append(
+            (call.completion_ns - call.release_ns) / 1e9)
         slo = FIRST_TTFT_SLO_SECONDS if is_first else RESUME_TTFT_SLO_SECONDS
         if ttft <= slo and per_token_ms <= TPOT_SLO_MILLISECONDS:
             passes += 1
@@ -340,10 +348,19 @@ def run_cell(task: dict) -> dict:
         "measurement_sessions": len(scored_sessions),
         "first_ttft_p50_s": _percentile(first, 0.50),
         "first_ttft_p95_s": _percentile(first, 0.95),
+        "first_ttft_p99_s": _percentile(first, 0.99),
+        "first_ttft_mean_s": _mean(first),
         "resume_ttft_p50_s": _percentile(resume, 0.50),
         "resume_ttft_p95_s": _percentile(resume, 0.95),
+        "resume_ttft_p99_s": _percentile(resume, 0.99),
+        "resume_ttft_mean_s": _mean(resume),
         "tpot_p50_ms": _percentile(tpot, 0.50),
         "tpot_p95_ms": _percentile(tpot, 0.95),
+        "tpot_p99_ms": _percentile(tpot, 0.99),
+        "tpot_mean_ms": _mean(tpot),
+        "turn_latency_mean_s": _mean(turn_latency),
+        "turn_latency_p50_s": _percentile(turn_latency, 0.50),
+        "turn_latency_p99_s": _percentile(turn_latency, 0.99),
         "joint_slo_pass_fraction": passes / scored if scored else 0.0,
         "slo_levels": {
             name: {
