@@ -866,6 +866,7 @@ class LifecycleMetrics:
     active_prefill_drain_committed: int = 0
     active_prefill_drain_stale: int = 0
     preloaded_sessions: int = 0
+    preloaded_gpu_sessions: int = 0
     capacity_evictions: int = 0
     gpu_ready_hbm_pressure_evictions: int = 0
     gpu_ready_hbm_pressure_evicted_bytes: int = 0
@@ -1781,6 +1782,88 @@ class FullModelHBFLifecycle:
         )
         self.sessions[session_id] = record
         self.metrics.preloaded_sessions += 1
+        if self.validate_every_event:
+            self.assert_invariants()
+        return record
+
+    def preload_gpu_session(
+            self, session_id: str, tokens: int, *, now_ns: int,
+            durable_ssd: bool,
+            last_access_ns: Optional[int] = None,
+            version: int = 1) -> SessionPlacement:
+        """Register one idle session whose context lives on the GPU host.
+
+        The counterpart of :meth:`preload_session` for a resident whose
+        equilibrium placement is a GPU-side tier rather than HBF: the
+        caller preloads the physical copy into the GPU node's tier
+        lifecycle and registers only the routing record here.
+
+        ``durable_ssd`` selects the placement's authoritative source:
+        ``SSD_READY`` for a published durable checkpoint (the caller must
+        have preloaded the tier copy on SSD), ``GPU_READY`` for a copy the
+        GPU node retains in a live tier.  Byte accounting mirrors what
+        :meth:`complete_gpu_turn` and :meth:`publish_ssd_checkpoint` would
+        have left behind.
+        """
+
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("session_id must be non-empty")
+        if not isinstance(durable_ssd, bool):
+            raise ValueError("durable_ssd must be a boolean")
+        if (
+            isinstance(tokens, bool)
+            or not isinstance(tokens, int)
+            or tokens <= 0
+        ):
+            raise ValueError("tokens must be a positive integer")
+        if (
+            isinstance(now_ns, bool)
+            or not isinstance(now_ns, int)
+            or now_ns < 0
+        ):
+            raise ValueError("now_ns must be a non-negative integer")
+        if (
+            isinstance(version, bool)
+            or not isinstance(version, int)
+            or version <= 0
+        ):
+            raise ValueError("version must be a positive integer")
+        access_ns = now_ns if last_access_ns is None else last_access_ns
+        if (
+            isinstance(access_ns, bool)
+            or not isinstance(access_ns, int)
+            or access_ns < 0
+            or access_ns > now_ns
+        ):
+            raise ValueError(
+                "last_access_ns must be a non-negative integer at or "
+                "before now_ns")
+        self.advance(now_ns)
+        if session_id in self.sessions:
+            raise RuntimeError(
+                f"session {session_id!r} is already registered")
+        record = SessionPlacement(
+            session_id=session_id,
+            state=(
+                PlacementState.SSD_READY
+                if durable_ssd
+                else PlacementState.GPU_READY
+            ),
+            generation=0,
+            version=version,
+            total_tokens=tokens,
+            committed_hbf_tokens=0,
+            lpddr_tokens=0,
+            group_id=None,
+            gpu_retained_bytes=(
+                0 if durable_ssd
+                else tokens * self.kv_bytes_per_token
+            ),
+            last_access_ns=access_ns,
+        )
+        self.sessions[session_id] = record
+        self.metrics.preloaded_gpu_sessions += 1
+        self._update_peaks()
         if self.validate_every_event:
             self.assert_invariants()
         return record

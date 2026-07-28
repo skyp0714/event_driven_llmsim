@@ -108,6 +108,7 @@ class SSDPromotionPolicy:
     ssd_checkpoint_age_ns: Optional[int] = None
     human_gap_broadcast: bool = False
     load_aware_admission: bool = False
+    min_context_tokens: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.key, str) or not self.key:
@@ -116,7 +117,7 @@ class SSDPromotionPolicy:
             raise ValueError(
                 "promotion policy mode must be one of "
                 f"{sorted(SUPPORTED_SSD_PROMOTION_MODES)}")
-        for name in ("idle_delay_ns", "retry_ns"):
+        for name in ("idle_delay_ns", "retry_ns", "min_context_tokens"):
             value = getattr(self, name)
             if (
                 isinstance(value, bool)
@@ -836,6 +837,13 @@ class SSDStagedGPUHBFNode:
             if self.promotion_policy.mode != "never":
                 self.metrics.promotion_intents_filtered += 1
             return
+        # The turn's own tokens are the post-turn context; the placement
+        # record is only updated at internal completion, which has not
+        # happened yet at this user-completion boundary.
+        turn_total_tokens = call.input_tokens + call.output_tokens - 1
+        if turn_total_tokens < self.promotion_policy.min_context_tokens:
+            self.metrics.promotion_intents_filtered += 1
+            return
         placement = self.hbf_lifecycle.sessions[call.session_id]
         serial = self._next_promotion_serial
         self._next_promotion_serial += 1
@@ -967,6 +975,8 @@ class SSDStagedGPUHBFNode:
                 and call.call_index > 0
                 and tier_call.prepare_source == Tier.D
                 and call.has_successor
+                and total_tokens
+                >= self.promotion_policy.min_context_tokens
             )
             start_direct = direct_candidate
             if (
@@ -1261,6 +1271,9 @@ class SSDStagedGPUHBFNode:
     def _load_aware_allows_promotion(self, now_ns: int) -> bool:
         """Compare only causally visible queue and calendar pressure."""
 
+        # Both queue sums count outstanding work items per server; neither
+        # side is normalised by worker count so the scales stay comparable
+        # across layouts (tp8 has one HBF worker, tp4 has two).
         gpu_queue_work = sum((
             len(self.gpu_pool.p_worker.waiting),
             len(self.gpu_pool.d_worker.waiting),
@@ -1276,7 +1289,7 @@ class SSDStagedGPUHBFNode:
             + int(worker.inflight is not None)
             + int(worker.pending_launch_ns is not None)
             for worker in self.hbf_pool.workers
-        ) / max(1, len(self.hbf_pool.workers))
+        )
         gpu_backlog = self._calendar_backlog_ns(
             prefixes=(f"gpu-node-{self.gpu_node_id}-p-model",
                       f"gpu-node-{self.gpu_node_id}-d-model",
@@ -1292,6 +1305,24 @@ class SSDStagedGPUHBFNode:
             self.gpu_lifecycle.d_ledger.used_bytes
             / self.gpu_lifecycle.d_ledger.capacity_bytes
         )
+        lpddr_ledger = self.hbf_lifecycle.lpddr_ledger
+        hbf_lpddr_pressure = max(
+            (
+                lpddr_ledger.used_bytes(group.group_id)
+                / lpddr_ledger.capacity_bytes
+                for group in self.hbf_lifecycle.groups
+            ),
+            default=0.0,
+        )
+        hbf_media_pressure = max(
+            (
+                reserved / self.hbf_lifecycle.usable_bytes_per_card
+                for card_bytes in (
+                    self.hbf_lifecycle._reserved_bytes_by_card.values())
+                for reserved in card_bytes.values()
+            ),
+            default=0.0,
+        )
         gpu_score = (
             float(gpu_queue_work)
             + gpu_backlog / scale_ns
@@ -1300,6 +1331,8 @@ class SSDStagedGPUHBFNode:
         hbf_score = (
             float(hbf_queue_work)
             + hbf_backlog / scale_ns
+            + hbf_lpddr_pressure
+            + hbf_media_pressure
         )
         if hbf_score == 0.0:
             return True
@@ -1307,10 +1340,29 @@ class SSDStagedGPUHBFNode:
             gpu_score * (1.0 - self.promotion_policy.load_hysteresis)
         )
 
+    def _promotion_priority(
+            self, item: tuple[str, SSDPromotionIntent]) -> tuple:
+        """Order due intents by maturity, longest context first.
+
+        HBF residency amortises the avoided restore per resume, which
+        scales with context length, while its decode occupancy cost does
+        not.  When the load gate admits only k promotions they should go
+        to the k most mature sessions, not the lexicographically first
+        ones.  The serial tie-break keeps the order deterministic.
+        """
+
+        session_id, intent = item
+        placement = self.hbf_lifecycle.sessions.get(session_id)
+        total_tokens = 0 if placement is None else placement.total_tokens
+        return (-total_tokens, intent.serial, session_id)
+
     def _progress_promotions(self, now_ns: int) -> None:
         self._mark_due_promotions(now_ns)
         for session_id, intent in tuple(
-                sorted(self._intent_by_session.items())):
+                sorted(
+                    self._intent_by_session.items(),
+                    key=self._promotion_priority,
+                )):
             if not intent.due_reached:
                 continue
             if session_id in self._import_by_session:

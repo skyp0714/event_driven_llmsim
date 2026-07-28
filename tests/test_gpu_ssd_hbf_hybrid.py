@@ -4,7 +4,9 @@ import unittest
 
 from serving.core.gpu_hbf_hybrid import (
     HybridCall,
+    HybridCallState,
     HybridExecution,
+    HybridSession,
 )
 from serving.core.gpu_pd_tier_lifecycle import (
     SSDExportStatus,
@@ -13,6 +15,7 @@ from serving.core.gpu_pd_tier_lifecycle import (
 )
 from serving.core.gpu_pd_latency import P4D4GPUHardware
 from serving.core.gpu_ssd_hbf_hybrid import (
+    SSDPromotionIntent,
     SSDPromotionPolicy,
     SSDStagedGPUHBFNode,
     SSDStagedGPUHBFSystem,
@@ -832,6 +835,138 @@ class SSDStagedGPUHBFTests(unittest.TestCase):
             self.assertIsNotNone(event_ns)
             node.advance(event_ns)
         self.assertGreaterEqual(node.current_ns, 1_000_000_000)
+
+    def test_min_context_tokens_filters_promotion_intents(self):
+        policy = dataclasses.replace(
+            SSDPromotionPolicy.for_key("eager"),
+            min_context_tokens=10_000,
+        )
+        node = self.make_node(policy=policy)
+        first = self.runtime_call(
+            0,
+            0,
+            0,
+            input_tokens=64,
+            output_tokens=2,
+            has_successor=True,
+        )
+        node.submit(first, now_ns=0)
+        node.run_until_idle()
+
+        self.assertEqual(node.metrics.promotion_intents_scheduled, 0)
+        self.assertGreaterEqual(
+            node.metrics.promotion_intents_filtered, 1)
+        self.assertEqual(node.metrics.ssd_exports_started, 0)
+        self.assertEqual(node.metrics.hbf_imports_started, 0)
+
+    def test_promotion_priority_orders_by_context_descending(self):
+        node = self.make_node()
+        node.hbf_lifecycle.preload_gpu_session(
+            "short", 100, now_ns=0, durable_ssd=True)
+        node.hbf_lifecycle.preload_gpu_session(
+            "long", 50_000, now_ns=0, durable_ssd=True)
+
+        def intent(session_id, serial):
+            return SSDPromotionIntent(
+                session_id=session_id,
+                predecessor_request_id=serial,
+                snapshot_version=1,
+                user_completion_ns=0,
+                due_ns=0,
+                gap_type=None,
+                serial=serial,
+            )
+
+        items = {
+            "short": intent("short", 1),
+            "long": intent("long", 2),
+        }
+        ordered = sorted(items.items(), key=node._promotion_priority)
+        self.assertEqual(
+            [session_id for session_id, _ in ordered],
+            ["long", "short"],
+        )
+
+    def test_load_score_sums_hbf_queue_work_across_workers(self):
+        node = self.make_node(policy="load_aware", layout="tp4")
+        self.assertEqual(len(node.hbf_pool.workers), 2)
+        for _ in range(3):
+            node.gpu_pool.p_worker.waiting.append(0)
+
+        # Two waiting items on each of the two HBF workers: the summed
+        # queue work (4) exceeds the GPU side (3) with hysteresis, so the
+        # promotion must be denied.  The per-worker mean (2) would have
+        # allowed it.
+        for worker in node.hbf_pool.workers:
+            worker.waiting.extend((0, 0))
+        self.assertFalse(node._load_aware_allows_promotion(0))
+
+        for worker in node.hbf_pool.workers:
+            worker.waiting.pop()
+        self.assertTrue(node._load_aware_allows_promotion(0))
+
+    def test_preload_gpu_session_registers_routing_records(self):
+        node = self.make_node()
+        kv_bytes = node.hbf_lifecycle.kv_bytes_per_token
+        d_record = node.hbf_lifecycle.preload_gpu_session(
+            "d-resident", 1_000, now_ns=0, durable_ssd=False)
+        ssd_record = node.hbf_lifecycle.preload_gpu_session(
+            "ssd-resident", 2_000, now_ns=0, durable_ssd=True)
+
+        self.assertIs(d_record.state, PlacementState.GPU_READY)
+        self.assertEqual(
+            d_record.gpu_retained_bytes, 1_000 * kv_bytes)
+        self.assertIsNone(d_record.group_id)
+        self.assertIs(ssd_record.state, PlacementState.SSD_READY)
+        self.assertEqual(ssd_record.gpu_retained_bytes, 0)
+        with self.assertRaises(RuntimeError):
+            node.hbf_lifecycle.preload_gpu_session(
+                "d-resident", 1_000, now_ns=0, durable_ssd=False)
+        self.assertEqual(
+            node.hbf_lifecycle.metrics.preloaded_gpu_sessions, 2)
+        node.assert_invariants()
+
+    def test_preloaded_gpu_resident_resumes_on_gpu(self):
+        cases = (
+            (False, Tier.D),
+            (False, Tier.CPU),
+            (True, Tier.SSD),
+        )
+        for durable_ssd, tier in cases:
+            with self.subTest(tier=tier.value):
+                node = self.make_node()
+                session_id = f"resident-{tier.value}"
+                tokens = 512
+                node.gpu_lifecycle.preload_session(
+                    session_id, tokens, tier=tier, now_ns=0)
+                node.hbf_lifecycle.preload_gpu_session(
+                    session_id, tokens, now_ns=0,
+                    durable_ssd=durable_ssd)
+                # Mirror the campaign's seed_call_cursors: the resident's
+                # earlier calls already happened before the window opened.
+                node.sessions[session_id] = HybridSession(
+                    session_id=session_id,
+                    last_internal_call_index=0,
+                )
+                node._last_submitted_call_index[session_id] = 0
+
+                call = self.runtime_call(
+                    1,
+                    1,
+                    0,
+                    input_tokens=tokens + 64,
+                    output_tokens=2,
+                    prefix_reuse_tokens=tokens,
+                    session_id=session_id,
+                )
+                node.submit(call, now_ns=0)
+                node.run_until_idle()
+
+                self.assertEqual(node.metrics.hbf_calls, 0)
+                self.assertEqual(node.metrics.gpu_calls, 1)
+                self.assertIs(
+                    call.state, HybridCallState.INTERNAL_COMPLETE)
+                self.assertEqual(call.operational_reuse_tokens, tokens)
 
     def assert_gpu_tiers_empty(self, node):
         self.assertEqual(node.gpu_lifecycle.p_ledger.used_bytes, 0)

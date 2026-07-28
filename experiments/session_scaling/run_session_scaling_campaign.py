@@ -61,6 +61,7 @@ SYSTEMS = (
     "baseline_cpu_ssd",
     "oracle_infinite_hbm",
     "hbf_tp8_context",
+    "hbf_tp4x2",
 )
 # Relative single-threaded cost per call, measured on this host.  Used only
 # to start the long poles first; it never affects results.
@@ -68,6 +69,7 @@ SYSTEM_COST_WEIGHT = {
     "baseline_cpu_ssd": 1.0,
     "oracle_infinite_hbm": 0.6,
     "hbf_tp8_context": 8.0,
+    "hbf_tp4x2": 8.0,
 }
 
 FIRST_TTFT_SLO_SECONDS = 30.0
@@ -157,6 +159,14 @@ def _build_system(system_key: str, hardware):
     if system_key == "hbf_tp8_context":
         spec = make_design_spec(
             hbf_layout="tp8_context",
+            migration_policy=os.environ.get(
+                "LLMSIM_MIGRATION_POLICY", "load_aware"),
+            active_memory=lpddr_active_memory(**HBF_ACTIVE_MEMORY),
+        )
+        return make_design_system(repo_root=REPO_ROOT, spec=spec)
+    if system_key == "hbf_tp4x2":
+        spec = make_design_spec(
+            hbf_layout="tp4x2",
             migration_policy=os.environ.get(
                 "LLMSIM_MIGRATION_POLICY", "load_aware"),
             active_memory=lpddr_active_memory(**HBF_ACTIVE_MEMORY),
