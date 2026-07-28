@@ -1453,6 +1453,52 @@ class FullModelHBFLatencyModel:
             ),
         )
 
+    @lru_cache(maxsize=16_384)
+    def _token_shaped_kernels(
+            self, total_tokens: int) -> tuple[KernelLatency, ...]:
+        """Return the kernels that depend only on the batch token count.
+
+        The batch cache is keyed on the full :class:`HBFModelBatchShape`,
+        which carries per-sequence K lengths.  Those change on every decode
+        step, so that cache effectively never hits and each call rebuilt all
+        fifteen kernels.  Every kernel below is a pure function of
+        ``total_tokens``, so caching them on that scalar removes the repeated
+        work without changing any value.
+        """
+
+        q_dim = self.layout.q_heads_per_rank * QWEN_HEAD_DIM
+        kv_dim = self.layout.kv_heads_per_rank * QWEN_HEAD_DIM
+        qkv_dim = q_dim + 2 * kv_dim
+        return (
+            self._elementwise(
+                "norm", total_tokens, QWEN_HIDDEN_SIZE, 8.0, 2.0),
+            self._elementwise("norm", total_tokens, q_dim, 8.0, 2.0),
+            self._elementwise("norm", total_tokens, kv_dim, 8.0, 2.0),
+            self._gemm(
+                "q_projection", total_tokens, QWEN_HIDDEN_SIZE, qkv_dim),
+            self._elementwise(
+                "rope", total_tokens, q_dim + kv_dim, 10.0, 2.0),
+            self._gemm(
+                "o_projection", total_tokens, q_dim, QWEN_HIDDEN_SIZE),
+            self._gemm(
+                "router", total_tokens, QWEN_HIDDEN_SIZE, QWEN_EXPERTS),
+            self._moe(total_tokens),
+            self._elementwise(
+                "norm", total_tokens, QWEN_HIDDEN_SIZE, 8.0, 2.0),
+        )
+
+    @lru_cache(maxsize=4_096)
+    def _sequence_shaped_kernels(
+            self, sequences: int) -> tuple[KernelLatency, KernelLatency]:
+        """Return the epilogue kernels that depend only on sequence count."""
+
+        return (
+            self._gemm(
+                "lm_head", sequences, QWEN_HIDDEN_SIZE,
+                QWEN_VOCAB_SIZE // self.layout.tp_size),
+            self._sampler_kernel(sequences),
+        )
+
     def _sampler_kernel(self, sequences: int) -> KernelLatency:
         """One fitted launch floor plus a memory pass over rank logits."""
 
@@ -1894,39 +1940,15 @@ class FullModelHBFLatencyModel:
 
         embedding = self._elementwise(
             "embedding", total_tokens, QWEN_HIDDEN_SIZE, 0.0, 1.0)
-        layernorm = self._elementwise(
-            "norm", total_tokens, QWEN_HIDDEN_SIZE, 8.0, 2.0)
-        q_norm = self._elementwise(
-            "norm", total_tokens, q_dim, 8.0, 2.0)
-        k_norm = self._elementwise(
-            "norm", total_tokens, kv_dim, 8.0, 2.0)
-        qkv = self._gemm(
-            "q_projection", total_tokens, QWEN_HIDDEN_SIZE, qkv_dim)
-        rope = self._elementwise(
-            "rope", total_tokens, q_dim + kv_dim, 10.0, 2.0)
+        (
+            layernorm, q_norm, k_norm, qkv, rope, o_proj, router, moe,
+            final_norm,
+        ) = self._token_shaped_kernels(total_tokens)
         attention = self._attention(shape)
         pair_query_bytes, pair_partial_bytes = (
             self._pair_attention_exchange_bytes(shape))
         pair_merge = self._pair_attention_merge(shape)
-        o_proj = self._gemm(
-            "o_projection", total_tokens, q_dim, QWEN_HIDDEN_SIZE)
-        router = self._gemm(
-            "router",
-            total_tokens,
-            QWEN_HIDDEN_SIZE,
-            QWEN_EXPERTS,
-        )
-        moe = self._moe(total_tokens)
-
-        final_norm = self._elementwise(
-            "norm", total_tokens, QWEN_HIDDEN_SIZE, 8.0, 2.0)
-        lm_head = self._gemm(
-            "lm_head",
-            sequences,
-            QWEN_HIDDEN_SIZE,
-            QWEN_VOCAB_SIZE // tp,
-        )
-        sampler = self._sampler_kernel(sequences)
+        lm_head, sampler = self._sequence_shaped_kernels(sequences)
 
         dense_per_layer = (
             2 * layernorm.latency_ns
