@@ -674,18 +674,32 @@ class SSDStagedGPUHBFNode:
             gpu_call_index == 0
             and not restarted_gpu_lineage
             and operational_reuse > 0
-            and call.session_id not in self.gpu_node.sessions
         ):
-            # The session's first GPU-side call is a resume: it has been
-            # living on the HBF host and is coming back with KV that is
-            # genuinely reusable.  This index counts calls on this node, not
-            # turns in the conversation, so leaving it at zero would assert a
-            # first turn that reuses an earlier prefix.  Open the GPU lineage
-            # one call in instead, with both node cursors agreeing.
-            self.gpu_node.sessions[call.session_id] = TieredSessionLineage(
-                session_id=call.session_id, last_call_index=0)
-            self.gpu_node._last_submitted_call_index[call.session_id] = 0
-            gpu_call_index = 1
+            # The session's first GPU-side call under this counter is a
+            # resume: it has been living on the HBF host and is coming back
+            # with KV that is genuinely reusable.  This index counts calls on
+            # this node, not turns in the conversation, so leaving it at zero
+            # would assert a first turn that reuses an earlier prefix.
+            #
+            # The node's own submission cursor is the authority on where the
+            # lineage stands, so follow it when the two have drifted apart,
+            # and open the lineage one call in when the node has never seen
+            # this session.
+            submitted = self.gpu_node._last_submitted_call_index.get(
+                call.session_id)
+            if submitted is None:
+                lineage = self.gpu_node.sessions.get(call.session_id)
+                if lineage is None:
+                    self.gpu_node.sessions[call.session_id] = (
+                        TieredSessionLineage(
+                            session_id=call.session_id, last_call_index=0))
+                else:
+                    lineage.last_call_index = 0
+                self.gpu_node._last_submitted_call_index[
+                    call.session_id] = 0
+                gpu_call_index = 1
+            else:
+                gpu_call_index = submitted + 1
         tier_call = TieredNodeCall(
             request_id=call.request_id,
             session_id=call.session_id,
