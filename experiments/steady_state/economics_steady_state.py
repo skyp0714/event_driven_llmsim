@@ -50,7 +50,7 @@ HBF_CARDS = 8
 # tp8_context stores one physical KV copy, so the writable KV region is the
 # whole per-card HBF minus the per-card model weights.
 HBF_KV_REGION_BYTES_PER_CARD = 1_280_000_000_000 - 7_680_585_728
-SLO_LEVEL = "medium"
+SLO_LEVEL = "ttft5_tpot100"
 SECONDS_PER_DAY = 86_400.0
 # Flash retention window assumed for the refresh term.  A KV cache only has to
 # outlive its session, and the measured p90 session is under seven hours, so a

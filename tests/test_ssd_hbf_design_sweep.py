@@ -255,6 +255,7 @@ class SSDHBFDesignSweepTests(unittest.TestCase):
                 "load_aware_demote_h2",
                 "load_aware_density",
                 "load_aware_density_oracle",
+                "load_aware_cost",
                 "load_aware_calls",
                 "load_aware_calls_oracle",
                 "composite",

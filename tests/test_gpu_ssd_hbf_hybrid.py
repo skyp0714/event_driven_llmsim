@@ -1065,6 +1065,36 @@ class SSDStagedGPUHBFTests(unittest.TestCase):
             node.hbf_lifecycle.sessions["cold"].state,
             PlacementState.HBF_READY)
 
+    def test_cost_rank_weighs_idle_age_context_and_fresh_input(self):
+        node = self.make_node(policy="load_aware_cost")
+        node.hbf_lifecycle.preload_gpu_session(
+            "old-cold", 40_000, now_ns=0, durable_ssd=True,
+            last_access_ns=0)
+        node.hbf_lifecycle.preload_gpu_session(
+            "hot-prefill", 40_000, now_ns=0, durable_ssd=True,
+            last_access_ns=0)
+        node.current_ns = 600 * 10**9
+        node.hbf_lifecycle.sessions["hot-prefill"].last_access_ns = (
+            node.current_ns - 5 * 10**9)
+        node._fresh_input_ewma["old-cold"] = 64.0
+        node._fresh_input_ewma["hot-prefill"] = 8_192.0
+
+        cold = node._placement_value(
+            "old-cold", node.hbf_lifecycle.sessions["old-cold"])
+        hot = node._placement_value(
+            "hot-prefill",
+            node.hbf_lifecycle.sessions["hot-prefill"])
+        self.assertEqual(cold, 600.0 * 40_000 / 64.0)
+        self.assertEqual(hot, 5.0 * 40_000 / 8_192.0)
+        self.assertGreater(cold, hot)
+        # Unrouted sessions fall back to a neutral fresh-input guess.
+        node._fresh_input_ewma.pop("old-cold")
+        self.assertEqual(
+            node._placement_value(
+                "old-cold",
+                node.hbf_lifecycle.sessions["old-cold"]),
+            600.0 * 40_000 / 256.0)
+
     def test_preload_gpu_session_registers_routing_records(self):
         node = self.make_node()
         kv_bytes = node.hbf_lifecycle.kv_bytes_per_token

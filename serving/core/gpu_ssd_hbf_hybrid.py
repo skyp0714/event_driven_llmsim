@@ -182,11 +182,11 @@ class SSDPromotionPolicy:
                 "demotion requires load-aware admission")
         if self.rank_mode not in {
             "context", "density", "density_oracle",
-            "calls", "calls_oracle",
+            "calls", "calls_oracle", "cost",
         }:
             raise ValueError(
                 "rank_mode must be one of context, density, "
-                "density_oracle, calls, calls_oracle")
+                "density_oracle, calls, calls_oracle, cost")
         if (
             not isinstance(self.allowed_gap_types, tuple)
             or any(
@@ -280,6 +280,14 @@ class SSDPromotionPolicy:
                 retry_ns=50_000_000,
                 demotion_hysteresis=0.5,
                 rank_mode="density_oracle",
+            )
+        if key == "load_aware_cost":
+            return cls(
+                key=key,
+                mode="load_aware",
+                retry_ns=50_000_000,
+                demotion_hysteresis=2.0,
+                rank_mode="cost",
             )
         if key == "load_aware_calls":
             return cls(
@@ -602,6 +610,7 @@ class SSDStagedGPUHBFNode:
         self._next_promotion_serial = 1
         self._spec_total_calls: dict[str, int] = {}
         self._submitted_count_by_session: dict[str, int] = {}
+        self._fresh_input_ewma: dict[str, float] = {}
 
     def set_spec_total_calls(
             self, session_id: str, count: int) -> None:
@@ -658,6 +667,18 @@ class SSDStagedGPUHBFNode:
             return 1.0 / max(1, self._session_calls_so_far(session_id))
         if mode == "calls_oracle":
             return 1.0 / self._session_remaining_calls(session_id)
+        if mode == "cost":
+            # Idle age times restore savings per fresh input token:
+            # old, long, decode-dominated sessions are worth keeping on
+            # HBF; hot prefill-heavy ones belong on the PD GPU.  The
+            # fallback fresh-input guess covers sessions this node has
+            # never routed (preloaded residents), which conservatively
+            # keeps them where they are.
+            idle_s = max(
+                1.0,
+                (self.current_ns - placement.last_access_ns) / 1e9)
+            fresh = self._fresh_input_ewma.get(session_id, 256.0)
+            return idle_s * tokens / max(1.0, fresh)
         return tokens
 
     def set_gap_type(
@@ -760,6 +781,13 @@ class SSDStagedGPUHBFNode:
                 + call.output_tokens
                 - 1
             ),
+        )
+        fresh_tokens = max(1, call.input_tokens - operational_reuse)
+        previous_ewma = self._fresh_input_ewma.get(call.session_id)
+        self._fresh_input_ewma[call.session_id] = (
+            float(fresh_tokens)
+            if previous_ewma is None
+            else 0.3 * fresh_tokens + 0.7 * previous_ewma
         )
         call.execution = self._execution_for_route(call, route)
         call.route_reason = route.reason

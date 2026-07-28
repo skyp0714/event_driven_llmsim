@@ -36,8 +36,8 @@ FAMILY_LABEL = {
     "claude": "Claude Code sessions",
     "codex": "Codex sessions",
 }
-SLO_LEVEL = "medium"
-SLO_CAPTION = "SLO medium: TTFT 5 s / TPOT 100 ms"
+SLO_LEVEL = "ttft5_tpot100"
+SLO_CAPTION = "SLO: TTFT 5 s / TPOT 100 ms (of 3x3 grid)"
 
 
 def _floatify(rows):

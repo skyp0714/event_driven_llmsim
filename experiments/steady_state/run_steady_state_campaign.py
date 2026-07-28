@@ -150,11 +150,18 @@ def build_residents(sessions, target_l: int, rng, stagger_ns: int):
     at a random resume point, so its first scored call is a resume against
     a context that is pre-placed in the tiers.
 
-    The stagger spreads their first calls uniformly over one mean think-time
-    so the window opens with the population at random phase in its
-    call/tool-call cycle rather than as a synchronised burst.
+    The resume point is sampled length-biased by the gap that precedes
+    it: a steady-state snapshot catches a session in a gap with
+    probability proportional to that gap's duration, so the standing
+    population is dominated by sessions sitting in their long idles --
+    minutes-to-hours-old KV -- not by the call-dense phases a uniform
+    pick lands on.  Given the length-biased gap, the residual time to
+    the next call is uniform over the gap (renewal theory), which
+    replaces the old global one-think-time stagger.  ``stagger_ns`` is
+    kept for signature compatibility but no longer used.
     """
 
+    del stagger_ns
     residents = []
     attempts = 0
     while len(residents) < target_l and attempts < target_l * 20:
@@ -165,17 +172,29 @@ def build_residents(sessions, target_l: int, rng, stagger_ns: int):
             if index > 0 and call.cached_prefix_tokens > 0]
         if not resume_points:
             continue
-        start = resume_points[rng.randrange(len(resume_points))]
+        weights = [
+            max(1, template.calls[index - 1].tool_duration_ns)
+            for index in resume_points]
+        start = rng.choices(resume_points, weights=weights)[0]
+        sitting_gap_ns = max(1, template.calls[start - 1].tool_duration_ns)
+        arrival_ns = rng.randrange(sitting_gap_ns)
         rank = len(residents)
         clone = clone_session(template, RESIDENT_ID_BASE + rank)
         truncated = replace(clone, calls=clone.calls[start:])
+        past = clone.calls[:start]
+        mean_fresh_in = statistics.fmean(
+            max(1, call.input_tokens - call.cached_prefix_tokens)
+            for call in past)
         residents.append({
             "session": truncated,
             "context_tokens": clone.calls[start].cached_prefix_tokens,
-            "arrival_ns": rng.randrange(max(1, stagger_ns)),
+            "arrival_ns": arrival_ns,
             "rank": rank,
             "past_calls": start,
             "future_calls": len(truncated.calls),
+            "sitting_gap_ns": sitting_gap_ns,
+            "idle_age_ns": sitting_gap_ns - arrival_ns,
+            "mean_fresh_in": mean_fresh_in,
         })
     return residents
 
@@ -353,6 +372,31 @@ def preload_population(system, system_key, residents, now_ns):
                 continue
             hbf_set.append(resident)
             acc += weight(resident)
+    elif split_mode == "cost_dcap":
+        # HBF-residency worth: idle age (old KV stays cold; gaps are
+        # strongly autocorrelated) times context (restore avoided) per
+        # fresh input token (large prefills fit the PD pipeline; small-
+        # input decode-dominated calls do not).  The GPU keeps only the
+        # lowest-worth sessions -- hot, small-context, prefill-heavy --
+        # and only as many as fit in 80% of D-HBM so they stay
+        # D-resident and never restore.
+        def worth(resident):
+            idle_s = max(1.0, resident["idle_age_ns"] / 1e9)
+            return (
+                idle_s * resident["context_tokens"]
+                / max(1.0, resident["mean_fresh_in"]))
+
+        ranked = sorted(order, key=worth)
+        byte_budget = 0.8 * gpu_lifecycle.d_ledger.capacity_bytes
+        rest, hbf_set, acc = [], [], 0
+        for resident in ranked:
+            byte_count = gpu_lifecycle._per_rank_bytes(
+                resident["context_tokens"])
+            if acc + byte_count > byte_budget:
+                hbf_set.append(resident)
+                continue
+            rest.append(resident)
+            acc += byte_count
     elif split_mode in ("hot_dcap", "hot_dcap_oracle"):
         # The GPU keeps only the call-heaviest heads, and only as many
         # as fit in D-HBM: D-resident hot sessions resume against live

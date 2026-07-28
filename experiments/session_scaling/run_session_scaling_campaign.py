@@ -80,10 +80,14 @@ TPOT_SLO_MILLISECONDS = 300.0
 # this trace, so they cannot rank the systems.  Each cell scores three
 # preregistered threshold sets; the tighter ones keep resolution once the
 # loose one saturates.  All are computed from the same per-call data.
+# Full 3x3 SLO grid: TTFT in {3, 5, 10} s (same threshold for first and
+# resume) crossed with TPOT in {50, 100, 150} ms.  Every cell reports
+# goodput at all nine levels; ttft5_tpot100 is the headline.
 SLO_LEVELS = {
-    "loose": (10.0, 10.0, 150.0),
-    "medium": (5.0, 5.0, 100.0),
-    "tight": (3.0, 3.0, 50.0),
+    f"ttft{ttft_s:g}_tpot{tpot_ms:g}": (
+        float(ttft_s), float(ttft_s), float(tpot_ms))
+    for ttft_s in (3, 5, 10)
+    for tpot_ms in (50, 100, 150)
 }
 
 # Pinned engine configuration, identical for every system.

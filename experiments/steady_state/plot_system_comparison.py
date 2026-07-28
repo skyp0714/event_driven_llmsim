@@ -32,7 +32,7 @@ FAMILY_LABEL = {
     "claude": "Claude Code sessions",
     "codex": "Codex sessions",
 }
-SLO_LEVEL = "tight"
+SLO_LEVEL = "ttft5_tpot100"
 SLO_CAPTION = "SLO: first 5 s / resume 2 s / TPOT 100 ms"
 
 

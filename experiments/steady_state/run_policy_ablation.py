@@ -38,6 +38,7 @@ POLICIES = (
 PRELOAD_SPLIT_BY_POLICY = {
     "load_aware_density": "request_density",
     "load_aware_density_oracle": "request_density_oracle",
+    "load_aware_cost": "cost_dcap",
     "load_aware_calls": "hot_dcap",
     "load_aware_calls_oracle": "hot_dcap_oracle",
 }
