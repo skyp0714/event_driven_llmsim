@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 import heapq
 import math
+import os
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -212,6 +213,16 @@ class PDHandoffJob:
     ready_ns: int
     start_ns: int
     completion_ns: int
+
+
+# Prefill-queue discipline for every P4D4 pool in the process.  "fcfs"
+# preserves the original arrival order; "sjf" serves the smallest
+# remaining prompt first with a 10 s aging bound.  Environment-scoped so
+# one campaign flag applies the same discipline to the baseline, the
+# oracle, and the hybrid GPU node alike.
+P_QUEUE_POLICY = os.environ.get("LLMSIM_GPU_P_QUEUE", "fcfs")
+P_QUEUE_SJF_AGING_NS = int(float(os.environ.get(
+    "LLMSIM_GPU_P_QUEUE_AGING_S", "10")) * 1e9)
 
 
 @dataclass
@@ -435,6 +446,33 @@ class P4D4ServingPool:
         prefill_k = []
         token_budget = self.max_num_batched_tokens
         seq_budget = self.p_max_num_seqs
+        if (
+            P_QUEUE_POLICY == "sjf"
+            and len(self.p_worker.waiting) > 1
+        ):
+            # Shortest-job-first on remaining prompt work: a small-input
+            # resume behind one long prefill otherwise pays the long
+            # job's entire service time in TTFT.  Requests older than
+            # the aging bound go first regardless of size, oldest first,
+            # so a large prefill cannot starve behind a stream of small
+            # ones.
+            waiting = list(self.p_worker.waiting)
+            overdue = [
+                request_id for request_id in waiting
+                if self.current_ns
+                - self.requests[request_id].arrival_ns
+                > P_QUEUE_SJF_AGING_NS
+            ]
+            overdue.sort(
+                key=lambda rid: self.requests[rid].arrival_ns)
+            fresh = [
+                request_id for request_id in waiting
+                if request_id not in set(overdue)
+            ]
+            fresh.sort(
+                key=lambda rid: (
+                    self.requests[rid].p_remaining_tokens, rid))
+            self.p_worker.waiting = deque(overdue + fresh)
         waiting_count = len(self.p_worker.waiting)
         for _ in range(waiting_count):
             if token_budget <= 0 or seq_budget <= 0:

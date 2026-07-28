@@ -225,6 +225,7 @@ class HBFWorker:
     pending_launch_ns: Optional[int] = None
     completed_batches: int = 0
     mixed_prefill_chunk_cap: Optional[int] = None
+    decode_guard_skips: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -235,6 +236,9 @@ class HBFPoolMetrics:
     mixed_batches: int = 0
     prefill_only_batches: int = 0
     decode_only_batches: int = 0
+    decode_guard_limited_batches: int = 0
+    decode_guard_deferred_decodes: int = 0
+    decode_guard_aging_admissions: int = 0
     mixed_prefill_guard_considered: int = 0
     mixed_prefill_guard_limited: int = 0
     mixed_prefill_guard_deferred: int = 0
@@ -335,6 +339,7 @@ class FullModelHBFServingPool:
             max_num_seqs: int = 128,
             max_prefill_chunk_tokens: int = 4_096,
             mixed_batch_latency_limit_ns: Optional[int] = None,
+            decode_latency_guard_ns: Optional[int] = None,
             prefill_drain_tail_tokens: Optional[int] = None,
             prefill_drain_min_tokens: int = 4_096,
             scheduling_policy: str = "decode_first",
@@ -447,6 +452,18 @@ class FullModelHBFServingPool:
         self.max_prefill_chunk_tokens = max_prefill_chunk_tokens
         self.mixed_batch_latency_limit_ns = (
             mixed_batch_latency_limit_ns)
+        if (
+            decode_latency_guard_ns is not None
+            and (
+                not isinstance(decode_latency_guard_ns, int)
+                or isinstance(decode_latency_guard_ns, bool)
+                or decode_latency_guard_ns <= 0
+            )
+        ):
+            raise ValueError(
+                "decode_latency_guard_ns must be a positive integer "
+                "or None")
+        self.decode_latency_guard_ns = decode_latency_guard_ns
         self.prefill_drain_tail_tokens = prefill_drain_tail_tokens
         self.prefill_drain_min_tokens = prefill_drain_min_tokens
         self.scheduling_policy = scheduling_policy
@@ -515,6 +532,34 @@ class FullModelHBFServingPool:
             band=band,
         )
         self.models = (shared_model,) * layout.replicas
+        self._decode_guard_kv_budget: Optional[int] = None
+        if self.decode_latency_guard_ns is not None:
+            # Decode steps are dominated by media KV reads, so latency is
+            # affine in total KV tokens.  Two probes fit the line; the
+            # budget is the KV mass whose predicted step time meets the
+            # guard.  Probing once at init keeps the batch builder free
+            # of per-step model calls.
+            probe_batch = 32
+            def _probe(kv_total: int) -> float:
+                per = max(1, kv_total // probe_batch)
+                shape = HBFModelBatchShape(
+                    total_tokens=probe_batch,
+                    prefill_q=(),
+                    prefill_hbf_k=(),
+                    prefill_lpddr_k=(),
+                    decode_hbf_k=(per,) * probe_batch,
+                    decode_lpddr_k=(0,) * probe_batch,
+                    lm_head_sequences=probe_batch,
+                )
+                return float(shared_model.batch_latency(shape).total_ns)
+            low_kv, high_kv = 1_000_000, 2_000_000
+            low_ns, high_ns = _probe(low_kv), _probe(high_kv)
+            slope = max(1e-9, (high_ns - low_ns) / (high_kv - low_kv))
+            fixed = low_ns - slope * low_kv
+            self._decode_guard_kv_budget = max(
+                1,
+                int((self.decode_latency_guard_ns - fixed) / slope),
+            )
         self.workers = tuple(
             HBFWorker(
                 group_id=index,
@@ -577,6 +622,49 @@ class FullModelHBFServingPool:
             request.group_id,
             token_start=request.hbf_prefix_tokens,
             token_count=request.active_lpddr_tokens,
+        )
+
+    def _resolved_lpddr_card_bytes(
+            self, request: HBFServingRequest) -> dict[int, int]:
+        """What the ledger should hold for this request's session.
+
+        A request caches the HBF/LPDDR split it was admitted with, and
+        `_refresh_request_placement` reconciles that cache only when batch
+        selection pulls the request out of its queue.  The lifecycle mean-
+        while commits LPDDR tokens into HBF in the background and shrinks
+        the reservation as it goes, so a request still waiting behind a
+        spent token budget can hold a split several commits out of date --
+        which is why this only ever fired at the top of the load ladder,
+        where the queue outlives the budget.  Resolve the live placement
+        when one is available so the invariant checks the ledger against
+        the lifecycle's truth rather than against a cache built to lag.
+        """
+
+        hbf_tokens = request.hbf_prefix_tokens
+        lpddr_tokens = request.lpddr_prefix_tokens
+        if self.placement_resolver is not None:
+            try:
+                resolved_hbf, resolved_lpddr, group_id = (
+                    self.placement_resolver(request.session_id))
+            except RuntimeError:
+                # The session has left HBF residency; its cached split is
+                # then the only account of what the request still holds.
+                resolved_hbf = resolved_lpddr = group_id = None
+            if (
+                group_id == request.group_id
+                and resolved_hbf + resolved_lpddr == request.published_tokens
+            ):
+                hbf_tokens, lpddr_tokens = resolved_hbf, resolved_lpddr
+        active = (
+            lpddr_tokens
+            + request.prefill_processed_tokens
+            + max(0, request.generated_tokens - 1)
+            - request.published_growth_tokens
+        )
+        return self._range_card_bytes(
+            request.group_id,
+            token_start=hbf_tokens,
+            token_count=max(0, active),
         )
 
     @staticmethod
@@ -842,11 +930,59 @@ class FullModelHBFServingPool:
                 lm_head_sequences=len(items),
             )
 
-        decode_count = len(worker.active_decode)
-        for _ in range(decode_count):
+        decode_order = list(worker.active_decode)
+        guard_budget = self._decode_guard_kv_budget
+        guard_excluded: list[int] = []
+        if guard_budget is not None and len(decode_order) > 1:
+            # Admit the lightest contexts first so the sessions that can
+            # meet a tight per-token bar are not co-batched behind the
+            # heaviest KV reads.  One aging admission per step bounds the
+            # starvation of the heavy tail: the longest-skipped decode is
+            # placed at the head of the admission order.
+            def request_kv(request_id: int) -> int:
+                request = self.requests[request_id]
+                return (
+                    request.hbf_prefix_tokens
+                    + request.active_lpddr_tokens)
+
+            decode_order.sort(key=request_kv)
+            skips = worker.decode_guard_skips
+            if skips:
+                starved = max(
+                    (rid for rid in decode_order if rid in skips),
+                    key=lambda rid: (skips[rid], rid),
+                    default=None,
+                )
+                if starved is not None and skips[starved] > 0:
+                    decode_order.remove(starved)
+                    decode_order.insert(0, starved)
+            admitted: list[int] = []
+            kv_acc = 0
+            for request_id in decode_order:
+                kv = request_kv(request_id)
+                if admitted and kv_acc + kv > guard_budget:
+                    guard_excluded.append(request_id)
+                    continue
+                admitted.append(request_id)
+                kv_acc += kv
+            if guard_excluded:
+                self.metrics.decode_guard_limited_batches += 1
+                self.metrics.decode_guard_deferred_decodes += len(
+                    guard_excluded)
+                for request_id in guard_excluded:
+                    skips[request_id] = skips.get(request_id, 0) + 1
+                if (
+                    admitted
+                    and skips.get(admitted[0], 0) > 0
+                ):
+                    self.metrics.decode_guard_aging_admissions += 1
+            for request_id in admitted:
+                skips.pop(request_id, None)
+            decode_order = admitted
+        for request_id in decode_order:
             if token_budget <= 0 or seq_budget <= 0:
                 break
-            request_id = worker.active_decode.popleft()
+            worker.active_decode.remove(request_id)
             request = self.requests[request_id]
             self._refresh_request_placement(request)
             if request.state != HBFRequestState.DECODE:
@@ -2001,7 +2137,7 @@ class FullModelHBFServingPool:
             ):
                 owner = self._lpddr_owner(request.session_id)
                 actual = self.lpddr_ledger.owner_card_bytes(owner)
-                expected = self._request_lpddr_card_bytes(request)
+                expected = self._resolved_lpddr_card_bytes(request)
                 headroom_actual = (
                     self.lpddr_ledger.owner_card_bytes(
                     hbf_request_headroom_owner(

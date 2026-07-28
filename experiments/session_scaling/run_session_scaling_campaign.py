@@ -167,7 +167,9 @@ def _build_system(system_key: str, hardware):
                 "LLMSIM_MIGRATION_POLICY", "load_aware"),
             active_memory=lpddr_active_memory(**HBF_ACTIVE_MEMORY),
         )
-        return make_design_system(repo_root=REPO_ROOT, spec=spec)
+        return make_design_system(
+            repo_root=REPO_ROOT, spec=spec,
+            hbf_decode_latency_guard_ms=_decode_guard_ms())
     if system_key == "hbf_tp4x2":
         spec = make_design_spec(
             hbf_layout="tp4x2",
@@ -175,8 +177,15 @@ def _build_system(system_key: str, hardware):
                 "LLMSIM_MIGRATION_POLICY", "load_aware"),
             active_memory=lpddr_active_memory(**HBF_ACTIVE_MEMORY),
         )
-        return make_design_system(repo_root=REPO_ROOT, spec=spec)
+        return make_design_system(
+            repo_root=REPO_ROOT, spec=spec,
+            hbf_decode_latency_guard_ms=_decode_guard_ms())
     raise ValueError(f"unknown system {system_key!r}")
+
+
+def _decode_guard_ms():
+    value = os.environ.get("LLMSIM_HBF_DECODE_GUARD_MS")
+    return None if not value else int(value)
 
 
 def _mean(values: Sequence[float]) -> float:

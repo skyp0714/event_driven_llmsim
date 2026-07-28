@@ -601,8 +601,19 @@ def make_design_system(
         *,
         repo_root: Path,
         spec: SSDHBFDesignSpec,
+        max_num_seqs: int = SHARED_MAX_NUM_SEQS,
+        p_max_num_seqs: int = P_MAX_NUM_SEQS,
+        d_max_num_seqs: int = D_MAX_NUM_SEQS,
+        hbf_decode_latency_guard_ms: Optional[int] = None,
 ):
-    """Construct exactly one GPU+SSD host and one eight-card HBF host."""
+    """Construct exactly one GPU+SSD host and one eight-card HBF host.
+
+    The sequence caps are exposed because they are the design's only direct
+    control over decode batch size, and decode batch size is what sets
+    inter-token latency once capacity stops being the constraint.  Lowering
+    them trades queueing for per-token speed, which is the same trade the
+    tiering baseline makes involuntarily through its HBM limit.
+    """
 
     from .core.gpu_ssd_hbf_hybrid import SSDStagedGPUHBFSystem
 
@@ -626,10 +637,14 @@ def make_design_system(
         hbf_hardware=hbf_hardware,
         hbf_layout=spec.simulator_layout,
         promotion_policy=spec.migration_policy,
+        hbf_decode_latency_guard_ns=(
+            None
+            if hbf_decode_latency_guard_ms is None
+            else hbf_decode_latency_guard_ms * 1_000_000),
         max_num_batched_tokens=MAX_NUM_BATCHED_TOKENS,
-        max_num_seqs=SHARED_MAX_NUM_SEQS,
-        p_max_num_seqs=P_MAX_NUM_SEQS,
-        d_max_num_seqs=D_MAX_NUM_SEQS,
+        max_num_seqs=max_num_seqs,
+        p_max_num_seqs=p_max_num_seqs,
+        d_max_num_seqs=d_max_num_seqs,
         max_prefill_chunk_tokens=MAX_PREFILL_CHUNK_TOKENS,
         hbf_mixed_batch_latency_limit_ns=(
             None

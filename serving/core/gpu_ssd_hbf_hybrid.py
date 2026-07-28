@@ -421,6 +421,7 @@ class SSDStagedGPUHBFNode:
             d_max_num_seqs: Optional[int] = None,
             max_prefill_chunk_tokens: int = 4_096,
             hbf_mixed_batch_latency_limit_ns: Optional[int] = None,
+            hbf_decode_latency_guard_ns: Optional[int] = None,
             band: str = "central",
             restore_execution_mode: str = RESTORE_EXECUTION_BULK,
             validate_every_event: bool = True,
@@ -578,6 +579,7 @@ class SSDStagedGPUHBFNode:
             max_prefill_chunk_tokens=max_prefill_chunk_tokens,
             mixed_batch_latency_limit_ns=(
                 hbf_mixed_batch_latency_limit_ns),
+            decode_latency_guard_ns=hbf_decode_latency_guard_ns,
             band=band,
             validate_every_event=validate_every_event,
             retain_detailed_history=validate_every_event,
@@ -1931,6 +1933,7 @@ class SSDStagedGPUHBFSystem(GPUHBFHybridSystem):
             d_max_num_seqs: Optional[int] = None,
             max_prefill_chunk_tokens: int = 4_096,
             hbf_mixed_batch_latency_limit_ns: Optional[int] = None,
+            hbf_decode_latency_guard_ns: Optional[int] = None,
             band: str = "central",
             restore_execution_mode: str = RESTORE_EXECUTION_BULK,
             validate_every_event: bool = True,
@@ -1960,6 +1963,7 @@ class SSDStagedGPUHBFSystem(GPUHBFHybridSystem):
             max_prefill_chunk_tokens=max_prefill_chunk_tokens,
             hbf_mixed_batch_latency_limit_ns=(
                 hbf_mixed_batch_latency_limit_ns),
+            hbf_decode_latency_guard_ns=hbf_decode_latency_guard_ns,
             band=band,
             restore_execution_mode=restore_execution_mode,
             validate_every_event=validate_every_event,
