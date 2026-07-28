@@ -258,6 +258,13 @@ class SSDPromotionPolicy:
                 retry_ns=50_000_000,
                 demotion_hysteresis=0.5,
             )
+        if key == "load_aware_demote_h2":
+            return cls(
+                key=key,
+                mode="load_aware",
+                retry_ns=50_000_000,
+                demotion_hysteresis=2.0,
+            )
         if key == "load_aware_density":
             return cls(
                 key=key,
@@ -1495,11 +1502,14 @@ class SSDStagedGPUHBFNode:
             return False
         # Only dynamic load counts here: media occupancy is residency,
         # not overload, and against an idle GPU (score zero) any static
-        # pressure term would demote unconditionally.  The floor of one
-        # queued work item keeps an idle-but-occupied HBF host quiet.
+        # pressure term would demote unconditionally.  The floor of four
+        # queued work items keeps mid-load transients from triggering
+        # demotions whose recompute tail costs more than the relief --
+        # the ablation showed the floor of one firing at loads the HBF
+        # host was handling fine.
         gpu_score, hbf_score = self._load_scores(
             now_ns, include_pressure=False)
-        if hbf_score <= max(1.0, gpu_score * (1.0 + hysteresis)):
+        if hbf_score <= max(4.0, gpu_score * (1.0 + hysteresis)):
             return False
         # A demoted session that does not fit in free D-HBM would pay a
         # restore on every resume instead of staying D-resident -- the

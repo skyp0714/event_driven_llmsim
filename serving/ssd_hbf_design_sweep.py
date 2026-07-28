@@ -161,6 +161,7 @@ SUPPORTED_MIGRATION_POLICIES = (
     "delay_300s",
     "load_aware",
     "load_aware_demote",
+    "load_aware_demote_h2",
     "load_aware_density",
     "load_aware_density_oracle",
     "load_aware_calls",
