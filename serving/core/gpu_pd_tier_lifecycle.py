@@ -393,6 +393,7 @@ class ResumeSource:
 
 @dataclass
 class TierLifecycleMetrics:
+    preloaded_sessions: int = 0
     session_restarts: int = 0
     d_drops: int = 0
     d_growth_bytes_per_rank: int = 0
@@ -673,6 +674,90 @@ class TieredPDKVLifecycle:
             tokens=tokens,
         )
         record.primary_copy_id = copy.copy_id
+        self._maybe_assert_invariants()
+        return record
+
+    def preload_session(
+            self, session_id: str, tokens: int, *, tier: Tier,
+            now_ns: int, last_access_ns: Optional[int] = None,
+            version: int = 1) -> TierSession:
+        """Register one idle committed copy on an arbitrary tier.
+
+        A steady-state measurement should not have to be reached by
+        simulating a full session lifetime first: the workload's sessions
+        live ~1.2e6 s, so warming up to equilibrium costs an order of
+        magnitude more than the measurement window it enables.
+
+        Placement at equilibrium is a property of the policy, not of the
+        history that produced it -- eviction is LRU, so the sessions that
+        fit in D by recency are exactly the resident ones, the next ones sit
+        on CPU, and the rest on SSD.  The caller computes that ordering and
+        injects it here.  ``last_access_ns`` seeds the LRU position so
+        subsequent eviction picks the same victim the simulated history
+        would have.
+
+        This is the generalization of :meth:`register_d_ready` to CPU and
+        SSD; it takes the same capacity path, so the ledgers and invariants
+        stay authoritative.
+        """
+
+        self._validate_session(session_id)
+        self._validate_positive("tokens", tokens)
+        self._validate_time(now_ns)
+        self._validate_positive("version", version)
+        if tokens > MAX_CONTEXT_TOKENS:
+            raise ValueError(
+                f"context exceeds {MAX_CONTEXT_TOKENS} tokens")
+        if tier not in (Tier.D, Tier.CPU, Tier.SSD):
+            raise ValueError(
+                "preload tier must be D, CPU, or SSD")
+        access_ns = now_ns if last_access_ns is None else last_access_ns
+        if (
+            isinstance(access_ns, bool)
+            or not isinstance(access_ns, int)
+            or access_ns < 0
+            or access_ns > now_ns
+        ):
+            raise ValueError(
+                "last_access_ns must be a non-negative integer at or "
+                "before now_ns")
+        self.advance(now_ns)
+        if session_id in self.sessions:
+            raise RuntimeError(
+                f"session {session_id!r} is already registered")
+        byte_count = (
+            self._per_rank_bytes(tokens) if tier == Tier.D
+            else self._aggregate_bytes(tokens)
+        )
+        ledger = self._ledger(tier)
+        if ledger.free_bytes < byte_count:
+            raise RuntimeError(
+                f"{tier.value} headroom is not available for preload: "
+                f"need={byte_count}, free={ledger.free_bytes}")
+        state = {
+            Tier.D: TierSessionState.D_READY,
+            Tier.CPU: TierSessionState.CPU_READY,
+            Tier.SSD: TierSessionState.SSD_READY,
+        }[tier]
+        record = TierSession(
+            session_id=session_id,
+            state=state,
+            generation=0,
+            version=version,
+            tokens=tokens,
+            primary=tier,
+            last_access_ns=access_ns,
+        )
+        self.sessions[session_id] = record
+        copy = self._new_copy(
+            record=record,
+            tier=tier,
+            version=record.version,
+            generation=record.generation,
+            tokens=tokens,
+        )
+        record.primary_copy_id = copy.copy_id
+        self.metrics.preloaded_sessions += 1
         self._maybe_assert_invariants()
         return record
 

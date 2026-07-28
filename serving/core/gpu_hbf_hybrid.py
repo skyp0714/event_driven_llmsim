@@ -2173,10 +2173,10 @@ class GPUHBFHybridSystem(ResumableCutoffEventLoopMixin):
             if call.session_id != session.session_id:
                 raise ValueError(
                     "call/session identity mismatch")
-            if call.call_index != call_index:
+            if call.call_index != session.calls[0].call_index + call_index:
                 raise ValueError(
                     "scheduled calls must use contiguous indices")
-            if call_index == 0 and call.cached_prefix_tokens:
+            if call.call_index == 0 and call.cached_prefix_tokens:
                 raise ValueError(
                     "first call cannot reuse an earlier prefix")
             if not 0 <= call.cached_prefix_tokens <= call.input_tokens:
@@ -2245,7 +2245,7 @@ class GPUHBFHybridSystem(ResumableCutoffEventLoopMixin):
                     source_index=scheduled.session.source_index,
                     offer_index=scheduled.offer_index,
                     session_id=scheduled.session.session_id,
-                    call_index=call_index,
+                    call_index=call.call_index,
                     input_tokens=call.input_tokens,
                     output_tokens=call.output_tokens,
                     cached_prefix_tokens=call.cached_prefix_tokens,

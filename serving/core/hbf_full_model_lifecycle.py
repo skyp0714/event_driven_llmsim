@@ -865,6 +865,7 @@ class LifecycleMetrics:
     active_prefill_drain_capacity_fallback: int = 0
     active_prefill_drain_committed: int = 0
     active_prefill_drain_stale: int = 0
+    preloaded_sessions: int = 0
     capacity_evictions: int = 0
     gpu_ready_hbm_pressure_evictions: int = 0
     gpu_ready_hbm_pressure_evicted_bytes: int = 0
@@ -1695,6 +1696,94 @@ class FullModelHBFLifecycle:
             raise AssertionError(
                 "preflight-feasible HBF group could not reclaim capacity")
         return group.group_id
+
+    def preload_session(
+            self, session_id: str, tokens: int, *, now_ns: int,
+            last_access_ns: Optional[int] = None,
+            group_id: Optional[int] = None,
+            version: int = 1) -> SessionPlacement:
+        """Register one idle HBF-resident session without migrating it.
+
+        Reaching a steady state by simulation costs a full session lifetime
+        (~1.2e6 s here) before any measurement can start.  Equilibrium
+        placement is a property of the policy rather than of the history
+        that produced it, so the caller computes the placement and injects
+        it.  ``last_access_ns`` seeds the LRU position that
+        :meth:`_evict_one` will later use, and the committed bytes go
+        through :meth:`_reserve_group` so per-card capacity and the
+        invariants stay authoritative.
+
+        The session lands in ``HBF_READY`` with its whole context
+        committed: LPDDR holds only active-turn tokens, which an idle
+        session has none of.
+        """
+
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("session_id must be non-empty")
+        for _name, _value in (("tokens", tokens),):
+            if (
+                isinstance(_value, bool)
+                or not isinstance(_value, int)
+                or _value <= 0
+            ):
+                raise ValueError(f"{_name} must be a positive integer")
+        if (
+            isinstance(now_ns, bool)
+            or not isinstance(now_ns, int)
+            or now_ns < 0
+        ):
+            raise ValueError("now_ns must be a non-negative integer")
+        if (
+            isinstance(version, bool)
+            or not isinstance(version, int)
+            or version <= 0
+        ):
+            raise ValueError("version must be a positive integer")
+        access_ns = now_ns if last_access_ns is None else last_access_ns
+        if (
+            isinstance(access_ns, bool)
+            or not isinstance(access_ns, int)
+            or access_ns < 0
+            or access_ns > now_ns
+        ):
+            raise ValueError(
+                "last_access_ns must be a non-negative integer at or "
+                "before now_ns")
+        self.advance(now_ns)
+        if session_id in self.sessions:
+            raise RuntimeError(
+                f"session {session_id!r} is already registered")
+        if group_id is None:
+            card_bytes_by_group = {
+                group.group_id: self._prefix_card_bytes(
+                    group.group_id, tokens)
+                for group in self.groups
+            }
+            group_id = self._choose_group_without_eviction(
+                card_bytes_by_group)
+            if group_id is None:
+                raise RuntimeError(
+                    "no HBF replica group has headroom for the preload")
+        card_bytes = self._prefix_card_bytes(group_id, tokens)
+        self._reserve_group(group_id, card_bytes)
+        record = SessionPlacement(
+            session_id=session_id,
+            state=PlacementState.HBF_READY,
+            generation=0,
+            version=version,
+            total_tokens=tokens,
+            committed_hbf_tokens=tokens,
+            lpddr_tokens=0,
+            group_id=group_id,
+            committed_per_card_bytes=max(
+                card_bytes.values(), default=0),
+            last_access_ns=access_ns,
+        )
+        self.sessions[session_id] = record
+        self.metrics.preloaded_sessions += 1
+        if self.validate_every_event:
+            self.assert_invariants()
+        return record
 
     def _choose_group_without_eviction(
             self, card_bytes_by_group: Mapping[

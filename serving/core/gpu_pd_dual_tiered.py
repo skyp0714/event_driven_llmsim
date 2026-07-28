@@ -163,7 +163,7 @@ class DualFiniteHBMTieredBaseline(DualStrictInfiniteHBMOracle):
                 probe = TieredNodeCall(
                     request_id=call_index,
                     session_id=scheduled.session.session_id,
-                    call_index=call_index,
+                    call_index=call_spec.call_index,
                     release_ns=scheduled.arrival_time_ns,
                     input_tokens=call_spec.input_tokens,
                     output_tokens=call_spec.output_tokens,

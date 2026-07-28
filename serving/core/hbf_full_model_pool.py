@@ -624,9 +624,21 @@ class FullModelHBFServingPool:
 
     def _projected_lpddr_fits(
             self, group_id: int,
-            additions: Mapping[int, int]) -> bool:
-        projected_by_card = dict(
-            self.lpddr_ledger.used_bytes_by_card(group_id))
+            additions: Mapping[int, int],
+            *, only_request_id: Optional[int] = None) -> bool:
+        """Check that a batch's LPDDR headroom projection still holds.
+
+        Batch selection adds one request at a time and re-checks after each,
+        so re-scanning every accumulated addition made this quadratic in
+        batch size -- the dominant term in large-cohort cells.  Each
+        request's headroom test reads only that request's own placement and
+        its own ledger reservation, and a request is refreshed exactly once
+        before it is added, so an already-verified entry cannot change
+        during one selection.  ``only_request_id`` therefore checks just the
+        new entry; omitting it keeps the full scan for other callers.
+        """
+
+        projected_by_card = self.lpddr_ledger.used_bytes_by_card(group_id)
         projected_bytes = max(projected_by_card.values(), default=0)
         self.metrics.max_lpddr_active_bytes_per_card = max(
             self.metrics.max_lpddr_active_bytes_per_card,
@@ -634,7 +646,14 @@ class FullModelHBFServingPool:
         )
         if projected_bytes > self.lpddr_ledger.capacity_bytes:
             return False
-        for request_id, token_count in additions.items():
+        if only_request_id is not None:
+            if only_request_id not in additions:
+                raise RuntimeError(
+                    "incremental LPDDR projection needs its own addition")
+            checked = ((only_request_id, additions[only_request_id]),)
+        else:
+            checked = tuple(additions.items())
+        for request_id, token_count in checked:
             request = self.requests[request_id]
             if request.group_id != group_id:
                 raise RuntimeError(
@@ -834,7 +853,8 @@ class FullModelHBFServingPool:
                 raise RuntimeError("decode queue contains non-decode request")
             additions[request_id] = 1
             if not self._projected_lpddr_fits(
-                    worker.group_id, additions):
+                    worker.group_id, additions,
+                    only_request_id=request_id):
                 additions.pop(request_id)
                 worker.active_decode.appendleft(request_id)
                 self.metrics.lpddr_capacity_deferrals += 1
@@ -859,7 +879,8 @@ class FullModelHBFServingPool:
             if remaining == 0:
                 additions[request_id] = 0
                 if not self._projected_lpddr_fits(
-                        worker.group_id, additions):
+                        worker.group_id, additions,
+                        only_request_id=request_id):
                     additions.pop(request_id)
                     deferred_waiting.append(request_id)
                     self.metrics.lpddr_capacity_deferrals += 1
@@ -899,7 +920,8 @@ class FullModelHBFServingPool:
                         original_chunk - chunk)
             additions[request_id] = chunk
             if not self._projected_lpddr_fits(
-                    worker.group_id, additions):
+                    worker.group_id, additions,
+                    only_request_id=request_id):
                 additions.pop(request_id)
                 deferred_waiting.append(request_id)
                 self.metrics.lpddr_capacity_deferrals += 1

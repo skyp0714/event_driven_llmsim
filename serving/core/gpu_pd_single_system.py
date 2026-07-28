@@ -164,7 +164,7 @@ class _SingleP4D4CausalSystem:
             if call.session_id != session.session_id:
                 raise ValueError(
                     "call/session identity mismatch in scheduled session")
-            if call.call_index != call_index:
+            if call.call_index != session.calls[0].call_index + call_index:
                 raise ValueError(
                     "scheduled calls must use contiguous call indices")
             for name in (
@@ -185,7 +185,7 @@ class _SingleP4D4CausalSystem:
             if not 0 <= call.cached_prefix_tokens <= call.input_tokens:
                 raise ValueError(
                     "cached_prefix_tokens must be in 0..input_tokens")
-            if call_index == 0 and call.cached_prefix_tokens:
+            if call.call_index == 0 and call.cached_prefix_tokens:
                 raise ValueError(
                     "first call cannot reuse an earlier prefix")
             if call.tool_duration_ns < 0:
@@ -272,12 +272,12 @@ class _SingleP4D4CausalSystem:
                 completion_identities.add(identity)
                 spec = SingleP4D4CallSpec(
                     request_id=next_request_id,
-                    key=RequestKey(session.session_id, call_index),
+                    key=RequestKey(session.session_id, call.call_index),
                     source_index=session.source_index,
                     offer_index=scheduled.offer_index,
                     node_id=SINGLE_GPU_NODE_ID,
                     session_id=session.session_id,
-                    call_index=call_index,
+                    call_index=call.call_index,
                     input_tokens=call.input_tokens,
                     output_tokens=call.output_tokens,
                     cached_prefix_tokens=call.cached_prefix_tokens,
