@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 import heapq
 import math
+import os
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional
 
@@ -215,6 +216,16 @@ class HBFExternalDispatch:
             self.arrival_ns)
 
 
+# The periodic prefill-only slice is opt-in: as implemented it feeds
+# the mixed-cap controller short prefill-only latencies that read as
+# headroom, so the cap probes upward and the guard's TPOT protection
+# erodes.  Fixing that needs slice-aware cap updates; until then the
+# slice stays off by default and the measured configuration is the
+# plain 50 ms guard.
+PREFILL_SLICE_ENABLED = os.environ.get(
+    "LLMSIM_HBF_PREFILL_SLICE", "0") == "1"
+
+
 @dataclass
 class HBFWorker:
     group_id: int
@@ -226,6 +237,7 @@ class HBFWorker:
     completed_batches: int = 0
     mixed_prefill_chunk_cap: Optional[int] = None
     decode_guard_skips: dict[int, int] = field(default_factory=dict)
+    steps_since_prefill_slice: int = 0
 
 
 @dataclass
@@ -236,6 +248,7 @@ class HBFPoolMetrics:
     mixed_batches: int = 0
     prefill_only_batches: int = 0
     decode_only_batches: int = 0
+    prefill_slice_batches: int = 0
     decode_guard_limited_batches: int = 0
     decode_guard_deferred_decodes: int = 0
     decode_guard_aging_admissions: int = 0
@@ -905,6 +918,62 @@ class FullModelHBFServingPool:
                 f"session={request.session_id!r}, "
                 f"expected={expected}, actual={actual}")
 
+    def _select_prefill_slice(
+            self, worker: HBFWorker, slice_cap: int,
+    ) -> tuple[tuple[BatchItem, ...], HBFModelBatchShape] | None:
+        items: list[BatchItem] = []
+        prefill_q: list[int] = []
+        prefill_hbf_k: list[int] = []
+        prefill_lpddr_k: list[int] = []
+        additions: dict[int, int] = {}
+        budget = min(
+            slice_cap,
+            self.max_num_batched_tokens,
+            self.max_prefill_chunk_tokens,
+        )
+        deferred: list[int] = []
+        while worker.waiting and budget > 0:
+            request_id = worker.waiting.popleft()
+            request = self.requests[request_id]
+            self._refresh_request_placement(request)
+            if request.state != HBFRequestState.PREFILL:
+                raise RuntimeError(
+                    "prefill queue contains invalid request")
+            remaining = request.prefill_remaining_tokens
+            if remaining == 0:
+                # First decode belongs to a decode-carrying step.
+                deferred.append(request_id)
+                continue
+            chunk = min(remaining, budget)
+            additions[request_id] = chunk
+            if not self._projected_lpddr_fits(
+                    worker.group_id, additions,
+                    only_request_id=request_id):
+                additions.pop(request_id)
+                deferred.append(request_id)
+                self.metrics.lpddr_capacity_deferrals += 1
+                continue
+            items.append(BatchItem(request_id, "prefill", chunk))
+            prefill_q.append(chunk)
+            prefill_hbf_k.append(
+                request.hbf_prefix_tokens
+                + request.prefill_processed_tokens)
+            prefill_lpddr_k.append(request.active_lpddr_tokens)
+            budget -= chunk
+        for request_id in reversed(deferred):
+            worker.waiting.appendleft(request_id)
+        if not items:
+            return None
+        return tuple(items), HBFModelBatchShape(
+            total_tokens=sum(item.query_tokens for item in items),
+            prefill_q=tuple(prefill_q),
+            prefill_hbf_k=tuple(prefill_hbf_k),
+            prefill_lpddr_k=tuple(prefill_lpddr_k),
+            decode_hbf_k=(),
+            decode_lpddr_k=(),
+            lm_head_sequences=len(items),
+        )
+
     def _select_batch(
             self, worker: HBFWorker,
     ) -> tuple[tuple[BatchItem, ...], HBFModelBatchShape] | None:
@@ -929,6 +998,28 @@ class FullModelHBFServingPool:
                 decode_lpddr_k=tuple(decode_lpddr_k),
                 lm_head_sequences=len(items),
             )
+
+        # Periodic prefill-only slice under the mixed-batch guard: the
+        # guard keeps decode-carrying steps under the latency limit, but
+        # heavy decode load then shrinks the mixed prefill cap toward
+        # zero and prefills starve into multi-second TTFT.  Every
+        # sixteenth decode-carrying step therefore runs prefill alone
+        # with a chunk several caps wide: one bounded stall per cycle
+        # keeps the per-call TPOT mean under the limit while prefill
+        # holds a fixed share of worker time.
+        if (
+            PREFILL_SLICE_ENABLED
+            and self.mixed_batch_latency_limit_ns is not None
+            and worker.waiting
+            and worker.active_decode
+        ):
+            if worker.steps_since_prefill_slice >= 16:
+                worker.steps_since_prefill_slice = 0
+                self.metrics.prefill_slice_batches += 1
+                slice_cap = 6 * max(
+                    1, worker.mixed_prefill_chunk_cap or 1)
+                return self._select_prefill_slice(worker, slice_cap)
+            worker.steps_since_prefill_slice += 1
 
         decode_order = list(worker.active_decode)
         guard_budget = self._decode_guard_kv_budget

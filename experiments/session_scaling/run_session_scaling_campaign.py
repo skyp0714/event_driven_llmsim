@@ -166,6 +166,7 @@ def _build_system(system_key: str, hardware):
             migration_policy=os.environ.get(
                 "LLMSIM_MIGRATION_POLICY", "load_aware"),
             active_memory=lpddr_active_memory(**HBF_ACTIVE_MEMORY),
+            mixed_batch_latency_limit_ms=_mixed_guard_ms(),
         )
         return make_design_system(
             repo_root=REPO_ROOT, spec=spec,
@@ -176,6 +177,7 @@ def _build_system(system_key: str, hardware):
             migration_policy=os.environ.get(
                 "LLMSIM_MIGRATION_POLICY", "load_aware"),
             active_memory=lpddr_active_memory(**HBF_ACTIVE_MEMORY),
+            mixed_batch_latency_limit_ms=_mixed_guard_ms(),
         )
         return make_design_system(
             repo_root=REPO_ROOT, spec=spec,
@@ -185,6 +187,11 @@ def _build_system(system_key: str, hardware):
 
 def _decode_guard_ms():
     value = os.environ.get("LLMSIM_HBF_DECODE_GUARD_MS")
+    return None if not value else int(value)
+
+
+def _mixed_guard_ms():
+    value = os.environ.get("LLMSIM_HBF_MIXED_GUARD_MS")
     return None if not value else int(value)
 
 
