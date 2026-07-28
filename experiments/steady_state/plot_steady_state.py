@@ -38,6 +38,41 @@ FAMILY_LABEL = {
 }
 SLO_LEVEL = "ttft5_tpot100"
 SLO_CAPTION = "SLO: TTFT 5 s / TPOT 100 ms (of 3x3 grid)"
+# The 3x3 grid axes and, for aggregates scored before the grid landed,
+# the paired-ladder names that carry the same thresholds (the grid's
+# diagonal).
+SLO_GRID_TTFT_S = (3, 5, 10)
+SLO_GRID_TPOT_MS = (50, 100, 150)
+LEGACY_SLO_NAMES = {
+    (3, 50): "tight",
+    (5, 100): "medium",
+    (10, 150): "loose",
+}
+
+
+def resolve_slo_level(agg) -> str:
+    """Return the headline level present in this aggregate."""
+
+    for row in agg:
+        if f"goodput_{SLO_LEVEL}_mean" in row:
+            return SLO_LEVEL
+    return LEGACY_SLO_NAMES[(5, 100)]
+
+
+def slo_metric_key(agg, ttft_s: int, tpot_ms: int):
+    """Return the goodput column for one grid cell, or None."""
+
+    name = f"ttft{ttft_s:g}_tpot{tpot_ms:g}"
+    for row in agg:
+        if f"goodput_{name}_mean" in row:
+            return f"goodput_{name}_mean"
+    legacy = LEGACY_SLO_NAMES.get((ttft_s, tpot_ms))
+    if legacy is None:
+        return None
+    for row in agg:
+        if f"goodput_{legacy}_mean" in row:
+            return f"goodput_{legacy}_mean"
+    return None
 
 
 def _floatify(rows):
@@ -317,6 +352,44 @@ def _saturation_cutoff(rows) -> float:
     return cutoff
 
 
+def build_slo_grid_figure(family: str, rows, out_dir: Path):
+    """Nine goodput-vs-rate panels, one per SLO grid cell.
+
+    Panels whose level was not scored in this aggregate (pre-grid runs
+    carry only the diagonal) are labelled pending rather than dropped,
+    so the figure's shape is stable across campaign generations.
+    """
+
+    fig, axes = plt.subplots(
+        len(SLO_GRID_TPOT_MS), len(SLO_GRID_TTFT_S),
+        figsize=(16.5, 12.0), sharex=True)
+    for row_i, tpot_ms in enumerate(SLO_GRID_TPOT_MS):
+        for col_i, ttft_s in enumerate(SLO_GRID_TTFT_S):
+            ax = axes[row_i][col_i]
+            metric = slo_metric_key(rows, ttft_s, tpot_ms)
+            title = f"TTFT {ttft_s} s / TPOT {tpot_ms} ms"
+            if metric is None or not _line(ax, rows, metric):
+                ax.text(0.5, 0.5, "pending next campaign",
+                        ha="center", va="center",
+                        transform=ax.transAxes, fontsize=9,
+                        color="#888888")
+                ax.set_title(title, fontsize=10)
+                ax.set_axis_off()
+                continue
+            _finish(
+                ax, ylabel="SLO-good tokens/s", title=title,
+                legend=(row_i == 0 and col_i == 0))
+    fig.suptitle(
+        f"Goodput across the SLO grid - "
+        f"{FAMILY_LABEL.get(family, family)}",
+        fontsize=14)
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    path = out_dir / f"{family}_slo_grid.png"
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return path
+
+
 def build_family_figure(
         family: str, agg, econ, out_dir: Path, *,
         include_saturated: bool = False):
@@ -372,6 +445,8 @@ def build_family_figure(
         plt.close(fig)
         written.append(path)
 
+    written.append(build_slo_grid_figure(family, rows, out_dir))
+
     fig, ax = plt.subplots(figsize=(6.4, 4.0))
     panel_phases(ax, rows)
     fig.tight_layout()
@@ -414,6 +489,8 @@ def main() -> int:
     args = parser.parse_args()
 
     agg, econ = load(args.root)
+    global SLO_LEVEL
+    SLO_LEVEL = resolve_slo_level(agg)
     args.out.mkdir(parents=True, exist_ok=True)
     families = sorted({r["family"] for r in agg})
     written = []

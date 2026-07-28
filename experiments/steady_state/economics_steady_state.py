@@ -139,6 +139,9 @@ def main() -> int:
     args = parser.parse_args()
 
     rows = load_aggregate(args.root)
+    global SLO_LEVEL
+    if not any(f"goodput_{SLO_LEVEL}_mean" in row for row in rows):
+        SLO_LEVEL = "medium"
     by_point: dict[tuple, dict[str, dict]] = defaultdict(dict)
     for row in rows:
         by_point[(row["family"], row["rate"])][row["system"]] = row
