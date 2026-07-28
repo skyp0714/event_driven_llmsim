@@ -110,6 +110,7 @@ class SSDPromotionPolicy:
     load_aware_admission: bool = False
     min_context_tokens: int = 0
     demotion_hysteresis: float = 0.0
+    rank_mode: str = "context"
 
     def __post_init__(self) -> None:
         if not isinstance(self.key, str) or not self.key:
@@ -179,6 +180,13 @@ class SSDPromotionPolicy:
         if self.demotion_hysteresis and not self.load_aware_admission:
             raise ValueError(
                 "demotion requires load-aware admission")
+        if self.rank_mode not in {
+            "context", "density", "density_oracle",
+            "calls", "calls_oracle",
+        }:
+            raise ValueError(
+                "rank_mode must be one of context, density, "
+                "density_oracle, calls, calls_oracle")
         if (
             not isinstance(self.allowed_gap_types, tuple)
             or any(
@@ -249,6 +257,38 @@ class SSDPromotionPolicy:
                 mode="load_aware",
                 retry_ns=50_000_000,
                 demotion_hysteresis=0.5,
+            )
+        if key == "load_aware_density":
+            return cls(
+                key=key,
+                mode="load_aware",
+                retry_ns=50_000_000,
+                demotion_hysteresis=0.5,
+                rank_mode="density",
+            )
+        if key == "load_aware_density_oracle":
+            return cls(
+                key=key,
+                mode="load_aware",
+                retry_ns=50_000_000,
+                demotion_hysteresis=0.5,
+                rank_mode="density_oracle",
+            )
+        if key == "load_aware_calls":
+            return cls(
+                key=key,
+                mode="load_aware",
+                retry_ns=50_000_000,
+                demotion_hysteresis=0.5,
+                rank_mode="calls",
+            )
+        if key == "load_aware_calls_oracle":
+            return cls(
+                key=key,
+                mode="load_aware",
+                retry_ns=50_000_000,
+                demotion_hysteresis=0.5,
+                rank_mode="calls_oracle",
             )
         if key in {
             "composite",
@@ -553,6 +593,65 @@ class SSDStagedGPUHBFNode:
         self._direct_migrations: dict[
             int, DirectMigrationTicket] = {}
         self._next_promotion_serial = 1
+        self._spec_total_calls: dict[str, int] = {}
+        self._submitted_count_by_session: dict[str, int] = {}
+
+    def set_spec_total_calls(
+            self, session_id: str, count: int) -> None:
+        """Register a session's total in-window call count.
+
+        This is the oracle side-channel: the workload spec knows every
+        call a scheduled session will make, and the ``density_oracle``
+        ranking divides context by the calls still to come.  Causal
+        policies never read it.
+        """
+
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("session_id must be non-empty")
+        if (
+            isinstance(count, bool)
+            or not isinstance(count, int)
+            or count <= 0
+        ):
+            raise ValueError("count must be a positive integer")
+        self._spec_total_calls[session_id] = count
+
+    def _session_calls_so_far(self, session_id: str) -> int:
+        """Calls this session has made, seeded history included."""
+
+        return self._last_submitted_call_index.get(session_id, -1) + 1
+
+    def _session_remaining_calls(self, session_id: str) -> int:
+        total = self._spec_total_calls.get(session_id)
+        if total is None:
+            return 1
+        submitted = self._submitted_count_by_session.get(session_id, 0)
+        return max(1, total - submitted)
+
+    def _placement_value(self, session_id: str, placement) -> float:
+        """HBF-residency worth: restore savings per request served.
+
+        ``context`` is the raw restore size.  ``density`` divides by the
+        session's observed call count -- past calls predict future calls
+        under the trace's heavy-tailed session lengths, so this is the
+        causal estimate of savings per future request.  ``density_oracle``
+        divides by the spec's actual remaining calls.
+        """
+
+        tokens = float(placement.total_tokens)
+        mode = self.promotion_policy.rank_mode
+        if mode == "density":
+            return tokens / max(1, self._session_calls_so_far(session_id))
+        if mode == "density_oracle":
+            return tokens / self._session_remaining_calls(session_id)
+        if mode == "calls":
+            # HBF-residency worth is the inverse of the session's call
+            # mass: the call-heavy heads belong on the GPU, D-resident,
+            # where their frequent resumes hit live KV.
+            return 1.0 / max(1, self._session_calls_so_far(session_id))
+        if mode == "calls_oracle":
+            return 1.0 / self._session_remaining_calls(session_id)
+        return tokens
 
     def set_gap_type(
             self, request_id: int,
@@ -809,6 +908,9 @@ class SSDStagedGPUHBFNode:
                 call.call_index)
             self._last_submitted_request_id[call.session_id] = (
                 call.request_id)
+            self._submitted_count_by_session[call.session_id] = (
+                self._submitted_count_by_session.get(
+                    call.session_id, 0) + 1)
             self._pending_call_ids.append(call.request_id)
             self.metrics.submitted_calls += 1
         self.metrics.max_pending_calls = max(
@@ -1375,10 +1477,10 @@ class SSDStagedGPUHBFNode:
         two valves cannot flap a session back and forth: promotion needs
         the HBF side to be the quieter one, demotion needs it to be
         overloaded by ``demotion_hysteresis`` beyond parity.  Only the
-        short half of the HBF population (below the resident median
-        context) is eligible -- their GPU recompute is cheap, and the
-        long sessions are the ones whose avoided restore pays for HBF
-        residency in the first place.
+        lower half of the HBF population by placement value (see
+        ``_placement_value``) is eligible: those are the residents whose
+        avoided restore per served request is smallest, so shedding them
+        buys the most relief per unit of recompute.
         """
 
         hysteresis = self.promotion_policy.demotion_hysteresis
@@ -1399,38 +1501,49 @@ class SSDStagedGPUHBFNode:
             now_ns, include_pressure=False)
         if hbf_score <= max(1.0, gpu_score * (1.0 + hysteresis)):
             return False
-        resident_tokens = sorted(
-            record.total_tokens
+        # A demoted session that does not fit in free D-HBM would pay a
+        # restore on every resume instead of staying D-resident -- the
+        # exact thrash the density ablation exposed.  Keep it on HBF.
+        if (
+            self.gpu_lifecycle._per_rank_bytes(placement.total_tokens)
+            > self.gpu_lifecycle.d_ledger.free_bytes
+        ):
+            return False
+        resident_values = sorted(
+            self._placement_value(record.session_id, record)
             for record in self.hbf_lifecycle.sessions.values()
             if record.state == PlacementState.HBF_READY
         )
-        if len(resident_tokens) < 2:
+        if len(resident_values) < 2:
             return False
         median = (
-            resident_tokens[len(resident_tokens) // 2]
-            if len(resident_tokens) % 2
+            resident_values[len(resident_values) // 2]
+            if len(resident_values) % 2
             else (
-                resident_tokens[len(resident_tokens) // 2 - 1]
-                + resident_tokens[len(resident_tokens) // 2]
+                resident_values[len(resident_values) // 2 - 1]
+                + resident_values[len(resident_values) // 2]
             ) / 2
         )
-        return placement.total_tokens < median
+        return self._placement_value(
+            placement.session_id, placement) < median
 
     def _promotion_priority(
             self, item: tuple[str, SSDPromotionIntent]) -> tuple:
-        """Order due intents by maturity, longest context first.
+        """Order due intents by HBF-residency worth, highest first.
 
-        HBF residency amortises the avoided restore per resume, which
-        scales with context length, while its decode occupancy cost does
-        not.  When the load gate admits only k promotions they should go
-        to the k most mature sessions, not the lexicographically first
-        ones.  The serial tie-break keeps the order deterministic.
+        When the load gate admits only k promotions they should go to
+        the k sessions whose placement value (see ``_placement_value``)
+        is largest, not the lexicographically first ones.  The serial
+        tie-break keeps the order deterministic.
         """
 
         session_id, intent = item
         placement = self.hbf_lifecycle.sessions.get(session_id)
-        total_tokens = 0 if placement is None else placement.total_tokens
-        return (-total_tokens, intent.serial, session_id)
+        value = (
+            0.0 if placement is None
+            else self._placement_value(session_id, placement)
+        )
+        return (-value, intent.serial, session_id)
 
     def _progress_promotions(self, now_ns: int) -> None:
         self._mark_due_promotions(now_ns)

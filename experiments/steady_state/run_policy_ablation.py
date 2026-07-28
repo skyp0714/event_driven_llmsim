@@ -34,12 +34,21 @@ POLICIES = (
     "composite_ready_adaptive",
     "composite",
 )
+# Each policy preloads at the split its own ranking would converge to.
+PRELOAD_SPLIT_BY_POLICY = {
+    "load_aware_density": "request_density",
+    "load_aware_density_oracle": "request_density_oracle",
+    "load_aware_calls": "hot_dcap",
+    "load_aware_calls_oracle": "hot_dcap_oracle",
+}
 DEFAULT_RATES = (0.004, 0.008, 0.016)
 DEFAULT_SEEDS = (101, 102, 103)
 
 
 def run_one(task: dict) -> dict:
     os.environ["LLMSIM_MIGRATION_POLICY"] = task["policy"]
+    os.environ["LLMSIM_PRELOAD_SPLIT"] = PRELOAD_SPLIT_BY_POLICY.get(
+        task["policy"], "context_half")
     import run_steady_state_campaign as S
 
     row = S.run_cell({

@@ -174,6 +174,8 @@ def build_residents(sessions, target_l: int, rng, stagger_ns: int):
             "context_tokens": clone.calls[start].cached_prefix_tokens,
             "arrival_ns": rng.randrange(max(1, stagger_ns)),
             "rank": rank,
+            "past_calls": start,
+            "future_calls": len(truncated.calls),
         })
     return residents
 
@@ -315,10 +317,70 @@ def preload_population(system, system_key, residents, now_ns):
             - recency_rank[resident["session"].session_id] * 1_000_000,
         )
 
-    mature = sorted(order, key=lambda r: -r["context_tokens"])
-    hbf_budget = (len(mature) + 1) // 2
+    # Split criterion.  "context_half" is the original maturity split.
+    # The density modes rank by restore savings per request served and
+    # budget on request weight, so the HBF side carries a balanced share
+    # of the offered request flow instead of a balanced session count:
+    # the trace's request rates are heavy-tailed enough that the mature
+    # session half otherwise carries ~78% of the requests.
+    split_mode = os.environ.get(
+        "LLMSIM_PRELOAD_SPLIT", "context_half")
     gpu_side = []
-    for resident in mature[:hbf_budget]:
+    if split_mode == "context_half":
+        mature = sorted(order, key=lambda r: -r["context_tokens"])
+        hbf_set = mature[:(len(mature) + 1) // 2]
+        rest = mature[(len(mature) + 1) // 2:]
+    elif split_mode in ("request_density", "request_density_oracle"):
+        oracle = split_mode == "request_density_oracle"
+
+        def weight(resident):
+            return max(1, resident[
+                "future_calls" if oracle else "past_calls"])
+
+        ranked = sorted(
+            order,
+            key=lambda r: -(r["context_tokens"] / weight(r)))
+        # The causal budget fraction is data-derived: expected future
+        # calls scale sub-linearly with past calls, so half the future
+        # request flow corresponds to ~0.35 of the past-call mass
+        # (measured 47-59% true future share across families and rates).
+        budget = sum(weight(r) for r in order) * (
+            0.5 if oracle else 0.35)
+        hbf_set, rest, acc = [], [], 0
+        for resident in ranked:
+            if acc + weight(resident) > budget:
+                rest.append(resident)
+                continue
+            hbf_set.append(resident)
+            acc += weight(resident)
+    elif split_mode in ("hot_dcap", "hot_dcap_oracle"):
+        # The GPU keeps only the call-heaviest heads, and only as many
+        # as fit in D-HBM: D-resident hot sessions resume against live
+        # KV and never restore, while everything else -- the long cold
+        # mass -- is HBF-resident.  The byte bound is what the density
+        # split violated: a hot session outside D pays a restore per
+        # resume.
+        oracle = split_mode == "hot_dcap_oracle"
+
+        def call_mass(resident):
+            return max(1, resident[
+                "future_calls" if oracle else "past_calls"])
+
+        ranked = sorted(order, key=lambda r: -call_mass(r))
+        byte_budget = 0.8 * gpu_lifecycle.d_ledger.capacity_bytes
+        rest, hbf_set, acc = [], [], 0
+        for resident in ranked:
+            byte_count = gpu_lifecycle._per_rank_bytes(
+                resident["context_tokens"])
+            if acc + byte_count > byte_budget:
+                hbf_set.append(resident)
+                continue
+            rest.append(resident)
+            acc += byte_count
+    else:
+        raise ValueError(
+            f"unknown LLMSIM_PRELOAD_SPLIT {split_mode!r}")
+    for resident in hbf_set:
         try:
             lifecycle.preload_session(
                 resident["session"].session_id, resident["context_tokens"],
@@ -328,10 +390,15 @@ def preload_population(system, system_key, residents, now_ns):
             gpu_side.append(resident)
             continue
         placed["hbf"] += 1
-    gpu_side.extend(mature[hbf_budget:])
-    # Youngest-first fill keeps the freshest sessions in D-HBM and pushes
-    # the more mature remainder down to CPU and then SSD.
-    gpu_side.sort(key=lambda r: r["context_tokens"])
+    gpu_side.extend(rest)
+    if split_mode == "context_half":
+        # Youngest-first fill keeps the freshest sessions in D-HBM and
+        # pushes the more mature remainder down to CPU and then SSD.
+        gpu_side.sort(key=lambda r: r["context_tokens"])
+    else:
+        # The GPU side now holds the request-hot sessions; the hottest
+        # belong in D-HBM, where their frequent resumes hit live KV.
+        gpu_side.sort(key=lambda r: -max(1, r["past_calls"]))
     for resident in gpu_side:
         tokens = resident["context_tokens"]
         session_id = resident["session"].session_id
@@ -418,6 +485,11 @@ def run_cell(task: dict) -> dict:
     # Load first so routing is decided, then install the residents' history
     # on the node each one actually landed on.
     system.load(scheduled)
+    node = getattr(system, "node", None)
+    if node is not None and hasattr(node, "set_spec_total_calls"):
+        for sched in scheduled:
+            node.set_spec_total_calls(
+                sched.session.session_id, len(sched.session.calls))
     seeded_cursors = seed_call_cursors(system, residents)
     placed = preload_population(system, system_key, residents, now_ns=0)
     # Cut on the window rather than draining: the residents carry many more
@@ -476,6 +548,8 @@ def run_cell(task: dict) -> dict:
         "mean_session_lifetime_s": mean_w,
         "target_concurrency": target_l,
         "preloaded": placed,
+        "preload_split": os.environ.get(
+            "LLMSIM_PRELOAD_SPLIT", "context_half"),
         "pool_sessions": len(sessions),
         "calls_per_session_mean": calls_per_session,
         "resident_sessions": len(residents),

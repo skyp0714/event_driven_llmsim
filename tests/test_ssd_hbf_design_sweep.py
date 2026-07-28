@@ -252,6 +252,10 @@ class SSDHBFDesignSweepTests(unittest.TestCase):
             {
                 "delay_1s",
                 "load_aware_demote",
+                "load_aware_density",
+                "load_aware_density_oracle",
+                "load_aware_calls",
+                "load_aware_calls_oracle",
                 "composite",
                 "composite_adaptive",
                 "composite_ready",

@@ -989,6 +989,82 @@ class SSDStagedGPUHBFTests(unittest.TestCase):
         self.assertEqual(node.metrics.hbf_load_demotions, 0)
         self.assertEqual(node.metrics.hbf_calls, 1)
 
+    def test_density_rank_prefers_high_value_per_call_sessions(self):
+        node = self.make_node(policy="load_aware_density")
+        # Same context, different observed call counts: the session that
+        # reached this context in fewer calls has the higher value.
+        node.hbf_lifecycle.preload_gpu_session(
+            "cold", 40_000, now_ns=0, durable_ssd=True)
+        node.hbf_lifecycle.preload_gpu_session(
+            "hot", 40_000, now_ns=0, durable_ssd=True)
+        node._last_submitted_call_index["cold"] = 3
+        node._last_submitted_call_index["hot"] = 99
+
+        cold = node._placement_value(
+            "cold", node.hbf_lifecycle.sessions["cold"])
+        hot = node._placement_value(
+            "hot", node.hbf_lifecycle.sessions["hot"])
+        self.assertEqual(cold, 40_000 / 4)
+        self.assertEqual(hot, 40_000 / 100)
+        self.assertGreater(cold, hot)
+
+    def test_density_oracle_uses_remaining_spec_calls(self):
+        node = self.make_node(policy="load_aware_density_oracle")
+        node.hbf_lifecycle.preload_gpu_session(
+            "s", 10_000, now_ns=0, durable_ssd=True)
+        placement = node.hbf_lifecycle.sessions["s"]
+        # Without spec knowledge the denominator degrades to one.
+        self.assertEqual(
+            node._placement_value("s", placement), 10_000.0)
+        node.set_spec_total_calls("s", 5)
+        self.assertEqual(
+            node._placement_value("s", placement), 10_000 / 5)
+        node._submitted_count_by_session["s"] = 3
+        self.assertEqual(
+            node._placement_value("s", placement), 10_000 / 2)
+
+    def test_overloaded_hbf_demotes_low_density_resident(self):
+        node = self.make_node(policy="load_aware_density")
+        # Long-but-hot: huge context amassed over many calls.  Short-but-
+        # cold: modest context in two calls.  Under density ranking the
+        # hot session is the demotion candidate despite its size.
+        node.hbf_lifecycle.preload_session("hot", 60_000, now_ns=0)
+        node.hbf_lifecycle.preload_session("cold", 4_096, now_ns=0)
+        node._last_submitted_call_index["hot"] = 199
+        node._last_submitted_call_index["cold"] = 1
+        for session_id in ("hot", "cold"):
+            node.sessions[session_id] = HybridSession(
+                session_id=session_id,
+                last_internal_call_index=(
+                    199 if session_id == "hot" else 1),
+            )
+        node.calendar.reserve_parallel(
+            arrival_ns=0,
+            job_id=77_777,
+            kind="test-hbf-load",
+            namespace="test",
+            demands={
+                "hbf-group-0-npu": (1_000_000_000, 0),
+            },
+        )
+
+        resume = self.runtime_call(
+            1,
+            200,
+            0,
+            input_tokens=60_032,
+            output_tokens=2,
+            prefix_reuse_tokens=60_000,
+            session_id="hot",
+        )
+        node.submit(resume, now_ns=0)
+
+        self.assertEqual(node.metrics.hbf_load_demotions, 1)
+        self.assertEqual(node.metrics.gpu_calls, 1)
+        self.assertIs(
+            node.hbf_lifecycle.sessions["cold"].state,
+            PlacementState.HBF_READY)
+
     def test_preload_gpu_session_registers_routing_records(self):
         node = self.make_node()
         kv_bytes = node.hbf_lifecycle.kv_bytes_per_token
