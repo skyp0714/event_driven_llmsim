@@ -1483,18 +1483,25 @@ class SSDStagedGPUHBFNode:
             "hbf": ("hbf-group-", "hbf-card-"),
         }
         busy: dict[str, float] = {k: 0.0 for k in classes}
-        counts: dict[str, int] = {k: 0 for k in classes}
+        # Normalise by serving units, not by matched resource names: the
+        # HBF prefixes match cards and NPU lanes as well as the group
+        # engines, and averaging over all of them dilutes a saturated
+        # worker to ~0.2, which silently pinned the gate shut.
+        counts = {
+            "gpu_p": 1,
+            "gpu_d": 1,
+            "hbf": max(1, len(self.hbf_pool.workers)),
+        }
         for resource, ns in self.calendar.busy_ns.items():
             for key, prefixes in classes.items():
                 if resource.startswith(prefixes):
                     busy[key] += ns
-                    counts[key] += 1
         def cumulative() -> dict[str, float]:
             if now_ns <= 0:
                 return {}
             return {
                 key: max(0.0, min(
-                    1.0, busy[key] / (now_ns * max(1, counts[key]))))
+                    1.0, busy[key] / (now_ns * counts[key])))
                 for key in classes
             }
 
@@ -1513,10 +1520,10 @@ class SSDStagedGPUHBFNode:
             return self._util_last
         utils = {}
         for key in classes:
-            n = max(1, counts[key])
             utils[key] = max(0.0, min(
                 1.0,
-                (busy[key] - prev_busy.get(key, 0.0)) / (window * n)))
+                (busy[key] - prev_busy.get(key, 0.0))
+                / (window * counts[key])))
         self._util_prev = (now_ns, dict(busy))
         self._util_last = utils
         return utils
@@ -1669,12 +1676,19 @@ class SSDStagedGPUHBFNode:
                 return False
         # A demoted session that does not fit in free D-HBM would pay a
         # restore on every resume instead of staying D-resident -- the
-        # exact thrash the density ablation exposed.  Keep it on HBF.
-        if (
-            self.gpu_lifecycle._per_rank_bytes(placement.total_tokens)
-            > self.gpu_lifecycle.d_ledger.free_bytes
-        ):
-            return False
+        # exact thrash the density ablation exposed.  Under the
+        # utilisation gate a full D is not a refusal but a swap: spill
+        # the coldest idle D residents (they rarely resume, so their
+        # deferred restore is cheap) to make room for a session hot
+        # enough that the HBF host is drowning in its requests.
+        needed_bytes = self.gpu_lifecycle._per_rank_bytes(
+            placement.total_tokens)
+        if needed_bytes > self.gpu_lifecycle.d_ledger.free_bytes:
+            if not self.promotion_policy.util_balance:
+                return False
+            if not self._reclaim_d_bytes(
+                    needed_bytes, now_ns=now_ns):
+                return False
         resident_values = sorted(
             self._placement_value(record.session_id, record)
             for record in self.hbf_lifecycle.sessions.values()
@@ -1710,6 +1724,39 @@ class SSDStagedGPUHBFNode:
             else self._placement_value(session_id, placement)
         )
         return (-value, intent.serial, session_id)
+
+    def _reclaim_d_bytes(
+            self, needed_bytes: int, *, now_ns: int) -> bool:
+        """Start spilling cold idle D residents until the bytes fit.
+
+        Up to eight victims per call bounds the churn; the freed-bytes
+        estimate is optimistic (the spill transfer completes later),
+        which is safe because the swapped-in session's recompute waits
+        on admission for the memory anyway.
+        """
+
+        freed = self.gpu_lifecycle.d_ledger.free_bytes
+        victims = sorted(
+            (
+                record
+                for record in self.gpu_lifecycle.sessions.values()
+                if record.state == TierSessionState.D_READY
+            ),
+            key=lambda record: (
+                record.last_access_ns, record.session_id),
+        )
+        launched = 0
+        for victim in victims:
+            if freed >= needed_bytes or launched >= 8:
+                break
+            try:
+                self.gpu_lifecycle.demote(
+                    victim.session_id, now_ns=now_ns)
+            except RuntimeError:
+                continue
+            launched += 1
+            freed += self.gpu_lifecycle._per_rank_bytes(victim.tokens)
+        return freed >= needed_bytes
 
     def _progress_promotions(self, now_ns: int) -> None:
         self._mark_due_promotions(now_ns)
