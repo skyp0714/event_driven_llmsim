@@ -4,6 +4,7 @@ env/
 # Ignore python cache
 *.pyc
 __pycache__/
+.pytest_cache/
 *.joblib
 
 # Ignore pkl files
@@ -23,3 +24,7 @@ bench/results/
 
 # Campaign cell outputs are large and regenerable; aggregates are committed.
 results/*/cells/
+
+# Campaign run logs written to the repo root by the experiments/ drivers.
+# Pure stdout; the aggregates under experiments/*/ are the durable record.
+/*.log
