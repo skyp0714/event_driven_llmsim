@@ -225,6 +225,25 @@ class HBFExternalDispatch:
 PREFILL_SLICE_ENABLED = os.environ.get(
     "LLMSIM_HBF_PREFILL_SLICE", "0") == "1"
 
+# Bounded prefill-slot schedule: "K:Lp_ms" alternates K decode-only
+# steps with one prefill-only slot of at most Lp milliseconds.  This is
+# colocation with a scheduling discipline, not disaggregation: the KV
+# never moves, so capacity and write endurance are untouched.  Unlike
+# the mixed guard's per-step crumbs, the slot runs prefill at full rate
+# for a bounded interval, so prefill holds a fixed share of worker time
+# instead of starving under decode load.  No adaptive feedback is
+# involved; the slot's token budget is sized once at init from a
+# two-point probe of the latency model.
+def _parse_pd_slots():
+    value = os.environ.get("LLMSIM_HBF_PD_SLOTS", "")
+    if not value:
+        return None
+    k_steps, lp_ms = value.split(":")
+    return max(1, int(k_steps)), max(1, int(lp_ms)) * 1_000_000
+
+
+PD_SLOTS = _parse_pd_slots()
+
 
 @dataclass
 class HBFWorker:
@@ -545,6 +564,26 @@ class FullModelHBFServingPool:
             band=band,
         )
         self.models = (shared_model,) * layout.replicas
+        self._pd_slots: Optional[tuple[int, int]] = None
+        if PD_SLOTS is not None:
+            k_steps, lp_ns = PD_SLOTS
+            def _prefill_probe(chunk: int) -> float:
+                shape = HBFModelBatchShape(
+                    total_tokens=chunk,
+                    prefill_q=(chunk,),
+                    prefill_hbf_k=(100_000,),
+                    prefill_lpddr_k=(0,),
+                    decode_hbf_k=(),
+                    decode_lpddr_k=(),
+                    lm_head_sequences=1,
+                )
+                return float(shared_model.batch_latency(shape).total_ns)
+            low_c, high_c = 2_048, 4_096
+            slope = max(1e-6, (
+                _prefill_probe(high_c) - _prefill_probe(low_c))
+                / (high_c - low_c))
+            slot_tokens = max(64, int(lp_ns / slope))
+            self._pd_slots = (k_steps, slot_tokens)
         self._decode_guard_kv_budget: Optional[int] = None
         if self.decode_latency_guard_ns is not None:
             # Decode steps are dominated by media KV reads, so latency is
@@ -999,6 +1038,31 @@ class FullModelHBFServingPool:
                 lm_head_sequences=len(items),
             )
 
+        slot_decode_only = False
+        if self._pd_slots is not None and worker.active_decode:
+            k_steps, slot_tokens = self._pd_slots
+            prefill_demand = any(
+                self.requests[rid].prefill_remaining_tokens > 0
+                for rid in worker.waiting)
+            if (
+                prefill_demand
+                and worker.steps_since_prefill_slice >= k_steps
+            ):
+                worker.steps_since_prefill_slice = 0
+                self.metrics.prefill_slice_batches += 1
+                selected = self._select_prefill_slice(
+                    worker, slot_tokens)
+                if selected is not None:
+                    return selected
+            else:
+                if prefill_demand:
+                    worker.steps_since_prefill_slice += 1
+                else:
+                    # Keep the counter saturated so a newly arriving
+                    # prefill is served at the next step boundary.
+                    worker.steps_since_prefill_slice = k_steps
+                slot_decode_only = True
+
         # Periodic prefill-only slice under the mixed-batch guard: the
         # guard keeps decode-carrying steps under the latency limit, but
         # heavy decode load then shrinks the mixed prefill cap toward
@@ -1103,6 +1167,9 @@ class FullModelHBFServingPool:
             if request.state != HBFRequestState.PREFILL:
                 raise RuntimeError("prefill queue contains invalid request")
             remaining = request.prefill_remaining_tokens
+            if slot_decode_only and remaining > 0:
+                deferred_waiting.append(request_id)
+                continue
             if remaining == 0:
                 additions[request_id] = 0
                 if not self._projected_lpddr_fits(
