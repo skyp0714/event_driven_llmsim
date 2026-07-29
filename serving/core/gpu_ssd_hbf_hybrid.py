@@ -113,6 +113,9 @@ class SSDPromotionPolicy:
     rank_mode: str = "context"
     tpot_safe_context_tokens: int = 0
     tpot_safe_slack: float = 1.5
+    util_balance: bool = False
+    util_promote_gap: float = 0.05
+    util_demote_gap: float = 0.20
 
     def __post_init__(self) -> None:
         if not isinstance(self.key, str) or not self.key:
@@ -182,6 +185,17 @@ class SSDPromotionPolicy:
         if self.demotion_hysteresis and not self.load_aware_admission:
             raise ValueError(
                 "demotion requires load-aware admission")
+        for name in ("util_promote_gap", "util_demote_gap"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or not 0.0 <= float(value) <= 1.0
+            ):
+                raise ValueError(f"{name} must be in [0, 1]")
+        if not isinstance(self.util_balance, bool):
+            raise ValueError("util_balance must be a boolean")
         if self.rank_mode not in {
             "context", "density", "density_oracle",
             "calls", "calls_oracle", "cost",
@@ -266,6 +280,14 @@ class SSDPromotionPolicy:
                 mode="load_aware",
                 retry_ns=50_000_000,
                 demotion_hysteresis=2.0,
+            )
+        if key == "load_aware_util":
+            return cls(
+                key=key,
+                mode="load_aware",
+                retry_ns=50_000_000,
+                demotion_hysteresis=2.0,
+                util_balance=True,
             )
         if key == "load_aware_demote_h2_safe":
             return cls(
@@ -623,6 +645,8 @@ class SSDStagedGPUHBFNode:
         self._spec_total_calls: dict[str, int] = {}
         self._submitted_count_by_session: dict[str, int] = {}
         self._fresh_input_ewma: dict[str, float] = {}
+        self._util_prev: Optional[tuple[int, dict[str, float]]] = None
+        self._util_last: dict[str, float] = {}
 
     def set_spec_total_calls(
             self, session_id: str, count: int) -> None:
@@ -1443,6 +1467,60 @@ class SSDStagedGPUHBFNode:
             default=0,
         )
 
+    def _window_utils(self, now_ns: int) -> dict[str, float]:
+        """Windowed busy fractions per stage from the shared calendar.
+
+        Utilisation is the ground truth the queue-score gate was meant
+        to approximate: the score held HBF at 94% busy while the GPU
+        decode stage sat at 61%.  Sampling cumulative busy time between
+        gate evaluations gives a causal moving window; below a minimum
+        window the previous sample is reused.
+        """
+
+        classes = {
+            "gpu_p": (f"gpu-node-{self.gpu_node_id}-p-model",),
+            "gpu_d": (f"gpu-node-{self.gpu_node_id}-d-model",),
+            "hbf": ("hbf-group-", "hbf-card-"),
+        }
+        busy: dict[str, float] = {k: 0.0 for k in classes}
+        counts: dict[str, int] = {k: 0 for k in classes}
+        for resource, ns in self.calendar.busy_ns.items():
+            for key, prefixes in classes.items():
+                if resource.startswith(prefixes):
+                    busy[key] += ns
+                    counts[key] += 1
+        def cumulative() -> dict[str, float]:
+            if now_ns <= 0:
+                return {}
+            return {
+                key: max(0.0, min(
+                    1.0, busy[key] / (now_ns * max(1, counts[key]))))
+                for key in classes
+            }
+
+        if self._util_prev is None:
+            self._util_prev = (now_ns, dict(busy))
+            self._util_last = cumulative()
+            return self._util_last
+        prev_ns, prev_busy = self._util_prev
+        window = now_ns - prev_ns
+        if window < 200_000_000:
+            # Between window samples fall back to the freshest estimate
+            # available rather than an empty reading: an empty reading
+            # silently disabled both gates in the first A/B.
+            if not self._util_last:
+                self._util_last = cumulative()
+            return self._util_last
+        utils = {}
+        for key in classes:
+            n = max(1, counts[key])
+            utils[key] = max(0.0, min(
+                1.0,
+                (busy[key] - prev_busy.get(key, 0.0)) / (window * n)))
+        self._util_prev = (now_ns, dict(busy))
+        self._util_last = utils
+        return utils
+
     def _load_aware_allows_promotion(
             self, now_ns: int, *,
             total_tokens: Optional[int] = None) -> bool:
@@ -1456,6 +1534,13 @@ class SSDStagedGPUHBFNode:
         GPU score rather than strictly quieter.
         """
 
+        if self.promotion_policy.util_balance:
+            utils = self._window_utils(now_ns)
+            if not utils:
+                return True
+            gpu_util = max(utils["gpu_p"], utils["gpu_d"])
+            return utils["hbf"] < (
+                gpu_util - self.promotion_policy.util_promote_gap)
         gpu_score, hbf_score = self._load_scores(now_ns)
         if hbf_score == 0.0:
             return True
@@ -1566,10 +1651,22 @@ class SSDStagedGPUHBFNode:
         # demotions whose recompute tail costs more than the relief --
         # the ablation showed the floor of one firing at loads the HBF
         # host was handling fine.
-        gpu_score, hbf_score = self._load_scores(
-            now_ns, include_pressure=False)
-        if hbf_score <= max(4.0, gpu_score * (1.0 + hysteresis)):
-            return False
+        if self.promotion_policy.util_balance:
+            utils = self._window_utils(now_ns)
+            if not utils:
+                return False
+            gpu_util = max(utils["gpu_p"], utils["gpu_d"])
+            if (
+                utils["hbf"] < 0.7
+                or utils["hbf"] - gpu_util
+                < self.promotion_policy.util_demote_gap
+            ):
+                return False
+        else:
+            gpu_score, hbf_score = self._load_scores(
+                now_ns, include_pressure=False)
+            if hbf_score <= max(4.0, gpu_score * (1.0 + hysteresis)):
+                return False
         # A demoted session that does not fit in free D-HBM would pay a
         # restore on every resume instead of staying D-resident -- the
         # exact thrash the density ablation exposed.  Keep it on HBF.

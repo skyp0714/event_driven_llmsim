@@ -244,6 +244,13 @@ def _parse_pd_slots():
 
 PD_SLOTS = _parse_pd_slots()
 
+# Static prefill chunk cap for the HBF worker only (the GPU pool keeps
+# its own configuration).  The deployment default of 131,072 makes
+# chunked prefill effectively whole-prompt; a small cap bounds the
+# decode stall a mixed batch can carry without any adaptive feedback.
+_chunk_env = os.environ.get("LLMSIM_HBF_PREFILL_CHUNK_TOKENS", "")
+HBF_PREFILL_CHUNK_CAP = int(_chunk_env) if _chunk_env else None
+
 
 @dataclass
 class HBFWorker:
@@ -1191,6 +1198,8 @@ class FullModelHBFServingPool:
                 token_budget,
                 self.max_prefill_chunk_tokens,
             )
+            if HBF_PREFILL_CHUNK_CAP is not None:
+                chunk = min(chunk, HBF_PREFILL_CHUNK_CAP)
             original_chunk = chunk
             if (
                 decode_hbf_k
