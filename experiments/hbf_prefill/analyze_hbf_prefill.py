@@ -97,36 +97,43 @@ def main(argv=None) -> int:
                     for name in HEADLINE_FIELDS)
                 + ("|".join(slo_names), slo_good))
 
-    with (root / "gap_buckets.csv").open("w", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow((
-            "family", "rate", "system", "bucket",
-            "resume_count",
-            "resume_ttft_mean_s", "resume_ttft_p50_s",
-            "resume_ttft_p90_s", "resume_ttft_p95_s",
-            "turn_latency_mean_s", "turn_latency_p90_s",
-        ))
-        for (family, rate, system), rows in sorted(groups.items()):
-            buckets = rows[0]["gap_conditioned"]["resume_ttft_s"].keys()
-            for bucket in buckets:
-                ttft = [
-                    r["gap_conditioned"]["resume_ttft_s"][bucket]
-                    for r in rows]
-                turns = [
-                    r["gap_conditioned"]["turn_latency_s"][bucket]
-                    for r in rows]
-                count = sum(t["count"] for t in ttft)
-                populated_t = [t for t in ttft if t["count"]]
-                populated_u = [t for t in turns if t["count"]]
-                writer.writerow((
-                    family, rate, system, bucket, count,
-                    round(mean([t["mean"] for t in populated_t]), 6),
-                    round(mean([t["p50"] for t in populated_t]), 6),
-                    round(mean([t["p90"] for t in populated_t]), 6),
-                    round(mean([t["p95"] for t in populated_t]), 6),
-                    round(mean([t["mean"] for t in populated_u]), 6),
-                    round(mean([t["p90"] for t in populated_u]), 6),
-                ))
+    def write_buckets(filename: str, cell_key: str):
+        with (root / filename).open("w", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow((
+                "family", "rate", "system", "bucket",
+                "resume_count",
+                "resume_ttft_mean_s", "resume_ttft_p50_s",
+                "resume_ttft_p90_s", "resume_ttft_p95_s",
+                "turn_latency_mean_s", "turn_latency_p90_s",
+            ))
+            for (family, rate, system), rows in sorted(groups.items()):
+                rows = [r for r in rows if cell_key in r]
+                if not rows:
+                    continue
+                buckets = rows[0][cell_key]["resume_ttft_s"].keys()
+                for bucket in buckets:
+                    ttft = [
+                        r[cell_key]["resume_ttft_s"][bucket]
+                        for r in rows]
+                    turns = [
+                        r[cell_key]["turn_latency_s"][bucket]
+                        for r in rows]
+                    count = sum(t["count"] for t in ttft)
+                    populated_t = [t for t in ttft if t["count"]]
+                    populated_u = [t for t in turns if t["count"]]
+                    writer.writerow((
+                        family, rate, system, bucket, count,
+                        round(mean([t["mean"] for t in populated_t]), 6),
+                        round(mean([t["p50"] for t in populated_t]), 6),
+                        round(mean([t["p90"] for t in populated_t]), 6),
+                        round(mean([t["p95"] for t in populated_t]), 6),
+                        round(mean([t["mean"] for t in populated_u]), 6),
+                        round(mean([t["p90"] for t in populated_u]), 6),
+                    ))
+
+    write_buckets("gap_buckets.csv", "gap_conditioned")
+    write_buckets("context_buckets.csv", "context_conditioned")
 
     budget = ssd_endurance_budget_bytes_per_s()
     with (root / "writes.csv").open("w", newline="") as handle:
@@ -164,7 +171,9 @@ def main(argv=None) -> int:
                 if budget else 0.0,
             ))
 
-    print(f"wrote aggregate.csv, gap_buckets.csv, writes.csv under {root}")
+    print(
+        "wrote aggregate.csv, gap_buckets.csv, context_buckets.csv, "
+        f"writes.csv under {root}")
     return 0
 
 

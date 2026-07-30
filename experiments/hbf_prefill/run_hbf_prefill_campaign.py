@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import replace
 import json
 import math
 import os
@@ -48,7 +49,7 @@ REPO_ROOT = C.REPO_ROOT
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 FAMILIES = S.FAMILIES
 SYSTEMS = (
     "baseline_cpu_ssd",
@@ -75,14 +76,84 @@ GAP_BUCKETS = (
     (math.inf, "gt_12h"),
 )
 
+# Context-size buckets over the resume call's reused prefix, in tokens.
+# Edges track the pool's per-event distribution (p50 ~120-135k for both
+# families) and its gap-weighted resident tail (claude reaches ~1M).
+CONTEXT_BUCKETS = (
+    (16_384.0, "lt_16k"),
+    (65_536.0, "16k_64k"),
+    (131_072.0, "64k_128k"),
+    (262_144.0, "128k_256k"),
+    (524_288.0, "256k_512k"),
+    (math.inf, "gt_512k"),
+)
+
 KV_AGGREGATE_BYTES_PER_TOKEN = 4 * S.KV_BYTES_PER_TOKEN_PER_RANK
 
 
-def gap_bucket(gap_s: float) -> str:
-    for edge, label in GAP_BUCKETS:
-        if gap_s < edge:
+def _bucket_of(value: float, buckets) -> str:
+    for edge, label in buckets:
+        if value < edge:
             return label
-    return GAP_BUCKETS[-1][1]
+    return buckets[-1][1]
+
+
+def gap_bucket(gap_s: float) -> str:
+    return _bucket_of(gap_s, GAP_BUCKETS)
+
+
+def context_bucket(tokens: float) -> str:
+    return _bucket_of(tokens, CONTEXT_BUCKETS)
+
+
+def build_residents_steady(sessions, target_l: int, rng):
+    """Sample the resident snapshot from the true steady-state law.
+
+    A steady-state snapshot of idle sessions samples (session, gap)
+    pairs jointly with probability proportional to the gap duration.
+    The earlier helper picked the template uniformly and only weighted
+    gaps within it, which under-represents sessions that spend most of
+    their lifetime idle -- exactly the long-idle, large-context
+    population the capacity tiers exist for.  The revive time is the
+    residual of the sampled gap (uniform within it), so sessions deep
+    in multi-hour gaps preload with the correct remaining age.
+    """
+
+    points = []
+    weights = []
+    for template_index, template in enumerate(sessions):
+        for call_index, call in enumerate(template.calls):
+            if call_index == 0 or call.cached_prefix_tokens <= 0:
+                continue
+            gap_ns = max(1, template.calls[call_index - 1].tool_duration_ns)
+            points.append((template_index, call_index, gap_ns))
+            weights.append(gap_ns)
+    if not points:
+        raise RuntimeError("session pool has no resumable calls")
+
+    residents = []
+    for rank, (template_index, start, gap_ns) in enumerate(
+            rng.choices(points, weights=weights, k=target_l)):
+        template = sessions[template_index]
+        clone = S.clone_session(template, S.RESIDENT_ID_BASE + rank)
+        truncated = replace(clone, calls=clone.calls[start:])
+        past = clone.calls[:start]
+        arrival_ns = rng.randrange(gap_ns)
+        mean_fresh_in = statistics.fmean(
+            max(1, call.input_tokens - call.cached_prefix_tokens)
+            for call in past)
+        residents.append({
+            "session": truncated,
+            "context_tokens": clone.calls[start].cached_prefix_tokens,
+            "arrival_ns": arrival_ns,
+            "rank": rank,
+            "past_calls": start,
+            "future_calls": len(truncated.calls),
+            "sitting_gap_ns": gap_ns,
+            "idle_age_ns": gap_ns - arrival_ns,
+            "mean_fresh_in": mean_fresh_in,
+        })
+    return residents
 
 
 def build_system(system_key: str, hardware):
@@ -125,9 +196,11 @@ def preload(system, system_key: str, residents, now_ns: int):
     return placed
 
 
-def _bucket_stats(values_by_bucket: dict[str, list[float]]) -> dict:
+def _bucket_stats(
+        values_by_bucket: dict[str, list[float]],
+        buckets=GAP_BUCKETS) -> dict:
     out = {}
-    for _, label in GAP_BUCKETS:
+    for _, label in buckets:
         values = values_by_bucket.get(label, [])
         out[label] = {
             "count": len(values),
@@ -139,15 +212,21 @@ def _bucket_stats(values_by_bucket: dict[str, list[float]]) -> dict:
     return out
 
 
-def gap_conditioned_metrics(completed, residents, scheduled) -> dict:
-    """Bucket resume TTFT and turn latency by pre-resume idle time.
+def conditioned_metrics(completed, residents, scheduled) -> tuple[dict, dict]:
+    """Bucket resume TTFT/turn latency by idle gap and by context size.
 
     A resume's gap is the trace's tool/think time (release minus the
     predecessor's user completion).  A preloaded resident's first
     in-window call resumes a session whose full pre-resume gap is the
-    sampled sitting gap, which spans t=0.
+    sampled sitting gap, which spans t=0.  The context axis buckets the
+    same events by the resume call's reused-prefix size.
     """
 
+    spec_by_key = {}
+    for sched in scheduled:
+        for call in sched.session.calls:
+            spec_by_key[
+                (sched.session.session_id, call.call_index)] = call
     completion_by_key = {
         (c.key.session_id, c.key.sub_request_index): c for c in completed}
     sitting_gap_by_session = {
@@ -158,8 +237,10 @@ def gap_conditioned_metrics(completed, residents, scheduled) -> dict:
         idx = c.key.sub_request_index
         first_index_seen[sid] = min(idx, first_index_seen.get(sid, idx))
 
-    ttft_by_bucket: dict[str, list[float]] = {}
-    turn_by_bucket: dict[str, list[float]] = {}
+    gap_ttft: dict[str, list[float]] = {}
+    gap_turn: dict[str, list[float]] = {}
+    ctx_ttft: dict[str, list[float]] = {}
+    ctx_turn: dict[str, list[float]] = {}
     unmatched = 0
     for c in completed:
         sid = c.key.session_id
@@ -177,18 +258,29 @@ def gap_conditioned_metrics(completed, residents, scheduled) -> dict:
         else:
             unmatched += 1
             continue
+        ttft_s = (c.first_token_ns - c.release_ns) / 1e9
+        turn_s = (c.completion_ns - c.release_ns) / 1e9
         label = gap_bucket(max(0.0, gap_ns / 1e9))
-        ttft_by_bucket.setdefault(label, []).append(
-            (c.first_token_ns - c.release_ns) / 1e9)
-        turn_by_bucket.setdefault(label, []).append(
-            (c.completion_ns - c.release_ns) / 1e9)
-    return {
-        "bucket_edges_s": [
-            edge for edge, _ in GAP_BUCKETS[:-1]],
+        gap_ttft.setdefault(label, []).append(ttft_s)
+        gap_turn.setdefault(label, []).append(turn_s)
+        spec = spec_by_key.get((sid, idx))
+        if spec is not None:
+            ctx_label = context_bucket(float(spec.cached_prefix_tokens))
+            ctx_ttft.setdefault(ctx_label, []).append(ttft_s)
+            ctx_turn.setdefault(ctx_label, []).append(turn_s)
+    gap_out = {
+        "bucket_edges_s": [edge for edge, _ in GAP_BUCKETS[:-1]],
         "unmatched_resumes": unmatched,
-        "resume_ttft_s": _bucket_stats(ttft_by_bucket),
-        "turn_latency_s": _bucket_stats(turn_by_bucket),
+        "resume_ttft_s": _bucket_stats(gap_ttft),
+        "turn_latency_s": _bucket_stats(gap_turn),
     }
+    ctx_out = {
+        "bucket_edges_tokens": [
+            edge for edge, _ in CONTEXT_BUCKETS[:-1]],
+        "resume_ttft_s": _bucket_stats(ctx_ttft, CONTEXT_BUCKETS),
+        "turn_latency_s": _bucket_stats(ctx_turn, CONTEXT_BUCKETS),
+    }
+    return gap_out, ctx_out
 
 
 def write_accounting(system, system_key: str, completed, scheduled) -> dict:
@@ -268,8 +360,7 @@ def run_cell(task: dict) -> dict:
     min_horizon_ns = int(task.get("min_horizon_s", 0) * 1e9)
     horizon_ns = max(horizon_ns, min_horizon_ns)
 
-    residents = S.build_residents(
-        sessions, target_l, rng, stagger_ns=int(mean_think_ns))
+    residents = build_residents_steady(sessions, target_l, rng)
     arrivals = S.build_arrivals(sessions, rate, seed, horizon_ns)
 
     offers = [
@@ -334,6 +425,9 @@ def run_cell(task: dict) -> dict:
     scored = len(completed)
     window_s = max(1e-9, horizon_ns / 1e9)
 
+    gap_conditioned, context_conditioned = conditioned_metrics(
+        completed, residents, scheduled)
+
     counters: dict[str, int] = {}
     try:
         report = system.report()
@@ -362,8 +456,8 @@ def run_cell(task: dict) -> dict:
         "scored_calls": scored,
         "measurement_window_s": window_s,
         "phase_breakdown": phase_breakdown.extract(system, completed),
-        "gap_conditioned": gap_conditioned_metrics(
-            completed, residents, scheduled),
+        "gap_conditioned": gap_conditioned,
+        "context_conditioned": context_conditioned,
         "write_accounting": write_accounting(
             system, system_key, completed, scheduled),
         "first_ttft_p50_s": C._percentile(first, 0.50),

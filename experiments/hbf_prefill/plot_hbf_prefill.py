@@ -58,6 +58,14 @@ BUCKET_LABEL = {
     "30m_1h": "30m–1h", "1h_4h": "1–4h", "4h_12h": "4–12h",
     "gt_12h": ">12h",
 }
+CONTEXT_ORDER = (
+    "lt_16k", "16k_64k", "64k_128k", "128k_256k",
+    "256k_512k", "gt_512k")
+CONTEXT_LABEL = {
+    "lt_16k": "<16k", "16k_64k": "16–64k", "64k_128k": "64–128k",
+    "128k_256k": "128–256k", "256k_512k": "256–512k",
+    "gt_512k": ">512k",
+}
 
 
 def read_csv(path: Path) -> list[dict]:
@@ -144,9 +152,13 @@ def plot_throughput_turn(aggregate, family, out_dir):
     return out
 
 
-def plot_gap_buckets(gap_rows, family, rates_shown, out_dir):
+def plot_bucket_axis(
+        rows, family, rates_shown, out_dir, *,
+        order, labels, xlabel, stem, title):
+    """Grouped mean bars with a p90 tick per bar, one panel per rate."""
+
     fig, axes = plt.subplots(
-        1, len(rates_shown), figsize=(5.6 * len(rates_shown), 4.2),
+        1, len(rates_shown), figsize=(5.9 * len(rates_shown), 4.2),
         dpi=150, sharey=True)
     if len(rates_shown) == 1:
         axes = [axes]
@@ -154,23 +166,29 @@ def plot_gap_buckets(gap_rows, family, rates_shown, out_dir):
     width = 0.27
     for ax, rate in zip(axes, rates_shown):
         for index, system in enumerate(SYSTEMS):
-            values, counts = [], []
-            for bucket in BUCKET_ORDER:
+            values, p90s = [], []
+            for bucket in order:
                 row = next(
-                    (r for r in gap_rows
+                    (r for r in rows
                      if r["family"] == family
                      and float(r["rate"]) == rate
                      and r["system"] == system
                      and r["bucket"] == bucket), None)
                 values.append(
                     float(row["resume_ttft_mean_s"]) if row else 0.0)
-                counts.append(int(row["resume_count"]) if row else 0)
+                p90s.append(
+                    float(row["resume_ttft_p90_s"]) if row else 0.0)
             positions = [
-                i + (index - 1) * width for i in range(len(BUCKET_ORDER))]
+                i + (index - 1) * width for i in range(len(order))]
             ax.bar(
                 positions, values, width=width,
                 color=COLORS[system], label=LABELS[system],
                 edgecolor=SURFACE, linewidth=1.5, zorder=3)
+            ax.scatter(
+                [p for p, v in zip(positions, p90s) if v > 0],
+                [v for v in p90s if v > 0],
+                marker="_", s=90, color=COLORS[system],
+                linewidth=1.6, zorder=4)
             if system == "oracle_infinite_hbm":
                 for pos, val in zip(positions, values):
                     if val > 0:
@@ -180,30 +198,31 @@ def plot_gap_buckets(gap_rows, family, rates_shown, out_dir):
                             fontsize=6.5, color=TEXT_2, ha="center")
         style_axis(ax)
         ax.set_yscale("log")
-        ax.set_xticks(range(len(BUCKET_ORDER)))
+        ax.set_xticks(range(len(order)))
         ax.set_xticklabels(
-            [BUCKET_LABEL[b] for b in BUCKET_ORDER], fontsize=8.5)
-        ax.set_xlabel("idle gap before resume", color=TEXT)
+            [labels[b] for b in order], fontsize=8.5)
+        ax.set_xlabel(xlabel, color=TEXT)
         counts_row = [
             sum(
                 int(r["resume_count"])
-                for r in gap_rows
+                for r in rows
                 if r["family"] == family
                 and float(r["rate"]) == rate
                 and r["bucket"] == bucket
                 and r["system"] == "baseline_cpu_ssd")
-            for bucket in BUCKET_ORDER]
+            for bucket in order]
         ax.set_title(
             f"rate {rate:g}/s   (events/bucket: "
             + ", ".join(str(c) for c in counts_row) + ")",
             color=TEXT, fontsize=9.5, loc="left")
-    axes[0].set_ylabel("mean resume TTFT (s)", color=TEXT)
+    axes[0].set_ylabel(
+        "resume TTFT (s)  — bar: mean, tick: p90", color=TEXT)
     axes[0].legend(frameon=False, fontsize=8.5, labelcolor=TEXT_2)
     fig.suptitle(
-        f"{family}: resume TTFT conditioned on idle gap",
-        color=TEXT, fontsize=12, x=0.01, ha="left")
+        f"{family}: {title}", color=TEXT, fontsize=12, x=0.01,
+        ha="left")
     fig.tight_layout(rect=(0, 0, 1, 0.93))
-    out = out_dir / f"{family}_resume_ttft_by_gap.png"
+    out = out_dir / f"{family}_{stem}.png"
     fig.savefig(out, facecolor=SURFACE)
     plt.close(fig)
     return out
@@ -373,6 +392,9 @@ def main(argv=None) -> int:
 
     aggregate = read_csv(root / "aggregate.csv")
     gap_rows = read_csv(root / "gap_buckets.csv")
+    context_path = root / "context_buckets.csv"
+    context_rows = (
+        read_csv(context_path) if context_path.is_file() else [])
     writes = read_csv(root / "writes.csv")
     economics_path = root / "economics.csv"
     economics = (
@@ -384,8 +406,19 @@ def main(argv=None) -> int:
         written.append(plot_throughput_turn(aggregate, family, out_dir))
         rates_shown = pick_gap_rates(gap_rows, family)
         if rates_shown:
-            written.append(
-                plot_gap_buckets(gap_rows, family, rates_shown, out_dir))
+            written.append(plot_bucket_axis(
+                gap_rows, family, rates_shown, out_dir,
+                order=BUCKET_ORDER, labels=BUCKET_LABEL,
+                xlabel="idle gap before resume",
+                stem="resume_ttft_by_gap",
+                title="resume TTFT conditioned on idle gap"))
+        if context_rows and rates_shown:
+            written.append(plot_bucket_axis(
+                context_rows, family, rates_shown, out_dir,
+                order=CONTEXT_ORDER, labels=CONTEXT_LABEL,
+                xlabel="reused context at resume (tokens)",
+                stem="resume_ttft_by_context",
+                title="resume TTFT conditioned on context size"))
         if economics:
             written.append(plot_tco_goodput(economics, family, out_dir))
         written.append(plot_write_endurance(writes, family, out_dir))
