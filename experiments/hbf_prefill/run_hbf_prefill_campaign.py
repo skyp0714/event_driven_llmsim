@@ -261,6 +261,12 @@ def run_cell(task: dict) -> dict:
     call_rate = max(
         1e-12, target_l * calls_per_session / max(1e-9, mean_w))
     horizon_ns = int((target_calls / call_rate) * 1e9)
+    # Long-gap resumes are rare per unit time, so the >1h buckets need a
+    # window that is long in *simulated* hours, not in call count.  The
+    # floor mainly matters at low rates, where extra simulated hours are
+    # cheap (wall cost scales with calls, not with the horizon).
+    min_horizon_ns = int(task.get("min_horizon_s", 0) * 1e9)
+    horizon_ns = max(horizon_ns, min_horizon_ns)
 
     residents = S.build_residents(
         sessions, target_l, rng, stagger_ns=int(mean_think_ns))
@@ -393,7 +399,7 @@ def run_cell(task: dict) -> dict:
 
 
 def build_tasks(root, families, rates, seeds, systems, measured_calls,
-                resume_existing):
+                resume_existing, min_horizon_s=0.0):
     tasks = []
     skipped = 0
     for family in families:
@@ -410,6 +416,7 @@ def build_tasks(root, families, rates, seeds, systems, measured_calls,
                         "family": family, "rate": rate, "seed": seed,
                         "system": system_key,
                         "measured_calls": measured_calls,
+                        "min_horizon_s": min_horizon_s,
                         "out_path": str(out_path),
                     })
     return tasks, skipped
@@ -430,6 +437,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--systems", nargs="+", default=list(SYSTEMS), choices=SYSTEMS)
     parser.add_argument(
         "--measured-calls", type=int, default=DEFAULT_MEASURED_CALLS)
+    parser.add_argument(
+        "--min-horizon-s", type=float, default=0.0,
+        help="floor on the simulated window, in seconds; raises the "
+             "horizon beyond the call-count target so multi-hour idle "
+             "gaps can complete inside the window")
     parser.add_argument("--workers", type=int, default=32)
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args(argv)
@@ -437,7 +449,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     root = args.output_root
     tasks, skipped = build_tasks(
         root, args.families, args.rates, args.seeds, args.systems,
-        args.measured_calls, args.resume)
+        args.measured_calls, args.resume,
+        min_horizon_s=args.min_horizon_s)
     total = len(tasks)
     print(
         f"hbf-prefill campaign: {total} cells "
