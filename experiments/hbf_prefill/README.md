@@ -27,6 +27,19 @@ gap-weighted resident context median is ~183k tokens (18 GB) for the
 claude family with a tail to ~1M tokens; a uniform-template sampler
 would understate this threefold (see `build_residents_steady`).
 
+## Workload fidelity
+
+Measured resume events reproduce the trace's per-call distributions:
+gap buckets match ground truth within ±0.5 %p in every bucket for both
+families and both passes, and context buckets within ±1 %p except the
+claude long-window pass, which over-weights the >512k bucket (14.0%
+vs 8.9%): inside a finite 8h window, arrivals only reach their
+early-session (small-context) calls while gap-weighted residents start
+late-session, an imbalance that vanishes in the infinite-window limit.
+This does not bias the products: bucket-conditioned metrics are
+invariant to the event mix, and the aggregate metrics are taken from
+the rate-sweep pass, whose mix matches the trace within ±1 %p.
+
 ## Passes
 
 * `hbf_prefill_v3/` -- rate sweep, call-count windows (~6k measured
