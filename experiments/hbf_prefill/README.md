@@ -61,6 +61,12 @@ figures: `plot_hbf_prefill.py` -> `figures/<root>/`.
   deepest idle buckets; the economics still favor the hetero server
   (~+11% goodput/$) on capex and endurance alone.
 
-Raw generation throughput is decode-bound and identical across systems
-until deep saturation, where the baseline's restore gating on the
-shared SSDs starts to cost it throughput as well.
+Raw generation throughput is decode-bound and essentially identical
+across the two real systems at every measured rate (claude 0.032:
+575 vs 568 tok/s; codex 0.016: 497 vs 517 tok/s).  At deep saturation
+both spill to the shared SSDs -- the resident population reaches
+~12.6 TB at claude 0.032 against a 5.36 TB HBF home -- so the hetero
+server's advantage there is not throughput but the SLO-goodput,
+endurance, and TCO columns.  The oracle stops being a meaningful
+reference past the knee: it admits everything, floods decode with
+whale contexts, and loses throughput to TPOT inflation.
