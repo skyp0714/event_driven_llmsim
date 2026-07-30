@@ -494,6 +494,14 @@ class FiniteHBMTieredP4D4Node:
     def _try_prepare(
             self, call: TieredNodeCall, *,
             now_ns: int) -> Optional[PrepareTicket]:
+        if (
+            self.d_reservation_policy
+            == D_RESERVATION_HANDOFF_DEFERRED
+            and len(self._gated_handoffs)
+            >= self.GATE_PARK_ADMISSION_LIMIT
+        ):
+            self._record_deferral(call, d=True)
+            return None
         capacity = self._prepare_capacity(call)
         p_blocked = (
             self.lifecycle.p_ledger.free_bytes
@@ -733,6 +741,11 @@ class FiniteHBMTieredP4D4Node:
     # request may overtake it: first-fit throughput with a bounded delay
     # for the largest contexts.
     GATE_HEAD_AGING_NS = 5_000_000_000
+    # Deferred-policy admission backpressure: while this many finished
+    # prefills are parked at the gate, new admissions defer.  Without a
+    # bound, a capacity-rich P tier (the HBF prefill role) floods its
+    # own prefill worker far past what the decode tier can drain.
+    GATE_PARK_ADMISSION_LIMIT = 16
 
     def _retry_gated_handoffs(self, now_ns: int) -> None:
         """Release parked handoffs first-fit under a head-aging bound."""
