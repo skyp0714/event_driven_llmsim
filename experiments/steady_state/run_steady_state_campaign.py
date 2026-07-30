@@ -360,6 +360,8 @@ def preload_population(system, system_key, residents, now_ns):
     split_mode = os.environ.get(
         "LLMSIM_PRELOAD_SPLIT", "context_half")
     gpu_side = []
+    hbf_fraction = float(os.environ.get(
+        "LLMSIM_HBF_PRELOAD_FRACTION", "0.5"))
     if split_mode == "all_hbf":
         # Every resident is HBF-resident: the approximation of an
         # HBF-only cluster, where the GPU host serves only the first
@@ -368,8 +370,9 @@ def preload_population(system, system_key, residents, now_ns):
         rest = []
     elif split_mode == "context_half":
         mature = sorted(order, key=lambda r: -r["context_tokens"])
-        hbf_set = mature[:(len(mature) + 1) // 2]
-        rest = mature[(len(mature) + 1) // 2:]
+        cut = max(1, int(round(len(mature) * hbf_fraction)))
+        hbf_set = mature[:cut]
+        rest = mature[cut:]
     elif split_mode in ("request_density", "request_density_oracle"):
         oracle = split_mode == "request_density_oracle"
 
