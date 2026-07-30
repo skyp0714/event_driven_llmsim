@@ -257,6 +257,8 @@ class PDPoolMetrics:
     handoff_exposed_ns: int = 0
     handoff_overlap_hidden_ns: int = 0
     handoff_queue_delay_ns: int = 0
+    gated_handoffs: int = 0
+    handoff_gate_wait_ns: int = 0
     max_p_batch_size: int = 0
     max_d_batch_size: int = 0
 
@@ -285,7 +287,8 @@ class P4D4ServingPool:
             handoff_overlap: str = HANDOFF_OVERLAP_LAYERWISE,
             validate_every_event: bool = True,
             retain_detailed_history: bool = True,
-            p_latency_model_factory=None) -> None:
+            p_latency_model_factory=None,
+            handoff_gate=None) -> None:
         hardware.validate()
         if handoff_overlap not in SUPPORTED_HANDOFF_OVERLAP_MODES:
             raise ValueError(
@@ -386,6 +389,11 @@ class P4D4ServingPool:
         self._next_batch_id = 1
         self._next_handoff_id = 1
         self.current_ns = 0
+        # Optional admission gate between P completion and the handoff.
+        # gate(request_id, now_ns) -> bool; a False parks the request
+        # until the owner calls release_gated_handoff.
+        self.handoff_gate = handoff_gate
+        self._gated_handoff_ready_ns: dict[int, int] = {}
 
     def _worker(self, stage: str) -> PDWorker:
         if stage == "p":
@@ -757,6 +765,25 @@ class P4D4ServingPool:
                 (completion_ns, request.request_id, job_id),
             )
 
+    def release_gated_handoff(
+            self, request_id: int, *, now_ns: int) -> None:
+        """Start a parked handoff whose gate has cleared."""
+
+        ready_ns = self._gated_handoff_ready_ns.pop(request_id, None)
+        if ready_ns is None:
+            raise RuntimeError(
+                f"request {request_id} has no parked handoff")
+        self.metrics.handoff_gate_wait_ns += max(0, now_ns - ready_ns)
+        self._start_handoff(
+            self.requests[request_id],
+            max(now_ns, ready_ns),
+            p_batch=None,
+        )
+
+    @property
+    def gated_handoff_request_ids(self) -> tuple[int, ...]:
+        return tuple(sorted(self._gated_handoff_ready_ns))
+
     def _finish_handoff(self, job: PDHandoffJob) -> None:
         stored = self._handoff_jobs.pop(job.job_id, None)
         if stored != job:
@@ -800,8 +827,22 @@ class P4D4ServingPool:
                 request.state = PDRequestState.HANDOFF
                 request.stage_ready_ns = batch.completion_ns
             if request.output_tokens > 1 or request.has_successor:
-                self._start_handoff(
-                    request, batch.completion_ns, p_batch=batch)
+                if (
+                    self.handoff_gate is None
+                    or self.handoff_gate(
+                        request.request_id, batch.completion_ns)
+                ):
+                    self._start_handoff(
+                        request, batch.completion_ns, p_batch=batch)
+                else:
+                    # Parked: the gate owner releases it once the D
+                    # destination can be claimed.  The layerwise overlap
+                    # window is gone by then, so the eventual transfer
+                    # is exposed -- the physical consequence of having
+                    # nowhere to stream during the prefill.
+                    self._gated_handoff_ready_ns[
+                        request.request_id] = batch.completion_ns
+                    self.metrics.gated_handoffs += 1
         worker.inflight = None
         worker.completed_batches += 1
 
@@ -999,6 +1040,8 @@ class P4D4ServingPool:
                 request.output_tokens > 1
                 and request.state == PDRequestState.HANDOFF
                 and request.handoff_completion_ns is None
+                and request.request_id
+                not in self._gated_handoff_ready_ns
             ):
                 raise AssertionError(
                     f"handoff state lacks job: {request}")

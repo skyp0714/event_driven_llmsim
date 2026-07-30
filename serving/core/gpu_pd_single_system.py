@@ -26,7 +26,9 @@ from .gpu_pd_oracle_node import (
     StrictInfiniteHBMNode,
 )
 from .gpu_pd_tier_lifecycle import (
+    D_RESERVATION_FINAL_UPFRONT,
     RESTORE_EXECUTION_BULK,
+    SUPPORTED_D_RESERVATION_POLICIES,
     SUPPORTED_TIER_POLICIES,
 )
 from .gpu_pd_tiered_node import (
@@ -698,9 +700,14 @@ class SingleFiniteHBMTieredBaseline(_SingleP4D4CausalSystem):
             max_prefill_chunk_tokens: int = 4_096,
             band: str = "central",
             restore_execution_mode: str = RESTORE_EXECUTION_BULK,
+            d_reservation_policy: str = D_RESERVATION_FINAL_UPFRONT,
             validate_every_event: bool = True) -> None:
         if policy not in SUPPORTED_TIER_POLICIES:
             raise ValueError(f"unsupported tier policy {policy!r}")
+        if d_reservation_policy not in SUPPORTED_D_RESERVATION_POLICIES:
+            raise ValueError(
+                "d_reservation_policy must be one of "
+                f"{SUPPORTED_D_RESERVATION_POLICIES}")
         node = FiniteHBMTieredP4D4Node(
             repo_root=repo_root,
             hardware=hardware,
@@ -717,11 +724,13 @@ class SingleFiniteHBMTieredBaseline(_SingleP4D4CausalSystem):
             max_prefill_chunk_tokens=max_prefill_chunk_tokens,
             band=band,
             restore_execution_mode=restore_execution_mode,
+            d_reservation_policy=d_reservation_policy,
             validate_every_event=validate_every_event,
             retain_detailed_history=validate_every_event,
         )
         self.policy = policy
         self.restore_execution_mode = restore_execution_mode
+        self.d_reservation_policy = d_reservation_policy
         super().__init__(
             repo_root=repo_root,
             hardware=hardware,

@@ -164,11 +164,20 @@ def build_system(system_key: str, hardware):
         SingleStrictInfiniteHBMOracle,
     )
     from serving.core.gpu_pd_tier_lifecycle import (
+        D_RESERVATION_FINAL_UPFRONT,
+        D_RESERVATION_HANDOFF_DEFERRED,
         RESTORE_EXECUTION_BULK,
         RESTORE_EXECUTION_LAYERWISE,
     )
 
     engine = dict(C.ENGINE)
+    # LLMSIM_D_RESERVATION=handoff defers the decode-side reservation to
+    # the P-to-D handoff gate for BOTH tiered systems: prefill starts on
+    # P capacity alone and the first token no longer waits for a D slot.
+    d_reservation = (
+        D_RESERVATION_HANDOFF_DEFERRED
+        if os.environ.get("LLMSIM_D_RESERVATION") == "handoff"
+        else D_RESERVATION_FINAL_UPFRONT)
     if system_key == "baseline_cpu_ssd":
         # Layerwise streaming is the generous default: SSD restores hide
         # under the suffix prefill's per-layer compute.  The bulk mode
@@ -181,13 +190,16 @@ def build_system(system_key: str, hardware):
         return SingleFiniteHBMTieredBaseline(
             repo_root=REPO_ROOT, hardware=hardware, policy="cpu_ssd",
             restore_execution_mode=restore_mode,
+            d_reservation_policy=d_reservation,
             **engine)
     if system_key == "oracle_infinite_hbm":
         return SingleStrictInfiniteHBMOracle(
             repo_root=REPO_ROOT, hardware=hardware, **engine)
     if system_key == "hbf_prefill_p4d4":
         return build_hetero_system_from_config(
-            repo_root=REPO_ROOT, config_path=HETERO_CONFIG, **engine)
+            repo_root=REPO_ROOT, config_path=HETERO_CONFIG,
+            d_reservation_policy=d_reservation,
+            **engine)
     raise ValueError(f"unknown system {system_key!r}")
 
 

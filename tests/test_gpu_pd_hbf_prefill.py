@@ -296,3 +296,75 @@ class HeteroSystemTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HandoffDeferredReservationTests(unittest.TestCase):
+    """The deferred policy detaches first tokens from D-slot waits."""
+
+    @classmethod
+    def setUpClass(cls):
+        warnings.simplefilter("ignore")
+        cls.hardware = load_p4d4_gpu_config(GPU_CONFIG)
+
+    def work(self):
+        # Three simultaneous prompts whose final contexts each nearly
+        # fill the shrunken D tier: decode capacity admits one at a
+        # time, but prefill capacity holds all three.
+        return [
+            scheduled(i, f"s{i}", 0, [(8_000, 200, 0, 0)])
+            for i in range(3)
+        ]
+
+    def build(self, d_reservation_policy):
+        tight_d = 12_000 * self.hardware.kv_bytes_per_token_per_rank
+        return SingleFiniteHBMTieredBaseline(
+            repo_root=REPO_ROOT,
+            hardware=self.hardware,
+            policy="cpu_ssd",
+            d_capacity_bytes_per_rank=tight_d,
+            **ENGINE,
+            d_reservation_policy=d_reservation_policy,
+        )
+
+    def test_deferred_policy_cuts_ttft_under_d_pressure(self):
+        from serving.core.gpu_pd_tier_lifecycle import (
+            D_RESERVATION_FINAL_UPFRONT,
+            D_RESERVATION_HANDOFF_DEFERRED,
+        )
+
+        def ttfts(system):
+            done = system.run(self.work())
+            self.assertEqual(len(done), 3)
+            return sorted(
+                (c.first_token_ns - c.release_ns) / 1e6 for c in done)
+
+        upfront = self.build(D_RESERVATION_FINAL_UPFRONT)
+        deferred = self.build(D_RESERVATION_HANDOFF_DEFERRED)
+        upfront_ttfts = ttfts(upfront)
+        deferred_ttfts = ttfts(deferred)
+        # Upfront: the third prompt waits for two full decodes before
+        # its prefill may even start.  Deferred: all three prefill
+        # back-to-back; only the handoffs serialize on D.
+        self.assertLess(deferred_ttfts[-1], upfront_ttfts[-1] * 0.5)
+        pool = deferred.node.pool
+        self.assertGreaterEqual(pool.metrics.gated_handoffs, 1)
+        self.assertEqual(len(pool.gated_handoff_request_ids), 0)
+        self.assertGreaterEqual(
+            deferred.node.metrics.gated_handoff_releases, 1)
+
+    def test_deferred_policy_supported_on_hetero_system(self):
+        from serving.core.gpu_pd_tier_lifecycle import (
+            D_RESERVATION_HANDOFF_DEFERRED)
+
+        system = build_hetero_system_from_config(
+            repo_root=REPO_ROOT, config_path=HETERO_CONFIG,
+            d_reservation_policy=D_RESERVATION_HANDOFF_DEFERRED,
+            **ENGINE)
+        done = system.run([
+            scheduled(0, "sA", 0, [
+                (8_000, 200, 0, 7_200_000_000_000),
+                (9_000, 300, 8_200, 0),
+            ]),
+            scheduled(1, "sB", 1_000_000, [(4_000, 100, 0, 0)]),
+        ])
+        self.assertEqual(len(done), 3)

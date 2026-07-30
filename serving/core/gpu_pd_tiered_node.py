@@ -26,6 +26,7 @@ from .gpu_pd_latency import P4D4GPUHardware
 from .gpu_pd_pool import P4D4ServingPool, PDServingRequest
 from .gpu_pd_tier_lifecycle import (
     D_RESERVATION_FINAL_UPFRONT,
+    D_RESERVATION_HANDOFF_DEFERRED,
     D_RESERVATION_PROMPT_UPFRONT,
     PrepareTicket,
     RESTORE_EXECUTION_BULK,
@@ -170,6 +171,9 @@ class TieredNodeMetrics:
     full_prompt_handoffs: int = 0
     fresh_suffix_handoffs: int = 0
     max_pending_calls: int = 0
+    handoff_d_deferrals: int = 0
+    gated_handoff_releases: int = 0
+    max_gated_handoffs: int = 0
 
 
 class FiniteHBMTieredP4D4Node:
@@ -248,7 +252,13 @@ class FiniteHBMTieredP4D4Node:
             validate_every_event=validate_every_event,
             retain_detailed_history=retain_detailed_history,
             p_latency_model_factory=p_latency_model_factory,
+            handoff_gate=(
+                self._handoff_gate
+                if d_reservation_policy
+                == D_RESERVATION_HANDOFF_DEFERRED else None
+            ),
         )
+        self._gated_handoff_ids: deque[int] = deque()
         self.calls: dict[int, TieredNodeCall] = {}
         self.sessions: dict[str, TieredSessionLineage] = {}
         self.metrics = TieredNodeMetrics()
@@ -683,6 +693,73 @@ class FiniteHBMTieredP4D4Node:
         call.state = TieredCallState.EXECUTING
         return request
 
+    def _handoff_gate(self, request_id: int, now_ns: int) -> bool:
+        """Claim the deferred D reservation when P work reaches handoff."""
+
+        call = self.calls[request_id]
+        ticket = self._ticket_by_request[request_id]
+        if self.lifecycle.claim_deferred_d(ticket, now_ns=now_ns):
+            return True
+        self.metrics.handoff_d_deferrals += 1
+        reusable = (
+            None if ticket.d_reuse_copy_id is None
+            else self.lifecycle.copies.get(ticket.d_reuse_copy_id)
+        )
+        needed = (
+            ticket.d_target_bytes_per_rank
+            if reusable is None or ticket.full_d_reservation
+            else max(
+                0,
+                ticket.d_target_bytes_per_rank - reusable.byte_count)
+        )
+        self.lifecycle.ensure_d_headroom(
+            needed,
+            now_ns=now_ns,
+            exclude_session=call.session_id,
+        )
+        if self.lifecycle.claim_deferred_d(ticket, now_ns=now_ns):
+            return True
+        self._gated_handoff_ids.append(request_id)
+        self.metrics.max_gated_handoffs = max(
+            self.metrics.max_gated_handoffs,
+            len(self._gated_handoff_ids))
+        return False
+
+    def _retry_gated_handoffs(self, now_ns: int) -> None:
+        """Release parked handoffs head-of-line, preserving FIFO order."""
+
+        while self._gated_handoff_ids:
+            request_id = self._gated_handoff_ids[0]
+            ticket = self._ticket_by_request[request_id]
+            if not self.lifecycle.claim_deferred_d(
+                    ticket, now_ns=now_ns):
+                reusable = (
+                    None if ticket.d_reuse_copy_id is None
+                    else self.lifecycle.copies.get(
+                        ticket.d_reuse_copy_id)
+                )
+                needed = (
+                    ticket.d_target_bytes_per_rank
+                    if reusable is None or ticket.full_d_reservation
+                    else max(
+                        0,
+                        ticket.d_target_bytes_per_rank
+                        - reusable.byte_count)
+                )
+                self.lifecycle.ensure_d_headroom(
+                    needed,
+                    now_ns=now_ns,
+                    exclude_session=self.calls[
+                        request_id].session_id,
+                )
+                if not self.lifecycle.claim_deferred_d(
+                        ticket, now_ns=now_ns):
+                    break
+            self._gated_handoff_ids.popleft()
+            self.pool.release_gated_handoff(
+                request_id, now_ns=now_ns)
+            self.metrics.gated_handoff_releases += 1
+
     def _submit_ready(self, now_ns: int) -> bool:
         if not self._ready_call_ids:
             return False
@@ -798,6 +875,7 @@ class FiniteHBMTieredP4D4Node:
         ):
             raise ValueError(
                 "flush_scheduling must run at the current node timestamp")
+        self._retry_gated_handoffs(now_ns)
         self._admit_pending(now_ns)
         # Miss prepares contain no transfer stages and complete at the same
         # timestamp.  Commit all such prepare events before launching P.
@@ -829,7 +907,8 @@ class FiniteHBMTieredP4D4Node:
             f"p_free={self.lifecycle.p_ledger.free_bytes}, "
             f"d_free={self.lifecycle.d_ledger.free_bytes}, "
             f"cpu_free={self.lifecycle.cpu_ledger.free_bytes}, "
-            f"ssd_free={self.lifecycle.ssd_ledger.free_bytes}"
+            f"ssd_free={self.lifecycle.ssd_ledger.free_bytes}, "
+            f"gated_handoffs={list(self._gated_handoff_ids)}"
         )
 
     def run_until_idle(self) -> list[TieredNodeCall]:

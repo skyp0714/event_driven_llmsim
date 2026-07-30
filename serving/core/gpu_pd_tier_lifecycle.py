@@ -51,9 +51,15 @@ MAX_CONTEXT_TOKENS = 1_010_000
 # transient decode growth is intentionally not charged.
 D_RESERVATION_FINAL_UPFRONT = "final_context_upfront"
 D_RESERVATION_PROMPT_UPFRONT = "prompt_upfront_growth_at_commit"
+# Handoff-deferred: admission reserves no D bytes at all, so prefill
+# starts as soon as P capacity exists.  The final-context reservation is
+# claimed when the finished P work asks to hand off; a request that
+# cannot claim parks at the handoff gate until D frees.
+D_RESERVATION_HANDOFF_DEFERRED = "final_context_at_handoff"
 SUPPORTED_D_RESERVATION_POLICIES = (
     D_RESERVATION_FINAL_UPFRONT,
     D_RESERVATION_PROMPT_UPFRONT,
+    D_RESERVATION_HANDOFF_DEFERRED,
 )
 
 
@@ -436,6 +442,10 @@ class TierLifecycleMetrics:
     # stages that later go stale (the physical write happened).
     ssd_write_bytes: int = 0
     ssd_read_bytes: int = 0
+    # Handoff-deferred D reservation: successful gate claims and the
+    # capacity misses that parked a finished prefill at the gate.
+    handoff_d_claims: int = 0
+    handoff_d_claim_deferrals: int = 0
 
 
 class TieredPDKVLifecycle:
@@ -1443,14 +1453,19 @@ class TieredPDKVLifecycle:
             self._per_rank_bytes(final_tokens) if needs_d else 0)
         # Admission-time D sizing: the upfront policy gates on the final
         # context, the prompt-upfront policy gates only on the prompt KV
-        # delivered by the P-to-D handoff.  Decode growth is charged at
-        # commit_d_ready under the prompt-upfront policy.
-        d_admission_target = (
-            d_target
-            if self.d_reservation_policy == D_RESERVATION_FINAL_UPFRONT
-            else (
+        # delivered by the P-to-D handoff, and the handoff-deferred
+        # policy gates on nothing -- its whole reservation is claimed by
+        # claim_deferred_d when the finished P work reaches the gate.
+        if self.d_reservation_policy == D_RESERVATION_FINAL_UPFRONT:
+            d_admission_target = d_target
+        elif (
+            self.d_reservation_policy
+            == D_RESERVATION_HANDOFF_DEFERRED
+        ):
+            d_admission_target = 0
+        else:
+            d_admission_target = (
                 self._per_rank_bytes(input_tokens) if needs_d else 0)
-        )
         p_owner = (
             f"node-{self.node_id}:p:prepare:{prepare_id}")
         d_owner = (
@@ -2036,6 +2051,70 @@ class TieredPDKVLifecycle:
             self._maybe_release_retired(source)
         if job.bounce_owner is not None:
             self.cpu_ledger.release(job.bounce_owner)
+
+    def claim_deferred_d(
+            self, ticket: PrepareTicket, *, now_ns: int) -> bool:
+        """Claim the handoff-deferred D reservation for ``ticket``.
+
+        Returns False on a pure capacity miss: ledgers, pins, and the
+        ticket are unchanged and the caller may retry after D frees.
+        Idempotent once claimed.
+        """
+
+        if (
+            self.d_reservation_policy
+            != D_RESERVATION_HANDOFF_DEFERRED
+        ):
+            raise RuntimeError(
+                "claim_deferred_d requires the handoff-deferred policy")
+        self._validate_time(now_ns)
+        stored = self.prepares.get(ticket.prepare_id)
+        if stored is not ticket or ticket.committed:
+            raise RuntimeError("stale or committed prepare ticket")
+        if not ticket.needs_d:
+            raise RuntimeError(
+                "claim_deferred_d on a request that never needs D")
+        if (
+            ticket.d_owner is not None
+            or ticket.d_reserved_bytes_per_rank
+        ):
+            return True
+        self.advance(now_ns)
+        record = self.sessions.get(ticket.session_id)
+        if (
+            record is None
+            or record.active_request_id != ticket.request_id
+            or record.generation != ticket.generation
+        ):
+            raise RuntimeError(
+                "deferred claim ticket no longer owns session")
+        reusable = (
+            None if ticket.d_reuse_copy_id is None
+            else self.copies.get(ticket.d_reuse_copy_id)
+        )
+        needed = (
+            ticket.d_target_bytes_per_rank
+            if reusable is None or ticket.full_d_reservation
+            else max(
+                0,
+                ticket.d_target_bytes_per_rank - reusable.byte_count)
+        )
+        if needed == 0:
+            self.metrics.handoff_d_claims += 1
+            return True
+        if self.d_ledger.free_bytes < needed:
+            self.metrics.handoff_d_claim_deferrals += 1
+            self.metrics.d_capacity_deferrals += 1
+            return False
+        owner = f"node-{self.node_id}:d:prepare:{ticket.prepare_id}"
+        if not self.d_ledger.reserve(owner, needed):
+            raise AssertionError(
+                "deferred D claim precheck diverged")
+        ticket.d_owner = owner
+        ticket.d_reserved_bytes_per_rank = needed
+        self.metrics.handoff_d_claims += 1
+        self._maybe_assert_invariants()
+        return True
 
     def commit_d_ready(
             self, ticket: PrepareTicket, *, now_ns: int,
