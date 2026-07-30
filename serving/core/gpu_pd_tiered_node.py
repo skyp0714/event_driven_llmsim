@@ -258,7 +258,11 @@ class FiniteHBMTieredP4D4Node:
                 == D_RESERVATION_HANDOFF_DEFERRED else None
             ),
         )
-        self._gated_handoff_ids: deque[int] = deque()
+        # Parked (request_id, parked_ns) pairs whose deferred D claim
+        # missed.  Release is first-fit so one whale context cannot idle
+        # D behind it, with an aging bound: once the head has waited
+        # GATE_HEAD_AGING_NS, nothing may overtake it.
+        self._gated_handoffs: deque[tuple[int, int]] = deque()
         self.calls: dict[int, TieredNodeCall] = {}
         self.sessions: dict[str, TieredSessionLineage] = {}
         self.metrics = TieredNodeMetrics()
@@ -719,46 +723,70 @@ class FiniteHBMTieredP4D4Node:
         )
         if self.lifecycle.claim_deferred_d(ticket, now_ns=now_ns):
             return True
-        self._gated_handoff_ids.append(request_id)
+        self._gated_handoffs.append((request_id, now_ns))
         self.metrics.max_gated_handoffs = max(
             self.metrics.max_gated_handoffs,
-            len(self._gated_handoff_ids))
+            len(self._gated_handoffs))
         return False
 
-    def _retry_gated_handoffs(self, now_ns: int) -> None:
-        """Release parked handoffs head-of-line, preserving FIFO order."""
+    # Once the oldest parked handoff has waited this long, no younger
+    # request may overtake it: first-fit throughput with a bounded delay
+    # for the largest contexts.
+    GATE_HEAD_AGING_NS = 5_000_000_000
 
-        while self._gated_handoff_ids:
-            request_id = self._gated_handoff_ids[0]
+    def _retry_gated_handoffs(self, now_ns: int) -> None:
+        """Release parked handoffs first-fit under a head-aging bound."""
+
+        if not self._gated_handoffs:
+            return
+        head_id, head_parked_ns = self._gated_handoffs[0]
+        head_ticket = self._ticket_by_request[head_id]
+        if not self.lifecycle.claim_deferred_d(
+                head_ticket, now_ns=now_ns):
+            reusable = (
+                None if head_ticket.d_reuse_copy_id is None
+                else self.lifecycle.copies.get(
+                    head_ticket.d_reuse_copy_id)
+            )
+            needed = (
+                head_ticket.d_target_bytes_per_rank
+                if reusable is None
+                or head_ticket.full_d_reservation
+                else max(
+                    0,
+                    head_ticket.d_target_bytes_per_rank
+                    - reusable.byte_count)
+            )
+            self.lifecycle.ensure_d_headroom(
+                needed,
+                now_ns=now_ns,
+                exclude_session=self.calls[head_id].session_id,
+            )
+        remaining: deque[tuple[int, int]] = deque()
+        head_blocked_and_aged = False
+        while self._gated_handoffs:
+            request_id, parked_ns = self._gated_handoffs.popleft()
+            if head_blocked_and_aged:
+                remaining.append((request_id, parked_ns))
+                continue
             ticket = self._ticket_by_request[request_id]
-            if not self.lifecycle.claim_deferred_d(
+            if self.lifecycle.claim_deferred_d(
                     ticket, now_ns=now_ns):
-                reusable = (
-                    None if ticket.d_reuse_copy_id is None
-                    else self.lifecycle.copies.get(
-                        ticket.d_reuse_copy_id)
-                )
-                needed = (
-                    ticket.d_target_bytes_per_rank
-                    if reusable is None or ticket.full_d_reservation
-                    else max(
-                        0,
-                        ticket.d_target_bytes_per_rank
-                        - reusable.byte_count)
-                )
-                self.lifecycle.ensure_d_headroom(
-                    needed,
-                    now_ns=now_ns,
-                    exclude_session=self.calls[
-                        request_id].session_id,
-                )
-                if not self.lifecycle.claim_deferred_d(
-                        ticket, now_ns=now_ns):
-                    break
-            self._gated_handoff_ids.popleft()
-            self.pool.release_gated_handoff(
-                request_id, now_ns=now_ns)
-            self.metrics.gated_handoff_releases += 1
+                self.pool.release_gated_handoff(
+                    request_id, now_ns=now_ns)
+                self.metrics.gated_handoff_releases += 1
+                continue
+            remaining.append((request_id, parked_ns))
+            if (
+                request_id == head_id
+                and now_ns - head_parked_ns
+                >= self.GATE_HEAD_AGING_NS
+            ):
+                # The head has aged out: stop overtaking so D drains
+                # toward its reservation instead of refilling with
+                # smaller contexts forever.
+                head_blocked_and_aged = True
+        self._gated_handoffs = remaining
 
     def _submit_ready(self, now_ns: int) -> bool:
         if not self._ready_call_ids:
@@ -908,7 +936,7 @@ class FiniteHBMTieredP4D4Node:
             f"d_free={self.lifecycle.d_ledger.free_bytes}, "
             f"cpu_free={self.lifecycle.cpu_ledger.free_bytes}, "
             f"ssd_free={self.lifecycle.ssd_ledger.free_bytes}, "
-            f"gated_handoffs={list(self._gated_handoff_ids)}"
+            f"gated_handoffs={list(self._gated_handoffs)}"
         )
 
     def run_until_idle(self) -> list[TieredNodeCall]:
