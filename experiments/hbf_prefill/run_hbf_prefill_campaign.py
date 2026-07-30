@@ -164,13 +164,23 @@ def build_system(system_key: str, hardware):
         SingleStrictInfiniteHBMOracle,
     )
     from serving.core.gpu_pd_tier_lifecycle import (
-        RESTORE_EXECUTION_LAYERWISE)
+        RESTORE_EXECUTION_BULK,
+        RESTORE_EXECUTION_LAYERWISE,
+    )
 
     engine = dict(C.ENGINE)
     if system_key == "baseline_cpu_ssd":
+        # Layerwise streaming is the generous default: SSD restores hide
+        # under the suffix prefill's per-layer compute.  The bulk mode
+        # (the repo-wide default elsewhere) exposes the whole transfer
+        # and serves as the sensitivity's other pole.
+        restore_mode = (
+            RESTORE_EXECUTION_BULK
+            if os.environ.get("LLMSIM_BASELINE_RESTORE_MODE") == "bulk"
+            else RESTORE_EXECUTION_LAYERWISE)
         return SingleFiniteHBMTieredBaseline(
             repo_root=REPO_ROOT, hardware=hardware, policy="cpu_ssd",
-            restore_execution_mode=RESTORE_EXECUTION_LAYERWISE,
+            restore_execution_mode=restore_mode,
             **engine)
     if system_key == "oracle_infinite_hbm":
         return SingleStrictInfiniteHBMOracle(

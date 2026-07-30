@@ -61,6 +61,28 @@ figures: `plot_hbf_prefill.py` -> `figures/<root>/`.
   deepest idle buckets; the economics still favor the hetero server
   (~+11% goodput/$) on capex and endurance alone.
 
+## Why aggregate resume TTFT moves less than the capacity ratio
+
+The phase decomposition (claude, 8h windows) shows what resume TTFT is
+made of: at sub-saturation rates it is 73-96% suffix-prefill queue and
+compute (large fresh inputs over 100k+ contexts, paid identically by
+both systems), and at the knee (0.006) it splits ~49% D-slot admission
+wait / ~47% prefill / ~4% restore transfer.  The two dominant terms
+live on the decode slots and the prefill compute, which the systems
+share; the restore term the HBF capacity eliminates is small in the
+aggregate because CPU and retained-D absorb ~92% of baseline resumes
+at these rates.  The capacity payoff is therefore concentrated exactly
+where the SSD path is touched -- the deep-idle buckets (2.3-3.1x at
+rate 0.004-0.006) -- plus the endurance and TCO columns, where the
+writes happen regardless of how well reads are hidden.
+
+A restore-execution sensitivity (`LLMSIM_BASELINE_RESTORE_MODE=bulk`,
+`hbf_prefill_v3_bulkrestore/`) replaces the baseline's layerwise
+restore streaming with fully exposed bulk transfers: the aggregate
+moves only 2.85 -> 2.92 s and the deep buckets stay within noise, so
+the headline comparison does not hinge on granting the baseline
+perfect streaming.
+
 Raw generation throughput is decode-bound and essentially identical
 across the two real systems at every measured rate (claude 0.032:
 575 vs 568 tok/s; codex 0.016: 497 vs 517 tok/s).  At deep saturation
