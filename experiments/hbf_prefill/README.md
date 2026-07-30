@@ -118,6 +118,16 @@ claude A/B (`hbf_prefill_v3_dhandoff*/`):
   recommended only up to the goodput-optimal band (<= 0.016), which
   is where a provider would operate anyway.
 
+Best-policy-per-system, this scheduling lever rewrites the headline
+economics: the upfront-vs-upfront +32% goodput-per-dollar at
+0.012-0.016 becomes ~+8% (ours 253.3 good tok/s at $282k vs baseline
+278.7 at ~$334k with SSD replacements), and at 0.032 the baseline
+under deferred-D wins goodput per dollar outright (315.4 vs 163.1) --
+though ours' number there carries the unfinished-controller artifact,
+and the deep-idle buckets (>12h 1.26 s vs 3.85 s), the knee band, the
+endurance envelope (0 vs 9x budget), and the -12% capex remain
+policy-independent hetero advantages.
+
 Raw generation throughput is decode-bound and essentially identical
 across the two real systems at every measured rate (claude 0.032:
 575 vs 568 tok/s; codex 0.016: 497 vs 517 tok/s).  At deep saturation
