@@ -192,7 +192,8 @@ class FiniteHBMTieredP4D4Node:
             restore_execution_mode: str = RESTORE_EXECUTION_BULK,
             d_reservation_policy: str = D_RESERVATION_FINAL_UPFRONT,
             validate_every_event: bool = True,
-            retain_detailed_history: bool = True) -> None:
+            retain_detailed_history: bool = True,
+            p_latency_model_factory=None) -> None:
         if policy not in SUPPORTED_TIER_POLICIES:
             raise ValueError(f"unsupported tier policy {policy!r}")
         if d_reservation_policy not in (
@@ -246,6 +247,7 @@ class FiniteHBMTieredP4D4Node:
             band=band,
             validate_every_event=validate_every_event,
             retain_detailed_history=retain_detailed_history,
+            p_latency_model_factory=p_latency_model_factory,
         )
         self.calls: dict[int, TieredNodeCall] = {}
         self.sessions: dict[str, TieredSessionLineage] = {}

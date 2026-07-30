@@ -431,6 +431,11 @@ class TierLifecycleMetrics:
     ssd_export_aborted: int = 0
     ssd_export_capacity_deferrals: int = 0
     ssd_export_bytes: int = 0
+    # Host-level SSD traffic for endurance accounting: every scheduled
+    # stage whose direction touches the SSD is counted gross, including
+    # stages that later go stale (the physical write happened).
+    ssd_write_bytes: int = 0
+    ssd_read_bytes: int = 0
 
 
 class TieredPDKVLifecycle:
@@ -843,6 +848,14 @@ class TieredPDKVLifecycle:
             self._completion_heap, (completion_ns, job_id))
         self.metrics.transfer_bytes += sum(
             stage.stage.aggregate_bytes for stage in scheduled)
+        for scheduled_stage in scheduled:
+            direction = scheduled_stage.stage.direction
+            if direction == "cpu_to_ssd":
+                self.metrics.ssd_write_bytes += (
+                    scheduled_stage.stage.aggregate_bytes)
+            elif direction == "ssd_to_cpu":
+                self.metrics.ssd_read_bytes += (
+                    scheduled_stage.stage.aggregate_bytes)
         return job
 
     def _primary_copy(self, record: TierSession) -> Optional[TierCopy]:

@@ -284,7 +284,8 @@ class P4D4ServingPool:
             band: str = "central",
             handoff_overlap: str = HANDOFF_OVERLAP_LAYERWISE,
             validate_every_event: bool = True,
-            retain_detailed_history: bool = True) -> None:
+            retain_detailed_history: bool = True,
+            p_latency_model_factory=None) -> None:
         hardware.validate()
         if handoff_overlap not in SUPPORTED_HANDOFF_OVERLAP_MODES:
             raise ValueError(
@@ -357,6 +358,15 @@ class P4D4ServingPool:
             repo_root=repo_root,
             hardware=hardware,
             band=band,
+        )
+        # Heterogeneous P/D servers swap the prefill-side latency model
+        # (e.g. HBF+LPDDR cards) while decode batches and the P-to-D
+        # handoff keep the GPU model.  The factory receives the built GPU
+        # model so both sides share one calibrated kernel provider.
+        self.p_model = (
+            p_latency_model_factory(self.model)
+            if p_latency_model_factory is not None
+            else self.model
         )
         self.p_worker = PDWorker(stage="p")
         self.d_worker = PDWorker(stage="d")
@@ -548,7 +558,7 @@ class P4D4ServingPool:
             self, items: tuple[PDBatchItem, ...],
             shape: HBFModelBatchShape, *,
             now_ns: int) -> int:
-        phases = self.model.batch_phase_latency(shape)
+        phases = self.p_model.batch_phase_latency(shape)
         gate_ns = now_ns
         for item in items:
             readiness = self.requests[
@@ -582,7 +592,8 @@ class P4D4ServingPool:
         if selected is None:
             return
         items, shape = selected
-        latency = self.model.batch_latency(shape)
+        stage_model = self.p_model if stage == "p" else self.model
+        latency = stage_model.batch_latency(shape)
         restore_gate_ns = (
             self._p_restore_gate_ns(
                 items, shape, now_ns=now_ns)
@@ -681,7 +692,7 @@ class P4D4ServingPool:
         fixed_ns = int(math.ceil(
             self.hardware.pd_peer_fixed_latency_us * 1e3))
         transfer_ns = max(0, latency.latency_ns - fixed_ns)
-        phases = self.model.batch_phase_latency(p_batch.shape)
+        phases = self.p_model.batch_phase_latency(p_batch.shape)
         layer_count = phases.layer_count
         overlap_window_ns = (layer_count - 1) * phases.layer_ns
         per_layer_transfer_ns = -(-transfer_ns // layer_count)
@@ -1017,6 +1028,10 @@ class P4D4ServingPool:
             "retained_handoff_count": len(self.handoff_history),
             "live_handoff_job_count": len(self._handoff_jobs),
             "latency_model": self.model.metadata(),
+            "p_latency_model": (
+                self.p_model.metadata()
+                if self.p_model is not self.model else None
+            ),
             "metrics": asdict(self.metrics),
             "requests": {
                 request_id: {

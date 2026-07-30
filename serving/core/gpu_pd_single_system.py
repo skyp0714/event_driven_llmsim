@@ -18,6 +18,7 @@ import heapq
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
+from .comparison_cutoff import ResumableCutoffEventLoopMixin
 from .gpu_pd_latency import P4D4GPUHardware
 from .gpu_pd_oracle_node import (
     OracleCallState,
@@ -90,7 +91,7 @@ _RuntimeCall = OracleNodeCall | TieredNodeCall
 _ServingNode = StrictInfiniteHBMNode | FiniteHBMTieredP4D4Node
 
 
-class _SingleP4D4CausalSystem:
+class _SingleP4D4CausalSystem(ResumableCutoffEventLoopMixin):
     """Common one-node schedule, release, and fixed-point event loop."""
 
     def __init__(
