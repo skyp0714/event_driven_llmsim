@@ -317,7 +317,7 @@ def plot_write_endurance(writes, family, out_dir):
         ("baseline_cpu_ssd", "ssd_write_gb_per_s", "-",
          "baseline SSD writes"),
         ("hbf_prefill_p4d4", "ssd_write_gb_per_s", "-",
-         "ours: SSD writes (≈0)"),
+         "ours: SSD writes"),
         ("hbf_prefill_p4d4", "hbf_media_write_gb_per_s", "--",
          "ours: HBF media writes"),
     )
