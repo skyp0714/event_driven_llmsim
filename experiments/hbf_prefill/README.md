@@ -96,6 +96,28 @@ moves only 2.85 -> 2.92 s and the deep buckets stay within noise, so
 the headline comparison does not hinge on granting the baseline
 perfect streaming.
 
+## Handoff-deferred D reservation (LLMSIM_D_RESERVATION=handoff)
+
+`D_RESERVATION_HANDOFF_DEFERRED` admits a resume on P capacity alone
+and claims the decode-side reservation at the P-to-D handoff gate
+(first-fit release with a 5 s head-aging bound, plus an admission
+backstop while 16 finished prefills are parked).  Verdict from the
+claude A/B (`hbf_prefill_v3_dhandoff*/`):
+
+* At the knee (0.006) it is a strict win for the hetero server:
+  resume p95 9.6 -> 6.8 s, every idle-gap bucket improves 20-40%
+  (`4-12h` 4.3 -> 2.1 s, `>12h` 1.75 -> 1.26 s), throughput and turn
+  par.  The baseline also improves, but less -- its 60 GB/rank P-HBM
+  is the very backpressure the policy relaxes.
+* At deep saturation the asymmetry inverts: the baseline keeps a
+  strict win (0.032: resume p50 8.7 -> 2.6 s at full throughput)
+  while the capacity-rich P role floods its own prefill worker and
+  the fixed park cap oscillates (0.032: turn 46 -> 90 s, throughput
+  -42%).  A drain-rate-aware admission controller, not a fixed cap,
+  is the follow-up lever; until then the deferred policy is
+  recommended only up to the goodput-optimal band (<= 0.016), which
+  is where a provider would operate anyway.
+
 Raw generation throughput is decode-bound and essentially identical
 across the two real systems at every measured rate (claude 0.032:
 575 vs 568 tok/s; codex 0.016: 497 vs 517 tok/s).  At deep saturation
