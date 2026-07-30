@@ -62,6 +62,7 @@ SYSTEMS = (
     "oracle_infinite_hbm",
     "hbf_tp8_context",
     "hbf_tp4x2",
+    "hbf_only_x2",
 )
 # Relative single-threaded cost per call, measured on this host.  Used only
 # to start the long poles first; it never affects results.
@@ -70,6 +71,7 @@ SYSTEM_COST_WEIGHT = {
     "oracle_infinite_hbm": 0.6,
     "hbf_tp8_context": 8.0,
     "hbf_tp4x2": 8.0,
+    "hbf_only_x2": 8.0,
 }
 
 FIRST_TTFT_SLO_SECONDS = 30.0
@@ -182,6 +184,15 @@ def _build_system(system_key: str, hardware):
         return make_design_system(
             repo_root=REPO_ROOT, spec=spec,
             hbf_decode_latency_guard_ms=_decode_guard_ms())
+    if system_key == "hbf_only_x2":
+        from serving.core.hbf_only_hybrid import HBFOnlyClusterSystem
+        from serving.core.hbf_full_model_latency import (
+            load_hbf_server_config)
+        from serving.ssd_hbf_design_sweep import PINNED_HBF_CONFIG
+        hbf_hw, _ = load_hbf_server_config(REPO_ROOT / PINNED_HBF_CONFIG)
+        return HBFOnlyClusterSystem(
+            repo_root=REPO_ROOT, hbf_hardware=hbf_hw, hbf_layout="tp4",
+            server_count=2, **ENGINE)
     raise ValueError(f"unknown system {system_key!r}")
 
 

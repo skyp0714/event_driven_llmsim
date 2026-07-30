@@ -59,6 +59,7 @@ SYSTEMS = (
     "oracle_infinite_hbm",
     "hbf_tp8_context",
     "hbf_tp4x2",
+    "hbf_only_x2",
 )
 DEFAULT_RATES = (0.0005, 0.001, 0.002, 0.004, 0.008, 0.016)
 DEFAULT_SEEDS = (101, 102, 103)
@@ -311,6 +312,20 @@ def preload_population(system, system_key, residents, now_ns):
                 last_access_ns=max(0, now_ns - rank * 1_000_000))
             placed[tier.value] += 1
         return placed
+    if system_key == "hbf_only_x2":
+        node = system.node
+        for rank, resident in enumerate(order):
+            try:
+                node.preload_resident(
+                    resident["session"].session_id,
+                    resident["context_tokens"],
+                    now_ns=now_ns,
+                    last_access_ns=max(0, now_ns - rank * 1_000_000))
+            except RuntimeError:
+                placed["skipped"] += 1
+                continue
+            placed["hbf"] += 1
+        return placed
     # HBF hybrid: the equilibrium of a maturity-aware policy is a
     # correlated split, not full HBF residency.  The HBF host's bound is
     # decode occupancy rather than media capacity, so only half the
@@ -345,7 +360,13 @@ def preload_population(system, system_key, residents, now_ns):
     split_mode = os.environ.get(
         "LLMSIM_PRELOAD_SPLIT", "context_half")
     gpu_side = []
-    if split_mode == "context_half":
+    if split_mode == "all_hbf":
+        # Every resident is HBF-resident: the approximation of an
+        # HBF-only cluster, where the GPU host serves only the first
+        # turns of new arrivals before eager promotion moves them over.
+        hbf_set = list(order)
+        rest = []
+    elif split_mode == "context_half":
         mature = sorted(order, key=lambda r: -r["context_tokens"])
         hbf_set = mature[:(len(mature) + 1) // 2]
         rest = mature[(len(mature) + 1) // 2:]

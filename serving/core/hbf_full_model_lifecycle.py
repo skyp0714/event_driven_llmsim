@@ -1825,6 +1825,65 @@ class FullModelHBFLifecycle:
             self.assert_invariants()
         return record
 
+    def begin_native_hbf_turn(
+            self, session_id: str, *, group_id: int, now_ns: int,
+            request_id: int,
+            lpddr_growth_tokens: int) -> SessionPlacement:
+        """Open a session whose very first turn executes on this server.
+
+        The HBF-only cluster has no GPU host: a new session's first
+        prefill runs on an HBF worker, growing KV into LPDDR exactly as
+        a resumed turn does.  The record therefore starts HBF_ACTIVE
+        with zero committed context and the same per-request LPDDR
+        finish reservation the resume path takes, so
+        :meth:`complete_hbf_turn` settles it identically.
+        """
+
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError("session_id must be non-empty")
+        if (
+            isinstance(lpddr_growth_tokens, bool)
+            or not isinstance(lpddr_growth_tokens, int)
+            or lpddr_growth_tokens < 0
+        ):
+            raise ValueError(
+                "lpddr_growth_tokens must be a non-negative integer")
+        self.advance(now_ns)
+        if session_id in self.sessions:
+            raise RuntimeError(
+                f"session {session_id!r} is already registered")
+        if group_id not in {group.group_id for group in self.groups}:
+            raise ValueError(f"unknown replica group {group_id}")
+        record = SessionPlacement(
+            session_id=session_id,
+            state=PlacementState.HBF_ACTIVE,
+            generation=0,
+            version=1,
+            total_tokens=0,
+            committed_hbf_tokens=0,
+            lpddr_tokens=0,
+            group_id=group_id,
+            last_access_ns=now_ns,
+            active_request_id=request_id,
+        )
+        if lpddr_growth_tokens:
+            headroom_owner = hbf_request_headroom_owner(request_id)
+            card_bytes = self._range_card_bytes(
+                group_id,
+                token_start=0,
+                token_count=lpddr_growth_tokens,
+            )
+            if not self.lpddr_ledger.can_set_card_bytes(
+                    group_id, headroom_owner, card_bytes):
+                raise RuntimeError(
+                    "no LPDDR headroom for a native HBF first turn")
+            self.lpddr_ledger.set_card_bytes(
+                group_id, headroom_owner, card_bytes)
+        self.sessions[session_id] = record
+        if self.validate_every_event:
+            self.assert_invariants()
+        return record
+
     def preload_gpu_session(
             self, session_id: str, tokens: int, *, now_ns: int,
             durable_ssd: bool,
