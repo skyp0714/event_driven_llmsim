@@ -168,6 +168,7 @@ def _build_system(system_key: str, hardware):
             migration_policy=os.environ.get(
                 "LLMSIM_MIGRATION_POLICY", "load_aware"),
             active_memory=lpddr_active_memory(**HBF_ACTIVE_MEMORY),
+            hbf_read_mode=_hbf_read_mode(),
             mixed_batch_latency_limit_ms=_mixed_guard_ms(),
         )
         return make_design_system(
@@ -179,6 +180,7 @@ def _build_system(system_key: str, hardware):
             migration_policy=os.environ.get(
                 "LLMSIM_MIGRATION_POLICY", "load_aware"),
             active_memory=lpddr_active_memory(**HBF_ACTIVE_MEMORY),
+            hbf_read_mode=_hbf_read_mode(),
             mixed_batch_latency_limit_ms=_mixed_guard_ms(),
         )
         return make_design_system(
@@ -204,6 +206,10 @@ def _decode_guard_ms():
 def _mixed_guard_ms():
     value = os.environ.get("LLMSIM_HBF_MIXED_GUARD_MS")
     return None if not value else int(value)
+
+
+def _hbf_read_mode():
+    return os.environ.get("LLMSIM_HBF_READ_MODE", "demand")
 
 
 def _mean(values: Sequence[float]) -> float:

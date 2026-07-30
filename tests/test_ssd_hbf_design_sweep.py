@@ -253,6 +253,7 @@ class SSDHBFDesignSweepTests(unittest.TestCase):
                 "delay_1s",
                 "load_aware_demote",
                 "load_aware_demote_h2",
+                "load_aware_demote_h2_bigp",
                 "load_aware_util",
                 "load_aware_demote_h2_safe",
                 "load_aware_density",

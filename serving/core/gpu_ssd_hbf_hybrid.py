@@ -22,6 +22,7 @@ from collections import deque
 from dataclasses import asdict, dataclass
 import heapq
 import math
+import os
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
@@ -116,6 +117,7 @@ class SSDPromotionPolicy:
     util_balance: bool = False
     util_promote_gap: float = 0.05
     util_demote_gap: float = 0.20
+    big_prefill_ewma_tokens: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.key, str) or not self.key:
@@ -124,7 +126,10 @@ class SSDPromotionPolicy:
             raise ValueError(
                 "promotion policy mode must be one of "
                 f"{sorted(SUPPORTED_SSD_PROMOTION_MODES)}")
-        for name in ("idle_delay_ns", "retry_ns", "min_context_tokens"):
+        for name in (
+            "idle_delay_ns", "retry_ns", "min_context_tokens",
+            "big_prefill_ewma_tokens",
+        ):
             value = getattr(self, name)
             if (
                 isinstance(value, bool)
@@ -288,6 +293,15 @@ class SSDPromotionPolicy:
                 retry_ns=50_000_000,
                 demotion_hysteresis=2.0,
                 util_balance=True,
+            )
+        if key == "load_aware_demote_h2_bigp":
+            return cls(
+                key=key,
+                mode="load_aware",
+                retry_ns=50_000_000,
+                demotion_hysteresis=2.0,
+                big_prefill_ewma_tokens=int(os.environ.get(
+                    "LLMSIM_BIGP_TOKENS", "4096")),
             )
         if key == "load_aware_demote_h2_safe":
             return cls(
@@ -703,6 +717,12 @@ class SSDStagedGPUHBFNode:
             return 1.0 / max(1, self._session_calls_so_far(session_id))
         if mode == "calls_oracle":
             return 1.0 / self._session_remaining_calls(session_id)
+        big_ewma = self.promotion_policy.big_prefill_ewma_tokens
+        if (
+            big_ewma
+            and self._fresh_input_ewma.get(session_id, 0.0) > big_ewma
+        ):
+            tokens = tokens / 100.0
         if mode == "cost":
             # Idle age times restore savings per fresh input token:
             # old, long, decode-dominated sessions are worth keeping on
@@ -1040,6 +1060,17 @@ class SSDStagedGPUHBFNode:
         # happened yet at this user-completion boundary.
         turn_total_tokens = call.input_tokens + call.output_tokens - 1
         if turn_total_tokens < self.promotion_policy.min_context_tokens:
+            self.metrics.promotion_intents_filtered += 1
+            return
+        big_ewma = self.promotion_policy.big_prefill_ewma_tokens
+        if (
+            big_ewma
+            and self._fresh_input_ewma.get(call.session_id, 0.0)
+            > big_ewma
+        ):
+            # Predicted-large next prefill: the GPU-side SSD checkpoint
+            # is the mirror; keep the session where the P workers can
+            # absorb the prefill instead of stalling HBF decodes.
             self.metrics.promotion_intents_filtered += 1
             return
         placement = self.hbf_lifecycle.sessions[call.session_id]
