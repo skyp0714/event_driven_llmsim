@@ -169,11 +169,30 @@ def build_residents(sessions, target_l: int, rng, stagger_ns: int):
     """
 
     del stagger_ns
+    # Between-session composition of the standing population.  "uniform"
+    # draws templates equally (a young deployment whose history is
+    # shorter than the long tail); "lifetime" draws proportionally to
+    # session lifetime, the renewal-theory steady state in which the
+    # long-lived sessions dominate the snapshot.
+    sampling = os.environ.get("LLMSIM_RESIDENT_SAMPLING", "uniform")
+    template_weights = None
+    if sampling == "lifetime":
+        template_weights = [
+            max(1, sum(c.tool_duration_ns for c in s.calls))
+            for s in sessions
+        ]
+    elif sampling != "uniform":
+        raise ValueError(
+            f"unknown LLMSIM_RESIDENT_SAMPLING {sampling!r}")
     residents = []
     attempts = 0
     while len(residents) < target_l and attempts < target_l * 20:
         attempts += 1
-        template = sessions[rng.randrange(len(sessions))]
+        template = (
+            sessions[rng.randrange(len(sessions))]
+            if template_weights is None
+            else rng.choices(sessions, weights=template_weights)[0]
+        )
         resume_points = [
             index for index, call in enumerate(template.calls)
             if index > 0 and call.cached_prefix_tokens > 0]

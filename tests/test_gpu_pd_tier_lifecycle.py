@@ -911,6 +911,32 @@ class TieredPDKVLifecycleTests(unittest.TestCase):
         self.assertEqual(lifecycle.cpu_ledger.used_bytes, 0)
         self.assertEqual(lifecycle.ssd_ledger.used_bytes, 0)
 
+    def test_ssd_direct_demotion_drains_full_cpu_tier(self):
+        lifecycle = self.make_lifecycle(
+            "ssd_direct", blocks=2,
+            cpu_blocks=2, ssd_blocks=8)
+        lifecycle.preload_session("d1", 16, tier=Tier.D, now_ns=0)
+        lifecycle.preload_session("d2", 16, tier=Tier.D, now_ns=0)
+        lifecycle.preload_session("c1", 16, tier=Tier.CPU, now_ns=0)
+        lifecycle.preload_session("c2", 16, tier=Tier.CPU, now_ns=0)
+
+        # The D victim's SSD-direct demotion needs a CPU bounce, but the
+        # CPU tier is packed with idle preloaded residents.  Headroom must
+        # start a CPU-to-SSD spill instead of deferring forever.
+        retry_ns = lifecycle.ensure_d_headroom(
+            self.block_per_rank, now_ns=0)
+        self.assertGreater(lifecycle.metrics.cpu_to_ssd_started, 0)
+        self.assertIsNotNone(retry_ns)
+        self.assertGreater(retry_ns, 0)
+
+        lifecycle.advance(retry_ns)
+        lifecycle.ensure_d_headroom(
+            self.block_per_rank, now_ns=lifecycle.current_ns)
+        self.assertGreater(lifecycle.metrics.d_to_ssd_started, 0)
+        lifecycle.run_until_idle()
+        self.assertGreater(
+            lifecycle.d_ledger.free_bytes, 0)
+
     def test_oversized_ssd_destination_does_not_evict_existing_copy(self):
         lifecycle = self.make_lifecycle(
             "ssd_direct", blocks=4,

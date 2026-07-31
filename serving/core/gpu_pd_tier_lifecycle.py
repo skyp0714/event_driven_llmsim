@@ -1244,6 +1244,13 @@ class TieredPDKVLifecycle:
             raise RuntimeError(
                 "SSD-direct bounce exceeds node CPU capacity")
         if self.cpu_ledger.free_bytes < aggregate:
+            # The SSD-direct bounce still stages through CPU DRAM, and
+            # preloaded idle CPU residents can hold that buffer shut.
+            # Drain the LRU CPU resident to SSD so the retry can land.
+            candidates = self._eligible_lru(
+                Tier.CPU, exclude_sessions=(session_id,))
+            if candidates:
+                self._start_cpu_spill(candidates[0], now_ns=now_ns)
             self.metrics.cpu_capacity_deferrals += 1
             return None
         if not self._ensure_ssd_capacity(
@@ -1390,7 +1397,7 @@ class TieredPDKVLifecycle:
         if self.cpu_ledger.free_bytes >= required_bytes:
             return now_ns
         self.metrics.cpu_capacity_deferrals += 1
-        if self.policy == "cpu_ssd":
+        if self.policy in ("cpu_ssd", "ssd_direct"):
             excluded = (
                 () if protected_session is None
                 else (protected_session,)
