@@ -71,6 +71,12 @@ RESIDENT_ID_BASE = 10_000_000
 
 KV_BYTES_PER_TOKEN_PER_RANK = 24_576
 
+# Agentic turn-SLO pseudo-levels: a completed turn passes when its
+# release-to-completion time meets the bound, with no per-token
+# condition.  They ride in slo_levels beside the TTFT x TPOT grid so
+# every downstream aggregation and figure picks them up unchanged.
+TURN_SLO_LEVELS = {"turn10": 10.0, "turn30": 30.0, "turn60": 60.0}
+
 
 def family_of(session_id: str) -> str:
     return session_id.split(":", 1)[0]
@@ -573,8 +579,8 @@ def run_cell(task: dict) -> dict:
         resource.RUSAGE_SELF).ru_maxrss / 1024.0
 
     first, resume, tpot, turn = [], [], [], []
-    level_pass = {name: 0 for name in C.SLO_LEVELS}
-    level_tok = {name: 0 for name in C.SLO_LEVELS}
+    level_pass = {name: 0 for name in (*C.SLO_LEVELS, *TURN_SLO_LEVELS)}
+    level_tok = {name: 0 for name in (*C.SLO_LEVELS, *TURN_SLO_LEVELS)}
     output_tokens = 0
     window_end = 0
     for call in completed:
@@ -589,6 +595,11 @@ def run_cell(task: dict) -> dict:
         turn.append((call.completion_ns - call.release_ns) / 1e9)
         for name, (f_s, r_s, t_ms) in C.SLO_LEVELS.items():
             if ttft <= (f_s if is_first else r_s) and per_token_ms <= t_ms:
+                level_pass[name] += 1
+                level_tok[name] += call.output_tokens
+        turn_s = (call.completion_ns - call.release_ns) / 1e9
+        for name, limit_s in TURN_SLO_LEVELS.items():
+            if turn_s <= limit_s:
                 level_pass[name] += 1
                 level_tok[name] += call.output_tokens
         output_tokens += call.output_tokens
@@ -646,7 +657,7 @@ def run_cell(task: dict) -> dict:
             name: {
                 "pass_fraction": level_pass[name] / scored if scored else 0.0,
                 "good_output_tokens_per_s": level_tok[name] / window_s,
-            } for name in C.SLO_LEVELS},
+            } for name in (*C.SLO_LEVELS, *TURN_SLO_LEVELS)},
         "output_tokens": output_tokens,
         "output_tokens_per_s": output_tokens / window_s,
         "wall_s": wall_s, "peak_rss_mb": peak_rss_mb,
