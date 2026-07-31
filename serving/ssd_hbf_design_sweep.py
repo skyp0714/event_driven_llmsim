@@ -163,6 +163,7 @@ SUPPORTED_MIGRATION_POLICIES = (
     "load_aware_demote",
     "load_aware_demote_h2",
     "load_aware_demote_h2_bigp",
+    "load_aware_demote_h2_bigio",
     "load_aware_util",
     "load_aware_demote_h2_safe",
     "load_aware_density",

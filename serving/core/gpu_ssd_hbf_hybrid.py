@@ -118,6 +118,7 @@ class SSDPromotionPolicy:
     util_promote_gap: float = 0.05
     util_demote_gap: float = 0.20
     big_prefill_ewma_tokens: int = 0
+    big_output_ewma_tokens: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.key, str) or not self.key:
@@ -128,7 +129,7 @@ class SSDPromotionPolicy:
                 f"{sorted(SUPPORTED_SSD_PROMOTION_MODES)}")
         for name in (
             "idle_delay_ns", "retry_ns", "min_context_tokens",
-            "big_prefill_ewma_tokens",
+            "big_prefill_ewma_tokens", "big_output_ewma_tokens",
         ):
             value = getattr(self, name)
             if (
@@ -302,6 +303,17 @@ class SSDPromotionPolicy:
                 demotion_hysteresis=2.0,
                 big_prefill_ewma_tokens=int(os.environ.get(
                     "LLMSIM_BIGP_TOKENS", "4096")),
+            )
+        if key == "load_aware_demote_h2_bigio":
+            return cls(
+                key=key,
+                mode="load_aware",
+                retry_ns=50_000_000,
+                demotion_hysteresis=2.0,
+                big_prefill_ewma_tokens=int(os.environ.get(
+                    "LLMSIM_BIGP_TOKENS", "4096")),
+                big_output_ewma_tokens=int(os.environ.get(
+                    "LLMSIM_BIGO_TOKENS", "768")),
             )
         if key == "load_aware_demote_h2_safe":
             return cls(
@@ -659,6 +671,7 @@ class SSDStagedGPUHBFNode:
         self._spec_total_calls: dict[str, int] = {}
         self._submitted_count_by_session: dict[str, int] = {}
         self._fresh_input_ewma: dict[str, float] = {}
+        self._output_ewma: dict[str, float] = {}
         self._util_prev: Optional[tuple[int, dict[str, float]]] = None
         self._util_last: dict[str, float] = {}
 
@@ -721,6 +734,12 @@ class SSDStagedGPUHBFNode:
         if (
             big_ewma
             and self._fresh_input_ewma.get(session_id, 0.0) > big_ewma
+        ):
+            tokens = tokens / 100.0
+        big_out = self.promotion_policy.big_output_ewma_tokens
+        if (
+            big_out
+            and self._output_ewma.get(session_id, 0.0) > big_out
         ):
             tokens = tokens / 100.0
         if mode == "cost":
@@ -844,6 +863,12 @@ class SSDStagedGPUHBFNode:
             float(fresh_tokens)
             if previous_ewma is None
             else 0.3 * fresh_tokens + 0.7 * previous_ewma
+        )
+        previous_out = self._output_ewma.get(call.session_id)
+        self._output_ewma[call.session_id] = (
+            float(call.output_tokens)
+            if previous_out is None
+            else 0.3 * call.output_tokens + 0.7 * previous_out
         )
         call.execution = self._execution_for_route(call, route)
         call.route_reason = route.reason
@@ -1071,6 +1096,16 @@ class SSDStagedGPUHBFNode:
             # Predicted-large next prefill: the GPU-side SSD checkpoint
             # is the mirror; keep the session where the P workers can
             # absorb the prefill instead of stalling HBF decodes.
+            self.metrics.promotion_intents_filtered += 1
+            return
+        big_out = self.promotion_policy.big_output_ewma_tokens
+        if (
+            big_out
+            and self._output_ewma.get(call.session_id, 0.0) > big_out
+        ):
+            # Predicted-heavy decode: every flash-served token pays the
+            # per-token tail this session generates in volume; its
+            # frequent resumes keep it D-resident on the GPU instead.
             self.metrics.promotion_intents_filtered += 1
             return
         placement = self.hbf_lifecycle.sessions[call.session_id]
