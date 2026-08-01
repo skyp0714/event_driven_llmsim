@@ -634,6 +634,37 @@ def make_design_system(
         hbf_read_prefetch_enabled=(
             spec.hbf_read_mode == "prefetch"),
     )
+    hw_scale = float(os.environ.get("LLMSIM_HBF_HW_SCALE", "1.0"))
+    if hw_scale <= 0:
+        raise SSDHBFDesignSweepError(
+            "LLMSIM_HBF_HW_SCALE must be positive")
+    if hw_scale != 1.0:
+        # GPU:HBF host-ratio studies model k HBF hosts behind one GPU
+        # host as one host with k-times per-card rooflines (capacity,
+        # media/LPDDR bandwidth, compute, fabric).  Latencies and card
+        # count stay fixed, so batching granularity is unchanged.
+        hbf_hardware = replace(
+            hbf_hardware,
+            hbf_capacity_bytes_per_card=int(
+                hbf_hardware.hbf_capacity_bytes_per_card * hw_scale),
+            hbf_read_bandwidth_gbps_per_card=(
+                hbf_hardware.hbf_read_bandwidth_gbps_per_card
+                * hw_scale),
+            hbf_write_bandwidth_gbps_per_card=(
+                hbf_hardware.hbf_write_bandwidth_gbps_per_card
+                * hw_scale),
+            lpddr_capacity_bytes_per_card=int(
+                hbf_hardware.lpddr_capacity_bytes_per_card * hw_scale),
+            lpddr_bandwidth_gbps_per_card=(
+                hbf_hardware.lpddr_bandwidth_gbps_per_card * hw_scale),
+            npu_peak_tflops_per_card=(
+                hbf_hardware.npu_peak_tflops_per_card * hw_scale),
+            intra_fabric_bandwidth_gbps_per_card=(
+                hbf_hardware.intra_fabric_bandwidth_gbps_per_card
+                * hw_scale),
+            pcie_root_bandwidth_gbps=(
+                hbf_hardware.pcie_root_bandwidth_gbps * hw_scale),
+        )
     hbf_hardware.validate()
     return SSDStagedGPUHBFSystem(
         repo_root=root,
