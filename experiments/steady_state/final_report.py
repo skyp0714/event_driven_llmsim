@@ -17,9 +17,10 @@ Per version root:
   steady_state_v*/final_jct.csv         matched-session JCT by rate
   ../../figures/steady_state_v*/*.png
 
-JCT inputs are `jct/jr_{cl|cx}_{base|hyb}_{nominal_rate}.json` dumps
-from the young_sessions instrument harness (codex base files were
-simulated at 2/3 of the nominal rate encoded in the name).
+JCT inputs are `jct/jr_{cl|cx}_{base|hyb|tp8}_{nominal_rate}.json`
+dumps from the young_sessions instrument harness (codex base files
+were simulated at 2/3 of the nominal rate encoded in the name; tp8 is
+the claude-only hbf_tp8_context arm).
 """
 
 from collections import defaultdict
@@ -58,7 +59,8 @@ LABELS = {
     ("claude", "hbf_tp4x2"): "GPU+HBF (tp4x2)",
     ("codex", "baseline_cpu_ssd"): "3xGPU + CPU/SSD tiering",
     ("codex", "oracle_infinite_hbm"): "Infinite-HBM oracle (3 hosts)",
-    ("codex", "hbf_tp4x2"): "GPU+2xHBF hybrid (1:2)",
+    ("codex", "hbf_tp4x2"): "GPU+2xHBF hybrid (1:2, tp4x2)",
+    ("codex", "hbf_tp8_context"): "GPU+2xHBF hybrid (1:2, tp8)",
 }
 FAMILY_TITLE = {
     "claude": "Claude Code sessions (2-server)",
@@ -114,7 +116,7 @@ def load_jct(version):
     pending = defaultdict(dict)
     for path in (SCRIPT_ROOT / version / "jct").glob("jr_*.json"):
         match = re.match(
-            r"jr_(cl|cx)_(base|hyb)_([0-9.]+)\.json", path.name)
+            r"jr_(cl|cx)_(base|hyb|tp8)_([0-9.]+)\.json", path.name)
         if not match:
             continue
         family = JCT_FAMILY[match.group(1)]
@@ -124,20 +126,22 @@ def load_jct(version):
     quantile = lambda v, p: statistics.quantiles(v, n=100)[p - 1]
     table = defaultdict(dict)
     for (family, rate), sides in sorted(pending.items()):
-        if set(sides) != {"base", "hyb"}:
+        if not {"base", "hyb"} <= set(sides):
             continue
-        ids = sorted(set(sides["base"]) & set(sides["hyb"]))
+        # One matched set across every side present, so the plotted
+        # curves cover identical session cohorts.
+        ids = set(sides["base"])
+        for data in sides.values():
+            ids &= set(data)
+        ids = sorted(ids)
         if len(ids) < 5:
             continue
-        base = [sides["base"][i] for i in ids]
-        hyb = [sides["hyb"][i] for i in ids]
-        table[family][rate] = {
-            "n": len(ids),
-            "base_p50": quantile(base, 50),
-            "base_p99": quantile(base, 99),
-            "hyb_p50": quantile(hyb, 50),
-            "hyb_p99": quantile(hyb, 99),
-        }
+        row = {"n": len(ids)}
+        for side, data in sides.items():
+            values = [data[i] for i in ids]
+            row[f"{side}_p50"] = quantile(values, 50)
+            row[f"{side}_p99"] = quantile(values, 99)
+        table[family][rate] = row
     return table
 
 
@@ -194,16 +198,24 @@ def write_jct_csv(jct, out_root):
         writer.writerow([
             "family", "rate", "matched_sessions",
             "base_p50_s", "hybrid_p50_s", "p50_ratio",
-            "base_p99_s", "hybrid_p99_s", "p99_ratio"])
+            "base_p99_s", "hybrid_p99_s", "p99_ratio",
+            "tp8_p50_s", "tp8_p50_ratio",
+            "tp8_p99_s", "tp8_p99_ratio"])
         for family in sorted(jct):
             for rate in sorted(jct[family]):
                 row = jct[family][rate]
+                tp8 = (
+                    ["", "", "", ""] if "tp8_p50" not in row else [
+                        f"{row['tp8_p50']:.1f}",
+                        f"{row['base_p50'] / row['tp8_p50']:.2f}",
+                        f"{row['tp8_p99']:.1f}",
+                        f"{row['base_p99'] / row['tp8_p99']:.2f}"])
                 writer.writerow([
                     family, rate, row["n"],
                     f"{row['base_p50']:.1f}", f"{row['hyb_p50']:.1f}",
                     f"{row['base_p50'] / row['hyb_p50']:.2f}",
                     f"{row['base_p99']:.1f}", f"{row['hyb_p99']:.1f}",
-                    f"{row['base_p99'] / row['hyb_p99']:.2f}"])
+                    f"{row['base_p99'] / row['hyb_p99']:.2f}"] + tp8)
     return out
 
 
@@ -330,12 +342,19 @@ def fig_jct(jct, family, fig_root, population):
     rates = sorted(jct[family])
     fig, ax = plt.subplots(figsize=(6.8, 4.6))
     for side, system in (("base", "baseline_cpu_ssd"),
-                         ("hyb", "hbf_tp4x2")):
+                         ("hyb", "hbf_tp4x2"),
+                         ("tp8", "hbf_tp8_context")):
+        with_side = [r for r in rates
+                     if f"{side}_p50" in jct[family][r]]
+        if not with_side:
+            continue
         colour, marker = STYLE[system]
-        ax.plot(rates, [jct[family][r][f"{side}_p50"] for r in rates],
+        ax.plot(with_side,
+                [jct[family][r][f"{side}_p50"] for r in with_side],
                 marker=marker, color=colour, linewidth=1.9,
                 markersize=5, label=LABELS[(family, system)])
-        ax.plot(rates, [jct[family][r][f"{side}_p99"] for r in rates],
+        ax.plot(with_side,
+                [jct[family][r][f"{side}_p99"] for r in with_side],
                 marker=marker, color=colour, linewidth=1.2,
                 markersize=4, linestyle="--")
     ax.set_yscale("log")
