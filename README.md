@@ -41,10 +41,10 @@ python experiments/steady_state/final_report.py
 
 Design, population models, policy configuration, and headline results
 are documented in [`experiments/README.md`](experiments/README.md).
-Summary: at equal server count the hybrid matches the infinite-HBM
-oracle's 90%-attainment capacity (turn-SLO), raising it 30-40% over
-the tiering baseline, with matched-session JCT up to 3-4x faster at
-the knee.
+Summary: at equal server count the hybrid raises the 90%-attainment
+turn-SLO capacity 20-40% over the tiering baseline, reaching the
+infinite-HBM oracle at several operating points, with matched-session
+JCT up to 3-4x faster at the knee (10 seeds, error-barred).
 
 ## Layout
 

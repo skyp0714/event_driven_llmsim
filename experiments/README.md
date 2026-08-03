@@ -64,20 +64,23 @@ gates, preload fractions) were tested and refuted at campaign scale.
 ## Campaign spec
 
 - Rates (dense past the knee): claude 0.016-0.036 (8 points), codex
-  nominal 0.0075-0.0165 (7 points); seeds 101-104; 6,000 measured
-  calls per cell; 360 cells, 0 failures. Launch script:
-  `../run_final_campaign.sh` (seeds 103/104 added with `--resume`).
+  nominal 0.0075-0.0165 (7 points); seeds 101-110; 6,000 measured
+  calls per cell; 900 cells, 0 failures. Launch script:
+  `../run_final_campaign.sh` (extra seeds added with `--resume`).
 - Metrics per cell: 3x3 TTFT/TPOT SLO grid + turn-SLO (10/30/60 s)
   goodput and pass fractions, resume TTFT, TPOT, turn latency,
   raw throughput, write accounting. Figures show mean +/- sample std
-  across the four seeds.
+  across the ten seeds; `final_results_by_seed.csv` carries every
+  per-seed value for re-plotting.
 - Matched-session JCT from the instrument harness at 3-4 rates per
   family (`steady_state_v*/jct/jr_*.json`), intersection-matched
   between baseline and hybrid.
-- Robustness: per-seed hybrid/baseline turn30-goodput ratios stay
-  above 1 for every seed at every claude v8 rate (CV 2-13%); v9 is
-  noisier (CV up to 30%, direction preserved, magnitudes read with
-  the error bars).
+- Robustness (10 seeds): the hybrid/baseline turn30-goodput ratio is
+  above 1 for every seed at every claude v8 rate (80 pairs, zero sign
+  flips, CV 3-13%) and for 69 of 70 codex v8 pairs. v9 keeps the
+  direction (claude means 1.24-1.60, sub-1 seeds only at the two
+  highest rates; codex is honest parity at low rates tilting to wins
+  at high) with CV up to 22%.
 
 ## Headline results
 
@@ -85,7 +88,7 @@ gates, preload fractions) were tested and refuted at campaign scale.
 
 | | baseline | hybrid | oracle |
 |---|---|---|---|
-| claude v8, turn60 | 0.020 | **0.026 (+30%)** | 0.026 |
+| claude v8, turn60 | 0.020 | **0.024 (+20%)** | 0.026 |
 | claude v8, turn30 | below grid | **0.016** | 0.016 |
 | codex v8, turn30 | 0.0075 | **0.0105 (+40%)** | 0.012 |
 | codex v8, turn60 | 0.0135 | **0.015 (+11%)** | 0.0165 |
@@ -93,18 +96,20 @@ gates, preload fractions) were tested and refuted at campaign scale.
 | codex v9, turn30 | 0.0135 | **0.015 (+11%)** | 0.015 |
 | codex v9, turn60 | 0.0165 | 0.0165 | 0.0165 |
 
-The hybrid matches the infinite-HBM oracle's attainment capacity for
-claude (both populations) and for codex under v9, and lands one grid
-step below the oracle for codex under v8 while clearing the baseline
-by 40%. Goodput ratios grow with load: claude turn30-goodput
-1.08->1.84x (v8) with medium-SLO goodput up to 4.5x; codex 1.10-1.22x
-(v8). Under v9 the claude advantage amplifies (turn30-goodput up to
-~1.6x, turn latency up to 2.1x, resume TTFT p99 up to 11.6x) while
-codex holds parity-to-+11% at equal server count with a cheaper bill
-of materials. Matched JCT at the knee: claude p50 3.2x / p90 1.6x
-faster (v8) and p50 2.7x / p90 4.5x (v9); codex p50 parity / p90 1.2x
-faster (v8). turn10 at 90% is unattainable for every system including
-the unloaded oracle — a workload-shape bound, not a design gap.
+The hybrid matches the infinite-HBM oracle's attainment capacity at
+claude turn30 and under v9 for both families, and lands one grid step
+below the oracle at claude v8 turn60 (89.9 +/- 1.6% at 0.026 —
+threshold-straddling) and codex v8 while clearing the baseline by
+20-40%. Goodput ratios grow with load: claude turn30-goodput
+1.07->1.75x (v8) with medium-SLO goodput up to 4.5x; codex 1.11-1.21x
+(v8). Under v9 the claude advantage amplifies (turn30-goodput means
+1.24-1.60x, turn latency up to 2.1x, resume TTFT p99 up to 11.6x)
+while codex holds parity-to-+12% at equal server count with a cheaper
+bill of materials. Matched JCT at the knee: claude p50 3.2x / p90
+1.6x faster (v8) and p50 2.7x / p90 4.5x (v9); codex p50 parity / p90
+1.2x faster (v8). turn10 at 90% is unattainable for every system
+including the unloaded oracle — a workload-shape bound, not a design
+gap.
 
 Mechanisms, in one paragraph: the baseline's failure mode is the
 restore storm — resumed long-context sessions pay SSD->HBM restores

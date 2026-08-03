@@ -72,8 +72,8 @@ ATTAIN_FRACTION = 0.90
 
 
 def load_cells(version):
-    """Aggregate cells to (family, nominal rate, system) seed means."""
-    rows = defaultdict(lambda: defaultdict(list))
+    """Load cells to per-seed rows plus seed-mean/std aggregates."""
+    per_seed = {}
     for path in (SCRIPT_ROOT / version / "cells").rglob("*.json"):
         cell = json.loads(path.read_text())
         family, system = cell["family"], cell["system"]
@@ -84,32 +84,50 @@ def load_cells(version):
         if family == "codex" and system in CODEX_FLEET_SYSTEMS:
             scale = CODEX_FLEET_SCALE
             rate = round(rate * CODEX_FLEET_SCALE, 6)
-        bucket = rows[(family, rate, system)]
+        entry = {}
         for column in SCALED_COLUMNS:
-            bucket[column].append(cell[column] * scale)
+            entry[column] = cell[column] * scale
         for column in (
                 "resume_ttft_p50_s", "resume_ttft_p99_s",
                 "tpot_p50_ms", "tpot_p99_ms",
                 "turn_latency_mean_s", "turn_latency_p50_s",
                 "turn_latency_p99_s"):
-            bucket[column].append(cell[column])
+            entry[column] = cell[column]
         for level, values in cell["slo_levels"].items():
-            bucket[f"pass_{level}"].append(values["pass_fraction"])
-            bucket[f"goodput_{level}"].append(
+            entry[f"pass_{level}"] = values["pass_fraction"]
+            entry[f"goodput_{level}"] = (
                 values["good_output_tokens_per_s"] * scale)
-        bucket["_seeds"].append(cell["seed"])
+        per_seed[(family, rate, system, cell["seed"])] = entry
+    groups = defaultdict(list)
+    for (family, rate, system, _seed), entry in per_seed.items():
+        groups[(family, rate, system)].append(entry)
     aggregated = {}
-    for key, bucket in rows.items():
-        entry = {}
-        for column, values in bucket.items():
-            if column == "_seeds":
-                continue
-            entry[column] = statistics.fmean(values)
-            entry[f"{column}_std"] = (
+    for key, entries in groups.items():
+        agg = {}
+        for column in entries[0]:
+            values = [e[column] for e in entries]
+            agg[column] = statistics.fmean(values)
+            agg[f"{column}_std"] = (
                 statistics.stdev(values) if len(values) > 1 else 0.0)
-        entry["n_seeds"] = len(bucket["_seeds"])
-        aggregated[key] = entry
-    return aggregated
+        agg["n_seeds"] = len(entries)
+        aggregated[key] = agg
+    return aggregated, per_seed
+
+
+def write_by_seed_csv(per_seed, out_root):
+    """Long-format per-seed dump for downstream re-plotting."""
+    columns = sorted({c for v in per_seed.values() for c in v})
+    out = out_root / "final_results_by_seed.csv"
+    with out.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            ["family", "rate", "system", "label", "seed"] + columns)
+        for (family, rate, system, seed) in sorted(per_seed):
+            row = per_seed[(family, rate, system, seed)]
+            writer.writerow(
+                [family, rate, system, LABELS[(family, system)], seed]
+                + [f"{row[c]:.6g}" for c in columns])
+    return out
 
 
 def load_jct(version):
@@ -376,10 +394,11 @@ def main():
             SCRIPT_ROOT.parent.parent / "figures" / version)
         fig_root.mkdir(parents=True, exist_ok=True)
         population = POPULATION[version]
-        cells = load_cells(version)
+        cells, per_seed = load_cells(version)
         jct = load_jct(version)
         print(version)
         print("  results:", write_results_csv(cells, out_root))
+        print("  by-seed:", write_by_seed_csv(per_seed, out_root))
         print("  attainment:", write_attainment_csv(cells, out_root))
         print("  jct:", write_jct_csv(jct, out_root))
         for family in ("claude", "codex"):
