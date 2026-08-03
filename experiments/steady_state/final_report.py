@@ -339,10 +339,10 @@ def fig_jct(jct, family, fig_root, population):
                 marker=marker, color=colour, linewidth=1.2,
                 markersize=4, linestyle="--")
     ax.set_yscale("log")
-    ns = ", ".join(f"{r:g}:{jct[family][r]['n']}" for r in rates)
+    counts = [jct[family][r]["n"] for r in rates]
     _finish(ax, ylabel="Session completion time (s)",
             title=f"matched-session JCT (solid p50, dashed p99; "
-                  f"n by rate: {ns})")
+                  f"n={min(counts)}-{max(counts)} per rate)")
     ax.legend(fontsize=8)
     fig.suptitle(
         f"{FAMILY_TITLE[family]} - JCT vs load ({population})",
