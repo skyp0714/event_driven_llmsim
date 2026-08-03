@@ -64,15 +64,20 @@ gates, preload fractions) were tested and refuted at campaign scale.
 ## Campaign spec
 
 - Rates (dense past the knee): claude 0.016-0.036 (8 points), codex
-  nominal 0.0075-0.0165 (7 points); seeds 101/102; 6,000 measured
-  calls per cell; 212 cells, 0 failures. Launch script:
-  `../run_final_campaign.sh`.
+  nominal 0.0075-0.0165 (7 points); seeds 101-104; 6,000 measured
+  calls per cell; 360 cells, 0 failures. Launch script:
+  `../run_final_campaign.sh` (seeds 103/104 added with `--resume`).
 - Metrics per cell: 3x3 TTFT/TPOT SLO grid + turn-SLO (10/30/60 s)
   goodput and pass fractions, resume TTFT, TPOT, turn latency,
-  raw throughput, write accounting.
-- Matched-session JCT from the instrument harness at three rates per
+  raw throughput, write accounting. Figures show mean +/- sample std
+  across the four seeds.
+- Matched-session JCT from the instrument harness at 3-4 rates per
   family (`steady_state_v*/jct/jr_*.json`), intersection-matched
   between baseline and hybrid.
+- Robustness: per-seed hybrid/baseline turn30-goodput ratios stay
+  above 1 for every seed at every claude v8 rate (CV 2-13%); v9 is
+  noisier (CV up to 30%, direction preserved, magnitudes read with
+  the error bars).
 
 ## Headline results
 
@@ -81,23 +86,25 @@ gates, preload fractions) were tested and refuted at campaign scale.
 | | baseline | hybrid | oracle |
 |---|---|---|---|
 | claude v8, turn60 | 0.020 | **0.026 (+30%)** | 0.026 |
-| claude v8, turn30 | below grid | **0.016** | below grid |
-| codex v8, turn30 | 0.0075 | **0.0105 (+40%)** | 0.0105 |
+| claude v8, turn30 | below grid | **0.016** | 0.016 |
+| codex v8, turn30 | 0.0075 | **0.0105 (+40%)** | 0.012 |
 | codex v8, turn60 | 0.0135 | **0.015 (+11%)** | 0.0165 |
 | claude v9, turn60 | below grid | **0.020** | 0.020 |
-| codex v9, turn30/60 | 0.015 / 0.0165 | parity | 0.0165 / 0.0165 |
+| codex v9, turn30 | 0.0135 | **0.015 (+11%)** | 0.015 |
+| codex v9, turn60 | 0.0165 | 0.0165 | 0.0165 |
 
-The hybrid reaches the infinite-HBM oracle's attainment capacity in
-both families under v8. Goodput ratios grow with load: claude
-turn30-goodput 1.09->1.74x (v8) with medium-SLO goodput up to 4.5x;
-codex 1.15-1.29x (v8). Under v9 the claude advantage amplifies
-(turn30-goodput peak 1.69x, turn latency up to 2.1x, resume TTFT p99
-up to 11.6x) while codex holds parity at equal server count with a
-cheaper bill of materials. Matched JCT at the knee: claude p50 3.2x /
-p90 1.6x faster (v8) and p50 2.7x / p90 4.5x (v9); codex p50 parity /
-p90 1.2x faster (v8). turn10 at 90% is unattainable for every system
-including the unloaded oracle — a workload-shape bound, not a design
-gap.
+The hybrid matches the infinite-HBM oracle's attainment capacity for
+claude (both populations) and for codex under v9, and lands one grid
+step below the oracle for codex under v8 while clearing the baseline
+by 40%. Goodput ratios grow with load: claude turn30-goodput
+1.08->1.84x (v8) with medium-SLO goodput up to 4.5x; codex 1.10-1.22x
+(v8). Under v9 the claude advantage amplifies (turn30-goodput up to
+~1.6x, turn latency up to 2.1x, resume TTFT p99 up to 11.6x) while
+codex holds parity-to-+11% at equal server count with a cheaper bill
+of materials. Matched JCT at the knee: claude p50 3.2x / p90 1.6x
+faster (v8) and p50 2.7x / p90 4.5x (v9); codex p50 parity / p90 1.2x
+faster (v8). turn10 at 90% is unattainable for every system including
+the unloaded oracle — a workload-shape bound, not a design gap.
 
 Mechanisms, in one paragraph: the baseline's failure mode is the
 restore storm — resumed long-context sessions pay SSD->HBM restores

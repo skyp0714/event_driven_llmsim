@@ -17,10 +17,10 @@ Per version root:
   steady_state_v*/final_jct.csv         matched-session JCT by rate
   ../../figures/steady_state_v*/*.png
 
-JCT inputs are `jct/jr_{cl|cx}_{base|hyb|tp8}_{nominal_rate}.json`
+JCT inputs are `jct/jr_{cl|cx}_{base|hyb}_{nominal_rate}.json`
 dumps from the young_sessions instrument harness (codex base files
-were simulated at 2/3 of the nominal rate encoded in the name; tp8 is
-the claude-only hbf_tp8_context arm).
+were simulated at 2/3 of the nominal rate encoded in the name).
+Figures carry error bars: mean +/- sample std across seeds.
 """
 
 from collections import defaultdict
@@ -49,18 +49,15 @@ SCALED_COLUMNS = ("output_tokens_per_s",)
 STYLE = {
     "baseline_cpu_ssd": ("#B3423B", "o"),
     "oracle_infinite_hbm": ("#6B6B6B", "s"),
-    "hbf_tp8_context": ("#2E6DA4", "^"),
     "hbf_tp4x2": ("#3F8F5F", "v"),
 }
 LABELS = {
     ("claude", "baseline_cpu_ssd"): "2xGPU + CPU/SSD tiering",
     ("claude", "oracle_infinite_hbm"): "Infinite-HBM oracle",
-    ("claude", "hbf_tp8_context"): "GPU+HBF (tp8_context)",
-    ("claude", "hbf_tp4x2"): "GPU+HBF (tp4x2)",
+    ("claude", "hbf_tp4x2"): "GPU+HBF hybrid",
     ("codex", "baseline_cpu_ssd"): "3xGPU + CPU/SSD tiering",
     ("codex", "oracle_infinite_hbm"): "Infinite-HBM oracle (3 hosts)",
-    ("codex", "hbf_tp4x2"): "GPU+2xHBF hybrid (1:2, tp4x2)",
-    ("codex", "hbf_tp8_context"): "GPU+2xHBF hybrid (1:2, tp8)",
+    ("codex", "hbf_tp4x2"): "GPU+2xHBF hybrid (1:2)",
 }
 FAMILY_TITLE = {
     "claude": "Claude Code sessions (2-server)",
@@ -68,8 +65,7 @@ FAMILY_TITLE = {
 }
 JCT_FAMILY = {"cl": "claude", "cx": "codex"}
 SYSTEM_ORDER = (
-    "baseline_cpu_ssd", "oracle_infinite_hbm", "hbf_tp8_context",
-    "hbf_tp4x2")
+    "baseline_cpu_ssd", "oracle_infinite_hbm", "hbf_tp4x2")
 TURN_LEVELS = ("turn10", "turn30", "turn60")
 MED_LEVEL = "ttft5_tpot100"
 ATTAIN_FRACTION = 0.90
@@ -81,6 +77,8 @@ def load_cells(version):
     for path in (SCRIPT_ROOT / version / "cells").rglob("*.json"):
         cell = json.loads(path.read_text())
         family, system = cell["family"], cell["system"]
+        if system not in SYSTEM_ORDER:
+            continue
         scale = 1.0
         rate = cell["rate"]
         if family == "codex" and system in CODEX_FLEET_SYSTEMS:
@@ -102,12 +100,15 @@ def load_cells(version):
         bucket["_seeds"].append(cell["seed"])
     aggregated = {}
     for key, bucket in rows.items():
-        aggregated[key] = {
-            column: statistics.fmean(values)
-            for column, values in bucket.items()
-            if column != "_seeds"
-        }
-        aggregated[key]["n_seeds"] = len(bucket["_seeds"])
+        entry = {}
+        for column, values in bucket.items():
+            if column == "_seeds":
+                continue
+            entry[column] = statistics.fmean(values)
+            entry[f"{column}_std"] = (
+                statistics.stdev(values) if len(values) > 1 else 0.0)
+        entry["n_seeds"] = len(bucket["_seeds"])
+        aggregated[key] = entry
     return aggregated
 
 
@@ -116,7 +117,7 @@ def load_jct(version):
     pending = defaultdict(dict)
     for path in (SCRIPT_ROOT / version / "jct").glob("jr_*.json"):
         match = re.match(
-            r"jr_(cl|cx)_(base|hyb|tp8)_([0-9.]+)\.json", path.name)
+            r"jr_(cl|cx)_(base|hyb)_([0-9.]+)\.json", path.name)
         if not match:
             continue
         family = JCT_FAMILY[match.group(1)]
@@ -198,34 +199,39 @@ def write_jct_csv(jct, out_root):
         writer.writerow([
             "family", "rate", "matched_sessions",
             "base_p50_s", "hybrid_p50_s", "p50_ratio",
-            "base_p99_s", "hybrid_p99_s", "p99_ratio",
-            "tp8_p50_s", "tp8_p50_ratio",
-            "tp8_p99_s", "tp8_p99_ratio"])
+            "base_p99_s", "hybrid_p99_s", "p99_ratio"])
         for family in sorted(jct):
             for rate in sorted(jct[family]):
                 row = jct[family][rate]
-                tp8 = (
-                    ["", "", "", ""] if "tp8_p50" not in row else [
-                        f"{row['tp8_p50']:.1f}",
-                        f"{row['base_p50'] / row['tp8_p50']:.2f}",
-                        f"{row['tp8_p99']:.1f}",
-                        f"{row['base_p99'] / row['tp8_p99']:.2f}"])
                 writer.writerow([
                     family, rate, row["n"],
                     f"{row['base_p50']:.1f}", f"{row['hyb_p50']:.1f}",
                     f"{row['base_p50'] / row['hyb_p50']:.2f}",
                     f"{row['base_p99']:.1f}", f"{row['hyb_p99']:.1f}",
-                    f"{row['base_p99'] / row['hyb_p99']:.2f}"] + tp8)
+                    f"{row['base_p99'] / row['hyb_p99']:.2f}"])
     return out
 
 
 def _series(cells, family, system, column):
     points = sorted(
-        (rate, cells[(family, rate, system)][column])
+        (rate,
+         cells[(family, rate, system)][column],
+         cells[(family, rate, system)].get(f"{column}_std", 0.0))
         for (fam, rate, sysk) in cells
         if fam == family and sysk == system
         and column in cells[(family, rate, sysk)])
-    return [p[0] for p in points], [p[1] for p in points]
+    return ([p[0] for p in points], [p[1] for p in points],
+            [p[2] for p in points])
+
+
+def _plot(ax, xs, ys, errs, colour, marker, *, dashed=False,
+          label=None):
+    ax.errorbar(
+        xs, ys, yerr=errs, marker=marker, color=colour,
+        linewidth=1.2 if dashed else 1.9,
+        markersize=4 if dashed else 5,
+        linestyle="--" if dashed else "-",
+        capsize=2.5, elinewidth=1.0, label=label)
 
 
 def _systems(cells, family):
@@ -250,11 +256,10 @@ def fig_goodput(cells, family, fig_root, population):
     for ax, level in zip(axes.flat, panels):
         for system in _systems(cells, family):
             colour, marker = STYLE[system]
-            xs, ys = _series(cells, family, system,
-                             f"goodput_{level}")
-            ax.plot(xs, ys, marker=marker, color=colour,
-                    linewidth=1.9, markersize=5,
-                    label=LABELS[(family, system)])
+            xs, ys, errs = _series(cells, family, system,
+                                   f"goodput_{level}")
+            _plot(ax, xs, ys, errs, colour, marker,
+                  label=LABELS[(family, system)])
         _finish(ax, ylabel="SLO-good output tokens/s",
                 title=captions[level])
     axes.flat[0].legend(fontsize=8)
@@ -271,10 +276,11 @@ def fig_attainment(cells, family, fig_root, population):
     for ax, level in zip(axes, TURN_LEVELS):
         for system in _systems(cells, family):
             colour, marker = STYLE[system]
-            xs, ys = _series(cells, family, system, f"pass_{level}")
-            ax.plot(xs, [y * 100 for y in ys], marker=marker,
-                    color=colour, linewidth=1.9, markersize=5,
-                    label=LABELS[(family, system)])
+            xs, ys, errs = _series(cells, family, system,
+                                   f"pass_{level}")
+            _plot(ax, xs, [y * 100 for y in ys],
+                  [e * 100 for e in errs], colour, marker,
+                  label=LABELS[(family, system)])
         ax.axhline(ATTAIN_FRACTION * 100, color="#999999",
                    linestyle=":", linewidth=1.2)
         _finish(ax, ylabel="Calls within SLO (%)",
@@ -301,13 +307,11 @@ def fig_latency(cells, family, fig_root, population):
     for ax, (solid, dashed, ylabel) in zip(axes, panels):
         for system in _systems(cells, family):
             colour, marker = STYLE[system]
-            xs, ys = _series(cells, family, system, solid)
-            ax.plot(xs, ys, marker=marker, color=colour,
-                    linewidth=1.9, markersize=5,
-                    label=LABELS[(family, system)])
-            xs, ys = _series(cells, family, system, dashed)
-            ax.plot(xs, ys, marker=marker, color=colour,
-                    linewidth=1.2, markersize=4, linestyle="--")
+            xs, ys, errs = _series(cells, family, system, solid)
+            _plot(ax, xs, ys, errs, colour, marker,
+                  label=LABELS[(family, system)])
+            xs, ys, errs = _series(cells, family, system, dashed)
+            _plot(ax, xs, ys, errs, colour, marker, dashed=True)
         ax.set_yscale("log")
         _finish(ax, ylabel=ylabel,
                 title=f"{ylabel} (solid p50/mean, dashed p99)")
@@ -324,9 +328,10 @@ def fig_throughput(cells, family, fig_root, population):
     fig, ax = plt.subplots(figsize=(6.4, 4.4))
     for system in _systems(cells, family):
         colour, marker = STYLE[system]
-        xs, ys = _series(cells, family, system, "output_tokens_per_s")
-        ax.plot(xs, ys, marker=marker, color=colour, linewidth=1.9,
-                markersize=5, label=LABELS[(family, system)])
+        xs, ys, errs = _series(cells, family, system,
+                               "output_tokens_per_s")
+        _plot(ax, xs, ys, errs, colour, marker,
+              label=LABELS[(family, system)])
     _finish(ax, ylabel="Output tokens/s (fleet)",
             title=f"{FAMILY_TITLE[family]} - raw throughput "
                   f"({population})")
@@ -342,19 +347,12 @@ def fig_jct(jct, family, fig_root, population):
     rates = sorted(jct[family])
     fig, ax = plt.subplots(figsize=(6.8, 4.6))
     for side, system in (("base", "baseline_cpu_ssd"),
-                         ("hyb", "hbf_tp4x2"),
-                         ("tp8", "hbf_tp8_context")):
-        with_side = [r for r in rates
-                     if f"{side}_p50" in jct[family][r]]
-        if not with_side:
-            continue
+                         ("hyb", "hbf_tp4x2")):
         colour, marker = STYLE[system]
-        ax.plot(with_side,
-                [jct[family][r][f"{side}_p50"] for r in with_side],
+        ax.plot(rates, [jct[family][r][f"{side}_p50"] for r in rates],
                 marker=marker, color=colour, linewidth=1.9,
                 markersize=5, label=LABELS[(family, system)])
-        ax.plot(with_side,
-                [jct[family][r][f"{side}_p99"] for r in with_side],
+        ax.plot(rates, [jct[family][r][f"{side}_p99"] for r in rates],
                 marker=marker, color=colour, linewidth=1.2,
                 markersize=4, linestyle="--")
     ax.set_yscale("log")
