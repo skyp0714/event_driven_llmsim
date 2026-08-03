@@ -1,92 +1,65 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/static/img/llmservingsim_full_primary_dark_transparent.png">
-    <img alt="LLMServingSim" src="docs/static/img/llmservingsim_full_primary_transparent.png" width="70%">
-  </picture>
-</p>
+# event_driven_llmsim
 
-<h3 align="center">
-A Unified Simulator for Heterogeneous and Disaggregated LLM Serving Infrastructure
-</h3>
+An event-driven, kernel-calibrated simulator for studying KV-cache
+tier designs in agentic LLM serving — in particular a **GPU + HBF
+(High-Bandwidth Flash) hybrid** fleet against an all-GPU CPU/SSD
+tiering baseline on real Claude Code and Codex session traces.
 
-<p align="center">
-| <a href="https://llmservingsim.ai"><b>Website</b></a> | <a href="https://llmservingsim.ai/docs/getting-started/overview"><b>Documentation</b></a> | <a href="https://llmservingsim.ai/docs/contributor/welcome"><b>Contribute</b></a> | <a href="https://llmservingsim.ai/contact"><b>Contact</b></a> | <a href="https://llmservingsim.ai/changelog"><b>Changelog</b></a> |
-</p>
+This repository is a research fork of
+[LLMServingSim](https://github.com/casys-kaist/LLMServingSim); the
+upstream cycle-level simulator, profiler, and bench live on unchanged
+(docs at [llmservingsim.ai](https://llmservingsim.ai)), while the work
+here is the analytical event-driven model under `serving/core/` and
+the campaign in `experiments/`.
 
-We have built an LLMServingSim website to help you get started with the simulator. Please visit [llmservingsim.ai](https://llmservingsim.ai) for documentation, contribution guides, and team contact info.
+## What it models
 
-## About
+- **P4D4 GPU host**: 4 prefill + 4 decode H100s, chunked prefill,
+  continuous batching, and a finite-HBM KV lifecycle with
+  D-HBM -> CPU DRAM -> SSD tiering (`gpu_pd_*.py`).
+- **HBF host**: eight flash-based cards (weights + committed KV read
+  from flash at HBM-class bandwidth, LPDDR for activations) serving
+  resumed long-context sessions in place (`hbf_full_model_*.py`).
+- **Hybrid node**: SSD-staged migration between the two hosts with a
+  load-aware promotion/demotion policy and a big-prefill mirror gate
+  (`gpu_ssd_hbf_hybrid.py`, `ssd_hbf_design_sweep.py`).
+- **Latency**: analytical roofline models calibrated against kernel
+  measurements (`online_latency_model.py`; calibration sources under
+  `profiler/v0/` and `results/` are load-bearing — do not delete).
+- **Workload**: closed-loop agentic sessions (tool-call chains with
+  think times) replayed from traces, with an open-system steady-state
+  population installed by Little's law.
 
-LLMServingSim is a cycle-level simulator for LLM serving infrastructure. It pairs a Python frontend that mirrors vLLM's continuous-batching scheduler with the ASTRA-Sim C++ analytical network backend, and drives both from per-hardware latency data captured by a vLLM-based layerwise profiler. The result is a unified environment for studying heterogeneous accelerators, disaggregated memory tiers (CPU / CXL / PIM), MoE routing, and multi-instance parallelism (TP / PP / EP / DP) end-to-end.
-
-## Getting Started
+## Reproducing the study
 
 ```bash
-git clone --recurse-submodules https://github.com/casys-kaist/LLMServingSim.git
-cd LLMServingSim
-./scripts/docker-sim.sh           # launch the simulator container
-./scripts/compile.sh              # build ASTRA-Sim + Chakra
-./serving/run.sh                  # run the example simulations
+# all campaign cells (v8 uniform + v9 lifetime populations)
+./run_final_campaign.sh
+# CSVs + figures
+python experiments/steady_state/final_report.py
 ```
 
-For installation details, container choices, configuration layout, CLI
-flags, and the full set of example workloads, see the
-[documentation](https://llmservingsim.ai/docs/getting-started/overview).
+Design, population models, policy configuration, and headline results
+are documented in [`experiments/README.md`](experiments/README.md).
+Summary: at equal server count the hybrid matches the infinite-HBM
+oracle's 90%-attainment capacity (turn-SLO), raising it 30-40% over
+the tiering baseline, with matched-session JCT up to 3-4x faster at
+the knee.
 
-## Publications
+## Layout
 
-**ISPASS 2026**  
-*LLMServingSim 2.0: A Unified Simulator for Heterogeneous and Disaggregated LLM Serving Infrastructure*  
-Jaehong Cho<sup>\*</sup>, Hyunmin Choi<sup>\*</sup>, Guseul Heo, Jongse Park (KAIST) [[Paper]](https://doi.org/10.1109/ISPASS69572.2026.00012)  
-<sup>\*</sup>Equal contribution  
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18879965.svg)](https://doi.org/10.5281/zenodo.18879965)
-
-**CAL 2025**  
-*LLMServingSim2.0: A Unified Simulator for Heterogeneous Hardware and Serving Techniques in LLM Infrastructure*  
-Jaehong Cho, Hyunmin Choi, Jongse Park (KAIST)  [[Paper]](https://doi.org/10.1109/LCA.2025.3628325)
-
-**IISWC 2024**  
-*LLMServingSim: A HW/SW Co-Simulation Infrastructure for LLM Inference Serving at Scale*  
-Jaehong Cho, Minsu Kim, Hyunmin Choi, Guseul Heo, Jongse Park (KAIST)  [[Paper]](https://doi.org/10.1109/IISWC63097.2024.00012)  
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.12803583.svg)](https://doi.org/10.5281/zenodo.12803583)
-
-## Citation
-
-If you use LLMServingSim in your research, please cite:
-
-```bibtex
-@INPROCEEDINGS{11527300,
-    author={Cho, Jaehong and Choi, Hyunmin and Heo, Guseul and Park, Jongse},
-    booktitle={2026 IEEE International Symposium on Performance Analysis of Systems and Software (ISPASS)}, 
-    title={{LLMServingSim 2.0: A Unified Simulator for Heterogeneous and Disaggregated LLM Serving Infrastructure}}, 
-    year={2026},
-    pages={1-14},
-    doi={10.1109/ISPASS69572.2026.00012}
-}
-
-@ARTICLE{11224567,
-    author={Cho, Jaehong and Choi, Hyunmin and Park, Jongse},
-    journal={IEEE Computer Architecture Letters},
-    title={{LLMServingSim2.0: A Unified Simulator for Heterogeneous Hardware and Serving
-            Techniques in LLM Infrastructure}},
-    year={2025},
-    volume={24},
-    number={02},
-    pages={361-364},
-    doi={10.1109/LCA.2025.3628325},
-    ISSN={1556-6064},
-    publisher={IEEE Computer Society},
-    address={Los Alamitos, CA, USA},
-    month=jul
-}
-
-@INPROCEEDINGS{10763697,
-    author={Cho, Jaehong and Kim, Minsu and Choi, Hyunmin and Heo, Guseul and Park, Jongse},
-    booktitle={2024 IEEE International Symposium on Workload Characterization (IISWC)},
-    title={{LLMServingSim: A HW/SW Co-Simulation Infrastructure for LLM Inference Serving
-            at Scale}},
-    year={2024},
-    pages={15-29},
-    doi={10.1109/IISWC63097.2024.00012}
-}
 ```
+serving/core/          event-driven system models (this fork's work)
+experiments/           final v8/v9 campaign: runner, data, report
+figures/               generated figures (steady_state_v8 / _v9)
+tests/                 pytest suite for the system models
+profiler/, bench/,     upstream LLMServingSim components (see their
+docs/, astra-sim/      own READMEs; docs at llmservingsim.ai)
+```
+
+## Upstream
+
+LLMServingSim 2.0 (ISPASS 2026): *A Unified Simulator for
+Heterogeneous and Disaggregated LLM Serving Infrastructure* — Cho,
+Choi, Heo, Park (KAIST). If you build on the upstream simulator,
+cite their papers (see the upstream repository).
